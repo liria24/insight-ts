@@ -10,14 +10,20 @@ export default defineAppConfig({
         url: 'https://github.com/liria24/analytics',
     },
     header: {
-        title: 'Liria Analytics',
+        title: 'Analytics SDK',
     },
     seo: {
         description: 'Provider-independent analytics for TypeScript applications.',
-        title: 'Liria Analytics',
-        titleTemplate: '%s · Liria Analytics',
+        title: 'Analytics SDK',
+        titleTemplate: '%s | Analytics SDK',
     },
     socials: {
         github: 'https://github.com/liria24/analytics',
+    },
+    ui: {
+        colors: {
+            primary: 'zinc',
+            neutral: 'zinc',
+        },
     },
 })

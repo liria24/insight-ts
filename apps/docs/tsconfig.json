@@ -1,17 +1,9 @@
 {
-    "extends": "./.nuxt/tsconfig.json",
-    "compilerOptions": {
-        "skipLibCheck": true
-    },
-    "include": [
-        "./.nuxt/nuxt.node.d.ts",
-        "./.nuxt/types/nitro-imports.d.ts",
-        "./app.config.ts",
-        "./nuxt.config.ts",
-        "./server/**/*.ts"
-    ],
-    "exclude": ["./node_modules"],
-    "vueCompilerOptions": {
-        "plugins": []
-    }
+    "files": [],
+    "references": [
+        { "path": "./.nuxt/tsconfig.app.json" },
+        { "path": "./.nuxt/tsconfig.server.json" },
+        { "path": "./.nuxt/tsconfig.shared.json" },
+        { "path": "./.nuxt/tsconfig.node.json" }
+    ]
 }

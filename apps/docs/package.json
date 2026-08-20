@@ -3,6 +3,7 @@
     "private": true,
     "type": "module",
     "scripts": {
+        "postinstall": "nuxt prepare",
         "build": "nuxt build",
         "dev": "nuxt dev",
         "generate": "nuxt generate",
@@ -10,9 +11,11 @@
     },
     "dependencies": {
         "@liria24/analytics": "workspace:*",
+        "@nuxt/ui": "^4.10.0",
         "docus": "^5.12.3",
         "jspdf": "^4.2.1",
         "nuxt": "^4.5.2",
+        "tailwindcss": "^4.3.3",
         "vue-data-ui": "^3.23.9"
     },
     "devDependencies": {
