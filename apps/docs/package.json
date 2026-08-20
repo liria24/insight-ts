@@ -1,0 +1,21 @@
+{
+    "name": "@liria24/analytics-docs",
+    "private": true,
+    "type": "module",
+    "scripts": {
+        "build": "nuxt build",
+        "dev": "nuxt dev",
+        "generate": "nuxt generate",
+        "typecheck": "nuxt typecheck"
+    },
+    "dependencies": {
+        "@liria24/analytics": "workspace:*",
+        "docus": "^5.12.3",
+        "nuxt": "^4.5.2"
+    },
+    "devDependencies": {
+        "typescript": "^6",
+        "vue-tsc": "^3.3.10",
+        "wrangler": "^4.124.0"
+    }
+}
