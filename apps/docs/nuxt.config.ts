@@ -1,20 +1,74 @@
+const publicUrl = 'https://analytics.liria.me'
+
 export default defineNuxtConfig({
     extends: ['docus'],
+
     modules: ['@liria24/analytics/nuxt'],
+
     analytics: {
         name: 'docs',
     },
+
     css: ['vue-data-ui/style.css'],
+
+    nitro: {
+        preset: 'cloudflare_module',
+        compressPublicAssets: true,
+    },
+
+    vite: {
+        vue: {
+            features: {
+                optionsAPI: false,
+            },
+        },
+    },
+
+    experimental: {
+        crossOriginPrefetch: true,
+        sharedPrerenderData: true,
+        extractAsyncDataHandlers: true,
+        typescriptPlugin: true,
+        inlineRouteRules: true,
+        componentIslands: true,
+        nitroAutoImports: true,
+    },
+
     llms: {
         domain: 'https://analytics.liria.me',
     },
+
     mcp: {
         enabled: false,
     },
-    nitro: {
-        preset: 'cloudflare_module',
-    },
+
     ogImage: {
         enabled: false,
+    },
+
+    fonts: {
+        families: [
+            {
+                name: 'Geist',
+                provider: 'google',
+                preload: true,
+                global: true,
+                weights: [200, 300, 400, 500, 600, 700],
+            },
+            {
+                name: 'Geist Mono',
+                provider: 'google',
+                preload: true,
+                global: true,
+                weights: [200, 400, 600],
+            },
+        ],
+    },
+
+    $production: {
+        image: {
+            provider: 'cloudflare',
+            cloudflare: { baseURL: publicUrl },
+        },
     },
 })

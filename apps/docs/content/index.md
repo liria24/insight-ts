@@ -1,20 +1,39 @@
 ---
-title: Liria Analytics
+title: Analytics SDK
 description: Provider-independent analytics for TypeScript applications.
 navigation: false
 ---
 
-# One analytics model, provider-native data
+::u-page-hero
+#title
+Analytics SDK
 
-Query Cloudflare Web Analytics, Analytics Engine, and Google Search Console without flattening
-away sampling, freshness, approximation, or partial-result metadata.
+#description
+Provider-independent analytics for TypeScript applications.
 
-::u-button{to="/guide"}
+#links
+:::u-button
+---
+
+color: neutral
+size: xl
+to: /guide
+trailing-icon: i-lucide-arrow-right
+---
+
 Get started
-::
+:::
 
-::u-button{to="/concepts/architecture" color="neutral" variant="outline"}
-How it works
-::
+:::u-button
+---
 
-> Version `0.x` is under active development and can include breaking changes.
+color: neutral
+icon: simple-icons-github
+size: xl
+to: https://github.com/liria24/analytics
+variant: outline
+---
+
+Star on GitHub
+:::
+::
