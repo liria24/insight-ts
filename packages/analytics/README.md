@@ -50,6 +50,25 @@ const search = googleSearchConsole({
 
 See [analytics.liria.me](https://analytics.liria.me) for Nuxt, provider, archive, and event setup.
 
+## Vue UI
+
+The optional `@liria24/analytics/vue` entry provides report-first KPI, series chart, and dashboard
+components backed by `vue-data-ui`:
+
+```sh
+bun add vue-data-ui jspdf
+```
+
+```ts
+import 'vue-data-ui/style.css'
+import { AnalyticsDashboard } from '@liria24/analytics/vue'
+
+// <AnalyticsDashboard :report="report" />
+```
+
+The Nuxt module auto-imports `AnalyticsDashboard`, `AnalyticsKpiCard`, and `AnalyticsSeriesChart`
+when the module is enabled.
+
 ## License
 
 [MIT](./LICENSE)

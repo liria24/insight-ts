@@ -11,7 +11,9 @@
     "dependencies": {
         "@liria24/analytics": "workspace:*",
         "docus": "^5.12.3",
-        "nuxt": "^4.5.2"
+        "jspdf": "^4.2.1",
+        "nuxt": "^4.5.2",
+        "vue-data-ui": "^3.23.9"
     },
     "devDependencies": {
         "typescript": "^6",

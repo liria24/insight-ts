@@ -2,6 +2,15 @@ import { inject, provide, type InjectionKey } from 'vue'
 
 import type { AnalyticsEventMap, BrowserAnalytics } from './browser'
 
+export {
+    AnalyticsDashboard,
+    AnalyticsKpiCard,
+    AnalyticsSeriesChart,
+    type AnalyticsDashboardProps,
+    type AnalyticsKpiCardProps,
+    type AnalyticsSeriesChartProps,
+} from './vue-ui'
+
 export const analyticsKey: InjectionKey<unknown> = Symbol('analytics')
 
 export function provideAnalytics<Events extends object>(analytics: BrowserAnalytics<Events>): void {

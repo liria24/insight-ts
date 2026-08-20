@@ -26,11 +26,19 @@ async function run(command: readonly string[], options: SpawnOptions): Promise<s
 
 const workspace = join(import.meta.dir, '..', '..', '..')
 const packageDirectory = join(workspace, 'packages', 'analytics')
+const bunCacheDirectory = new TextDecoder()
+    .decode(Bun.spawnSync([process.execPath, 'pm', 'cache']).stdout)
+    .trim()
 const temporaryRoot = join(workspace, '.tmp')
 await mkdir(temporaryRoot, { recursive: true })
 const consumer = await mkdtemp(join(temporaryRoot, 'liria-analytics-consumer-'))
+const temporaryDirectory = join(consumer, 'tmp')
+const temporaryInstall = join(consumer, '.bun-install')
+await mkdir(temporaryDirectory, { recursive: true })
+await mkdir(temporaryInstall, { recursive: true })
 const temporaryEnvironment = {
-    BUN_INSTALL_CACHE_DIR: join(consumer, '.bun-cache'),
+    BUN_INSTALL: temporaryInstall,
+    BUN_TMPDIR: temporaryDirectory,
     TEMP: temporaryRoot,
     TMP: temporaryRoot,
     TMPDIR: temporaryRoot,
@@ -48,22 +56,44 @@ try {
         join(consumer, 'package.json'),
         JSON.stringify({ name: 'packed-consumer', private: true, type: 'module' }),
     )
-    await run([process.execPath, 'add', join(consumer, filename)], {
-        cwd: consumer,
-        env: temporaryEnvironment,
-    })
+    await run(
+        [
+            process.execPath,
+            'add',
+            join(consumer, filename),
+            'unstorage@1.17.5',
+            'vue@3.5.41',
+            '--backend=copyfile',
+            '--cache-dir',
+            bunCacheDirectory,
+            '--omit=peer',
+            '--ignore-scripts',
+        ],
+        {
+            cwd: consumer,
+            env: temporaryEnvironment,
+        },
+    )
     await Bun.write(
         join(consumer, 'verify.ts'),
         `import { createAnalytics } from '@liria24/analytics'
 import { createBrowserAnalytics } from '@liria24/analytics/browser'
 import { cloudflareWebAnalytics } from '@liria24/analytics/cloudflare'
 import { googleSearchConsole } from '@liria24/analytics/google-search-console'
+import {
+    AnalyticsDashboard,
+    AnalyticsKpiCard,
+    AnalyticsSeriesChart,
+} from '@liria24/analytics/vue'
 
 if (
     typeof createAnalytics !== 'function' ||
     typeof createBrowserAnalytics !== 'function' ||
     typeof cloudflareWebAnalytics !== 'function' ||
-    typeof googleSearchConsole !== 'function'
+    typeof googleSearchConsole !== 'function' ||
+    typeof AnalyticsDashboard !== 'object' ||
+    typeof AnalyticsKpiCard !== 'object' ||
+    typeof AnalyticsSeriesChart !== 'object'
 ) {
     throw new Error('A packed public export is missing')
 }

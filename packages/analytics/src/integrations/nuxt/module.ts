@@ -3,6 +3,7 @@ import { join } from 'node:path'
 import { pathToFileURL } from 'node:url'
 
 import {
+    addComponent,
     addImports,
     addServerHandler,
     addServerImports,
@@ -31,6 +32,9 @@ const module: NuxtModule<NuxtAnalyticsModuleOptions> = defineNuxtModule<NuxtAnal
                 maxBatchSize: options.relay?.maxBatchSize ?? 20,
                 maxBodySize: options.relay?.maxBodySize ?? 64 * 1024,
                 route: options.relay?.route ?? '/api/_analytics/events',
+            }
+            for (const name of ['AnalyticsDashboard', 'AnalyticsKpiCard', 'AnalyticsSeriesChart']) {
+                addComponent({ export: name, filePath: '@liria24/analytics/vue', name })
             }
             const userConfigPath = join(nuxt.options.srcDir, 'server', 'analytics.config.ts')
             const serverConfig = addTemplate({

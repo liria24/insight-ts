@@ -7,7 +7,18 @@ export default defineConfig({
     },
     clean: true,
     deps: {
-        onlyImport: ['h3', 'node:fs', 'node:path', 'node:url', 'nuxt', 'unstorage', 'vue'],
+        onlyImport: [
+            'h3',
+            'node:fs',
+            'node:path',
+            'node:url',
+            'nuxt',
+            'unstorage',
+            'vue',
+            'vue-data-ui',
+            'vue-data-ui/vue-ui-kpi',
+            'vue-data-ui/vue-ui-xy',
+        ],
     },
     dts: true,
     entry: {
