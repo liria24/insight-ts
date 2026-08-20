@@ -1,6 +1,6 @@
 {
     "name": "@liria24/analytics",
-    "version": "0.0.1",
+    "version": "0.0.2",
     "description": "Provider-independent analytics for TypeScript applications",
     "license": "MIT",
     "repository": {
