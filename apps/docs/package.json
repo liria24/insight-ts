@@ -11,16 +11,16 @@
     },
     "dependencies": {
         "@liria24/analytics": "workspace:*",
-        "@nuxt/ui": "^4.10.0",
+        "@nuxt/ui": "^4.11.0",
         "docus": "^5.12.3",
         "jspdf": "^4.2.1",
         "nuxt": "^4.5.2",
         "tailwindcss": "^4.3.3",
-        "vue-data-ui": "^3.23.10"
+        "vue-data-ui": "^3.23.14"
     },
     "devDependencies": {
-        "typescript": "^6",
-        "vue-tsc": "^3.3.10",
-        "wrangler": "^4.125.0"
+        "typescript": "^6.0.3",
+        "vue-tsc": "^3.3.11",
+        "wrangler": "^4.126.0"
     }
 }
