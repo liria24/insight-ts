@@ -5,8 +5,7 @@ import analytics from '../../../src/nuxt'
 export default defineNuxtConfig({
     modules: [analytics],
     analytics: {
-        events: { pageViewed: { properties: { path: 'string' } } },
-        name: 'events',
-        relay: true,
+        events: { setupCreated: {} },
+        name: 'events-only',
     },
 })

@@ -1,4 +1,4 @@
-import { recommendArchiveMonths } from '../core/archive-metadata.ts'
+import { withArchiveProviderMetadata } from '../core/archive-metadata.ts'
 import type {
     AnalyticsAdapter,
     AnalyticsFilter,
@@ -127,7 +127,7 @@ export function googleSearchConsole(options: GoogleSearchConsoleOptions): Analyt
         compileGoogleFilters(query.filters)
     }
 
-    return recommendArchiveMonths(
+    return withArchiveProviderMetadata(
         {
             dataset: {
                 archive: [
@@ -249,7 +249,7 @@ export function googleSearchConsole(options: GoogleSearchConsoleOptions): Analyt
             },
             validate,
         },
-        16,
+        { finalizationDelay: '7d', initialLookbackMonths: 16 },
     )
 }
 

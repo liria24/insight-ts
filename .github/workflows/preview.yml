@@ -23,4 +23,4 @@ jobs:
                   bun-version: 1.4.0
             - run: bun ci
             - run: bun --filter @liria24/analytics build
-            - run: bunx pkg-pr-new publish ./packages/analytics --bun --compact
+            - run: bun run preview:package

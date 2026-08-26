@@ -9,6 +9,12 @@ export interface NuxtAnalyticsArchiveOptions {
     retention?: AnalyticsDuration
 }
 
+export interface NuxtAnalyticsRelayOptions {
+    maxBatchSize?: number
+    maxBodySize?: number
+    route?: string
+}
+
 export interface NuxtAnalyticsModuleOptions {
     archive?: boolean | NuxtAnalyticsArchiveOptions
     environment?: string
@@ -22,11 +28,7 @@ export interface NuxtAnalyticsModuleOptions {
         }
         searchConsole?: string | { property: string }
     }
-    relay?: {
-        maxBatchSize?: number
-        maxBodySize?: number
-        route?: string
-    }
+    relay?: boolean | NuxtAnalyticsRelayOptions
 }
 
 export type NuxtAnalyticsEventDefinitions = Readonly<

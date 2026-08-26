@@ -17,12 +17,12 @@
         "format": "oxfmt . --write",
         "format:check": "oxfmt . --check",
         "lint": "oxlint .",
+        "preview:package": "pkg-pr-new publish ./packages/analytics --bun --compact --previewVersion",
         "test": "bun --filter @liria24/analytics test",
         "test:package": "bun packages/analytics/scripts/test-package.ts",
         "typecheck": "bun --filter @liria24/analytics typecheck"
     },
     "devDependencies": {
-        "changelogen": "^0.6.2",
         "oxfmt": "^0.65.0",
         "oxlint": "^1.80.0",
         "oxlint-tsgolint": "^7.0.2001",

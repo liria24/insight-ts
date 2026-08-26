@@ -16,6 +16,12 @@ for hypothetical capabilities. Users should provide only information the SDK can
 
 ## Architecture
 
+Before changing Public API, Archive, Nuxt, Provider, or Release behavior, read
+`docs/architecture/overview.md`, `docs/architecture/invariants.md`, the relevant ADRs under
+`docs/architecture/decisions/`, and `docs/architecture/provider-compatibility.md`. If a change
+reverses an accepted ADR, add a new ADR that explicitly supersedes it instead of rewriting the
+accepted decision.
+
 - Dependencies flow Integration -> Adapter -> Core. Never reverse this direction.
 - Core owns analytics semantics and imports no provider, framework, or runtime package.
 - Adapters translate provider requests and responses. They import no Nuxt or Vue code.

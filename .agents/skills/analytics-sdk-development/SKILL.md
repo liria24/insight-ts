@@ -10,11 +10,16 @@ Use this skill for work in this repository that changes analytics behavior or pu
 ## Work from the contract inward
 
 1. Read `AGENTS.md` and the package entry point involved in the change.
-2. Keep the dependency direction `integration -> adapter -> core`.
-3. Add dependencies only with `bun add`; never type dependency versions into a manifest.
-4. Prefer runtime-native `fetch`, `URL`, `crypto`, and timers over wrappers.
-5. Preserve report source, temporal, freshness, and quality metadata.
-6. Resolve sources explicitly; never select configuration order or silently merge providers.
+2. Before changing Public API, Archive, Nuxt, Provider, or Release behavior, read
+   `docs/architecture/overview.md`, `docs/architecture/invariants.md`, the relevant ADRs under
+   `docs/architecture/decisions/`, and `docs/architecture/provider-compatibility.md`.
+3. If a change reverses an accepted ADR, add a new ADR that explicitly supersedes it; never
+   rewrite the accepted decision in place.
+4. Keep the dependency direction `integration -> adapter -> core`.
+5. Add dependencies only with `bun add`; never type dependency versions into a manifest.
+6. Prefer runtime-native `fetch`, `URL`, `crypto`, and timers over wrappers.
+7. Preserve report source, temporal, freshness, and quality metadata.
+8. Resolve sources explicitly; never select configuration order or silently merge providers.
 
 ## Provider boundaries
 

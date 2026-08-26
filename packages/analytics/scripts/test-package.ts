@@ -68,7 +68,7 @@ if (!options.name || typeof analyticsModule !== 'function') {
 `,
     },
     {
-        dependencies: ['jspdf@4.2.1', 'vue@3.5.41', 'vue-data-ui@3.23.10'],
+        dependencies: ['vue@3.5.41', 'vue-data-ui@3.23.14'],
         name: 'consumer-vue',
         source: `import type { AnalyticsScalarReport } from '@liria24/analytics'
 import {

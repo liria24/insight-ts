@@ -16,10 +16,13 @@ describe('architecture import boundaries', () => {
         expect(violations).toEqual([])
     })
 
-    it('keeps adapters independent from integrations', async () => {
+    it('keeps adapters independent from integrations and framework runtimes', async () => {
         const violations = await importViolations(
             join(sourceRoot, 'adapters'),
-            (specifier, file) => localTarget(specifier, file)?.includes('/integrations/') === true,
+            (specifier, file) => {
+                if (localTarget(specifier, file)?.includes('/integrations/')) return true
+                return /^(?:h3|nitro|nitropack|nuxt|vue)(?:\/|$)/.test(specifier)
+            },
         )
 
         expect(violations).toEqual([])
