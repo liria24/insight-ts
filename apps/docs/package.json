@@ -3,7 +3,7 @@
     "private": true,
     "type": "module",
     "scripts": {
-        "postinstall": "nuxt prepare",
+        "postinstall": "bun run --cwd ../.. build:sdk && nuxt prepare",
         "build": "nuxt build",
         "dev": "nuxt dev",
         "generate": "nuxt generate",
