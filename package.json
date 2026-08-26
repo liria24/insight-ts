@@ -7,7 +7,6 @@
     ],
     "type": "module",
     "scripts": {
-        "postinstall": "bun run build:sdk && bun --filter @liria24/analytics-docs postinstall",
         "build": "bun run build:sdk && bun run build:docs",
         "build:docs": "bun --filter @liria24/analytics-docs build",
         "build:sdk": "bun --filter @liria24/analytics build",
