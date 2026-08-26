@@ -16,22 +16,17 @@ export default defineNuxtConfig({
         compressPublicAssets: true,
     },
 
+    routeRules: {
+        '/api': { redirect: '/reference/api' },
+        '/guide': { redirect: '/getting-started/introduction' },
+    },
+
     vite: {
         vue: {
             features: {
                 optionsAPI: false,
             },
         },
-    },
-
-    experimental: {
-        crossOriginPrefetch: true,
-        sharedPrerenderData: true,
-        extractAsyncDataHandlers: true,
-        typescriptPlugin: true,
-        inlineRouteRules: true,
-        componentIslands: true,
-        nitroAutoImports: true,
     },
 
     llms: {

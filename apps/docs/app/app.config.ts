@@ -15,7 +15,7 @@ export default defineAppConfig({
     seo: {
         description: 'Provider-independent analytics for TypeScript applications.',
         title: 'Analytics SDK',
-        titleTemplate: '%s | Analytics SDK',
+        titleTemplate: '%s',
     },
     socials: {
         github: 'https://github.com/liria24/analytics',
