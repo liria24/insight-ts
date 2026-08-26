@@ -1,10 +1,4 @@
-import type { H3Event } from 'h3'
-
-import type { CloudflareAnalyticsEngineBinding } from '../../adapters/cloudflare'
 import type {
-    AnalyticsAdapterInput,
-    AnalyticsClient,
-    AnalyticsConfig,
     AnalyticsDuration,
     AnalyticsEventDefinitions,
     AnalyticsEventProperty,
@@ -35,41 +29,9 @@ export interface NuxtAnalyticsModuleOptions {
     }
 }
 
-export interface NuxtAnalyticsServerEvent {
-    id: string
-    name: string
-    origin: 'client'
-    properties: Record<string, boolean | number | string>
-    timestamp: string
-}
-
-export interface NuxtAnalyticsServerConfig {
-    adapters?: readonly AnalyticsAdapterInput[]
-    cloudflare?: {
-        accountId?: string
-        apiToken?: string
-        bindings?: Readonly<Record<string, CloudflareAnalyticsEngineBinding>>
-    }
-    config?: AnalyticsConfig
-    defaultSources?: Readonly<Record<string, string>>
-    eventHandler?(events: readonly NuxtAnalyticsServerEvent[], event: H3Event): Promise<void> | void
-    getAccessToken?(): Promise<string>
-}
-
-export interface NuxtAnalyticsServerRuntime {
-    deliverEvents(events: readonly NuxtAnalyticsServerEvent[], event: H3Event): Promise<void>
-    useServerAnalytics(event?: H3Event): Promise<AnalyticsClient>
-}
-
 export type NuxtAnalyticsEventDefinitions = Readonly<
     Record<string, { properties?: Readonly<Record<string, AnalyticsEventProperty>> }>
 >
-
-export function defineNuxtAnalyticsConfig(
-    config: NuxtAnalyticsServerConfig,
-): NuxtAnalyticsServerConfig {
-    return config
-}
 
 declare module 'nuxt/schema' {
     interface NuxtConfig {
@@ -78,5 +40,9 @@ declare module 'nuxt/schema' {
 
     interface NuxtOptions {
         analytics?: NuxtAnalyticsModuleOptions
+    }
+
+    interface NuxtHooks {
+        'nitro:config': (nitroConfig: unknown) => void
     }
 }

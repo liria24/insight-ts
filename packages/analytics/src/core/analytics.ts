@@ -11,6 +11,7 @@ import type {
     AnalyticsDomainSeriesQuery,
     AnalyticsEventDefinition,
     AnalyticsEventDefinitions,
+    AnalyticsNormalizedStateValue,
     AnalyticsQuery,
     AnalyticsStateClient,
     AnalyticsStateMetricDefinition,
@@ -48,15 +49,18 @@ function validStateValue(definition: AnalyticsStateMetricDefinition, value: unkn
     )
 }
 
-function stateMetricValue(value: unknown): number {
+function normalizeStateMetricValue(
+    definition: AnalyticsStateMetricDefinition,
+    value: unknown,
+): AnalyticsNormalizedStateValue {
     if (typeof value === 'number') return value
-    if (!Array.isArray(value)) return 0
-    return value.reduce((total, row) => {
-        if (!row || typeof row !== 'object' || !('value' in row) || typeof row.value !== 'number') {
-            return total
-        }
-        return total + row.value
-    }, 0)
+    const dimensions = Object.keys(definition.dimensions ?? {})
+    return (Array.isArray(value) ? value : []).map((row) =>
+        Object.fromEntries([
+            ...dimensions.map((dimension) => [dimension, Reflect.get(row, dimension)]),
+            ['value', Reflect.get(row, 'value')],
+        ]),
+    )
 }
 
 function configuredStateNames<TConfig extends AnalyticsConfig>(
@@ -267,7 +271,13 @@ export function createAnalytics<const TConfig extends AnalyticsConfig = Analytic
                 if (names.length === 0) return providerResult
                 const snapshot = await state.current(names)
                 const values = Object.fromEntries(
-                    names.map((name) => [name, stateMetricValue(snapshot[name])]),
+                    names.map((name) => [
+                        name,
+                        normalizeStateMetricValue(
+                            options.config?.state?.metrics[name] ?? {},
+                            snapshot[name],
+                        ),
+                    ]),
                 )
                 const stateResult = await archive.maintainState(values)
                 const warnings = [

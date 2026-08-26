@@ -6,4 +6,5 @@ export {
     defineNuxtAnalyticsConfig,
     type NuxtAnalyticsServerConfig,
     type NuxtAnalyticsServerEvent,
-} from './integrations/nuxt/types'
+    type NuxtAnalyticsServerRuntime,
+} from './integrations/nuxt/runtime-types'

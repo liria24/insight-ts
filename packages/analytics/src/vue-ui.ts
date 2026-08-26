@@ -6,122 +6,151 @@ import {
     onMounted,
     ref,
     type PropType,
+    type VNodeChild,
 } from 'vue'
 import type { VueUiXyConfig, VueUiXyDatasetItem } from 'vue-data-ui'
 
-import type { AnalyticsSeriesReport } from './core/types'
+import type {
+    AnalyticsDimensionValues,
+    AnalyticsMetricValues,
+    AnalyticsReport,
+    AnalyticsReportQuality,
+    AnalyticsSeriesPoint,
+} from './core/types'
 
-export interface AnalyticsKpiCardProps {
-    label: string
-    value: number | null
-    caption?: string
+export interface AnalyticsStatProps {
+    emptyText?: string
+    label?: string
+    locale?: string
+    maximumFractionDigits?: number
+    metric: string
+    report: AnalyticsReport
 }
 
-export interface AnalyticsSeriesChartProps {
-    report: AnalyticsSeriesReport
-    metrics?: readonly string[]
-    title?: string
+export interface AnalyticsLineChartProps {
+    colors?: readonly string[]
     height?: number
-}
-
-export interface AnalyticsDashboardProps {
-    report: AnalyticsSeriesReport
-    title?: string
     metrics?: readonly string[]
+    report: AnalyticsReport
+    smooth?: boolean
+    title?: string
 }
 
-const kpiConfig = {
-    backgroundColor: 'transparent',
-    titleBold: true,
-    titleFontSize: 13,
-    useAnimation: true,
-    valueBold: true,
-    valueFontSize: 30,
-    valueRounding: 0,
+export interface AnalyticsBreakdownTableProps {
+    dimensions?: readonly string[]
+    emptyText?: string
+    locale?: string
+    maximumFractionDigits?: number
+    metrics?: readonly string[]
+    report: AnalyticsReport
 }
 
-const chartColors = ['#6376DD', '#43A047', '#FB8C00', '#8E24AA', '#00838F', '#D81B60']
+export interface AnalyticsChartSeries {
+    color?: string
+    metric: string
+    name: string
+    values: readonly (number | null)[]
+}
 
-const ClientVueUiKpi =
-    typeof window === 'undefined'
-        ? undefined
-        : defineAsyncComponent(() =>
-              import('vue-data-ui/vue-ui-kpi').then(({ VueUiKpi }) => VueUiKpi),
-          )
+const defaultChartColors = ['#6376DD', '#43A047', '#FB8C00', '#8E24AA', '#00838F', '#D81B60']
+
 const ClientVueUiXy =
     typeof window === 'undefined'
         ? undefined
         : defineAsyncComponent(() => import('vue-data-ui/vue-ui-xy').then(({ VueUiXy }) => VueUiXy))
 
-export const AnalyticsKpiCard = defineComponent({
-    name: 'AnalyticsKpiCard',
+export const AnalyticsStat = defineComponent({
+    name: 'AnalyticsStat',
     props: {
-        caption: { type: String, default: undefined },
-        label: { type: String, required: true },
-        value: { type: Number as PropType<number | null>, default: null },
+        emptyText: { type: String, default: 'No data' },
+        label: { type: String, default: undefined },
+        locale: { type: String, default: 'en-US' },
+        maximumFractionDigits: { type: Number, default: 2 },
+        metric: { type: String, required: true },
+        report: { type: Object as PropType<AnalyticsReport>, required: true },
     },
-    setup(props) {
-        const mounted = ref(false)
-        onMounted(() => {
-            mounted.value = true
-        })
+    setup(props, { slots }) {
+        const selection = computed(() => selectStatValue(props.report, props.metric))
+        const label = computed(() => props.label ?? formatMetricName(props.metric))
 
         return () => {
-            if (props.value === null || !Number.isFinite(props.value)) {
-                return emptyState(props.label, 'No data', props.caption)
+            const selected = selection.value
+            if (!selected || selected.value === null || !Number.isFinite(selected.value)) {
+                return renderEmpty(
+                    label.value,
+                    props.emptyText,
+                    slots.empty?.({ metric: props.metric }),
+                )
             }
 
-            const useVueDataUi = mounted.value && ClientVueUiKpi
-            const kpi = useVueDataUi
-                ? h(ClientVueUiKpi, {
-                      config: { ...kpiConfig, title: props.label },
-                      dataset: props.value,
-                  })
-                : h('p', { class: 'analytics-kpi-card__value' }, formatValue(props.value))
-
-            return h('div', { 'aria-label': props.label, class: 'analytics-kpi-card' }, [
-                ...(useVueDataUi
-                    ? [kpi]
-                    : [h('p', { class: 'analytics-kpi-card__label' }, props.label), kpi]),
-                props.caption
-                    ? h('p', { class: 'analytics-kpi-card__caption' }, props.caption)
-                    : null,
-            ])
+            const formatted = formatNumber(
+                selected.value,
+                props.locale,
+                props.maximumFractionDigits,
+            )
+            return h(
+                'section',
+                { 'aria-label': label.value, class: 'analytics-stat' },
+                compactChildren([
+                    slots.label?.({ label: label.value, metric: props.metric }) ??
+                        h('p', { class: 'analytics-stat__label' }, label.value),
+                    slots.value?.({
+                        formatted,
+                        metric: props.metric,
+                        point: selected.point,
+                        value: selected.value,
+                    }) ?? h('p', { class: 'analytics-stat__value' }, formatted),
+                    selected.point
+                        ? (slots.caption?.({ point: selected.point }) ??
+                          h(
+                              'p',
+                              { class: 'analytics-stat__caption' },
+                              `As of ${selected.point.time.slice(0, 10)}`,
+                          ))
+                        : undefined,
+                    renderQuality(props.report.meta.quality, slots.quality),
+                ]),
+            )
         }
     },
 })
 
-export const AnalyticsSeriesChart = defineComponent({
-    name: 'AnalyticsSeriesChart',
+export const AnalyticsLineChart = defineComponent({
+    name: 'AnalyticsLineChart',
     props: {
+        colors: { type: Array as PropType<readonly string[]>, default: undefined },
         height: { type: Number, default: 360 },
-        metrics: {
-            type: Array as PropType<readonly string[]>,
-            default: undefined,
-        },
-        report: { type: Object as PropType<AnalyticsSeriesReport>, required: true },
+        metrics: { type: Array as PropType<readonly string[]>, default: undefined },
+        report: { type: Object as PropType<AnalyticsReport>, required: true },
+        smooth: { type: Boolean, default: false },
         title: { type: String, default: undefined },
     },
-    setup(props) {
+    setup(props, { slots }) {
         const mounted = ref(false)
         onMounted(() => {
             mounted.value = true
         })
 
-        const selectedMetrics = computed(() => resolveMetrics(props.report, props.metrics))
-        const dataset = computed<VueUiXyDatasetItem[]>(() => {
-            if (props.report.kind !== 'series') return []
-
+        const selectedMetrics = computed(() => resolveSeriesMetrics(props.report, props.metrics))
+        const chartSeries = computed<AnalyticsChartSeries[]>(() => {
+            const report = props.report
+            if (report.kind !== 'series') return []
+            const colors = props.colors ?? defaultChartColors
             return selectedMetrics.value.map((metric, index) => ({
-                color: chartColors[index % chartColors.length]!,
+                ...(colors.length > 0 ? { color: colors[index % colors.length] } : {}),
+                metric,
                 name: formatMetricName(metric),
-                series: props.report.points.map((point) => {
-                    const value = point.values[metric]
-                    return typeof value === 'number' && Number.isFinite(value) ? value : null
-                }),
-                type: 'line',
+                values: report.points.map((point) => finiteMetric(point.values[metric])),
             }))
         })
+        const dataset = computed<VueUiXyDatasetItem[]>(() =>
+            chartSeries.value.map((series) => ({
+                ...(series.color ? { color: series.color } : {}),
+                name: series.name,
+                series: [...series.values],
+                type: 'line',
+            })),
+        )
         const config = computed<VueUiXyConfig>(() => ({
             chart: {
                 grid: {
@@ -138,144 +167,262 @@ export const AnalyticsSeriesChart = defineComponent({
                 title: { show: false },
                 userOptions: { show: false },
             },
-            line: { smooth: true, useGradient: false },
+            line: { smooth: props.smooth, useGradient: false },
             responsive: true,
-            theme: 'minimal',
         }))
 
         return () => {
-            if (props.report.kind !== 'series')
-                return emptyState('Series chart', 'No time series data')
+            const label = props.title ?? 'Analytics line chart'
+            if (props.report.kind !== 'series') {
+                return renderEmpty(label, 'No time series data', slots.empty?.({ reason: 'kind' }))
+            }
             if (props.report.points.length === 0 || selectedMetrics.value.length === 0) {
-                return emptyState(props.title ?? 'Series chart', 'No data')
+                return renderEmpty(label, 'No data', slots.empty?.({ reason: 'empty' }))
             }
 
+            const transformed = {
+                metrics: selectedMetrics.value,
+                points: props.report.points,
+                series: chartSeries.value,
+                times: props.report.points.map((point) => point.time),
+            }
             const chart =
-                mounted.value && ClientVueUiXy
+                slots.chart?.(transformed) ??
+                (mounted.value && ClientVueUiXy
                     ? h(ClientVueUiXy, { config: config.value, dataset: dataset.value })
-                    : h(
-                          'ol',
-                          { class: 'analytics-series-chart__fallback' },
-                          props.report.points.map((point) =>
-                              h(
-                                  'li',
-                                  `${point.time}: ${formatPoint(point, selectedMetrics.value)}`,
-                              ),
-                          ),
-                      )
+                    : renderSeriesFallback(props.report.points, selectedMetrics.value))
 
             return h(
                 'section',
-                {
-                    'aria-label': props.title ?? 'Analytics series',
-                    class: 'analytics-series-chart',
-                },
-                [
+                { 'aria-label': label, class: 'analytics-line-chart' },
+                compactChildren([
                     props.title
-                        ? h('h3', { class: 'analytics-series-chart__title' }, props.title)
-                        : null,
+                        ? (slots.title?.({ title: props.title }) ??
+                          h('h3', { class: 'analytics-line-chart__title' }, props.title))
+                        : undefined,
                     h(
                         'div',
                         {
-                            class: 'analytics-series-chart__canvas',
+                            class: 'analytics-line-chart__canvas',
                             style: { minHeight: `${props.height}px` },
                         },
-                        [chart],
+                        chart,
                     ),
-                ],
+                    renderQuality(props.report.meta.quality, slots.quality),
+                ]),
             )
         }
     },
 })
 
-export const AnalyticsDashboard = defineComponent({
-    name: 'AnalyticsDashboard',
+export const AnalyticsBreakdownTable = defineComponent({
+    name: 'AnalyticsBreakdownTable',
     props: {
-        metrics: {
-            type: Array as PropType<readonly string[]>,
-            default: undefined,
-        },
-        report: { type: Object as PropType<AnalyticsSeriesReport>, required: true },
-        title: { type: String, default: 'Analytics' },
+        dimensions: { type: Array as PropType<readonly string[]>, default: undefined },
+        emptyText: { type: String, default: 'No data' },
+        locale: { type: String, default: 'en-US' },
+        maximumFractionDigits: { type: Number, default: 2 },
+        metrics: { type: Array as PropType<readonly string[]>, default: undefined },
+        report: { type: Object as PropType<AnalyticsReport>, required: true },
     },
-    setup(props) {
-        const selectedMetrics = computed(() => resolveMetrics(props.report, props.metrics))
-        const latestPoint = computed(() => {
-            if (props.report.kind !== 'series' || props.report.points.length === 0) return undefined
-            return props.report.points.reduce(
-                (latest, point) =>
-                    latest === undefined || point.time > latest.time ? point : latest,
-                undefined as AnalyticsSeriesReport['points'][number] | undefined,
-            )
-        })
-        const qualityMessages = computed(() => {
-            const quality = props.report.meta?.quality
-            if (!quality) return []
-
-            return [
-                ...(quality.partial ? ['Partial data'] : []),
-                ...(quality.approximate ? ['Approximate data'] : []),
-                ...(quality.warnings ?? []).map((warning) => warning.message),
-            ]
-        })
+    setup(props, { slots }) {
+        const dimensions = computed(() =>
+            resolveTableFields(props.report, props.dimensions, 'dimensions'),
+        )
+        const metrics = computed(() => resolveTableFields(props.report, props.metrics, 'metrics'))
 
         return () => {
-            const cards = selectedMetrics.value.map((metric) =>
-                h(AnalyticsKpiCard, {
-                    key: metric,
-                    label: formatMetricName(metric),
-                    value: latestPoint.value?.values[metric] ?? null,
-                    ...(latestPoint.value
-                        ? { caption: `As of ${latestPoint.value.time.slice(0, 10)}` }
-                        : {}),
-                }),
-            )
+            if (props.report.kind !== 'table') {
+                return renderEmpty(
+                    'Analytics breakdown',
+                    'No breakdown data',
+                    slots.empty?.({ reason: 'kind' }),
+                )
+            }
+            if (
+                props.report.rows.length === 0 ||
+                dimensions.value.length + metrics.value.length === 0
+            ) {
+                return renderEmpty(
+                    'Analytics breakdown',
+                    props.emptyText,
+                    slots.empty?.({ reason: 'empty' }),
+                )
+            }
+
+            const headers = [...dimensions.value, ...metrics.value]
+            const table = h('table', { class: 'analytics-breakdown-table__table' }, [
+                h(
+                    'thead',
+                    h(
+                        'tr',
+                        headers.map((column) =>
+                            h(
+                                'th',
+                                { key: column, scope: 'col' },
+                                slots.header?.({ column }) ?? formatMetricName(column),
+                            ),
+                        ),
+                    ),
+                ),
+                h(
+                    'tbody',
+                    props.report.rows.map((row, rowIndex) =>
+                        h('tr', { key: rowIndex }, [
+                            ...dimensions.value.map((column) =>
+                                renderTableCell(
+                                    column,
+                                    row.dimensions,
+                                    rowIndex,
+                                    'dimension',
+                                    props,
+                                    slots.cell,
+                                ),
+                            ),
+                            ...metrics.value.map((column) =>
+                                renderTableCell(
+                                    column,
+                                    row.metrics,
+                                    rowIndex,
+                                    'metric',
+                                    props,
+                                    slots.cell,
+                                ),
+                            ),
+                        ]),
+                    ),
+                ),
+            ])
 
             return h(
                 'section',
-                {
-                    'aria-label': props.title,
-                    class: 'analytics-dashboard',
-                },
-                [
-                    h('h2', { class: 'analytics-dashboard__title' }, props.title),
-                    qualityMessages.value.length > 0
-                        ? h(
-                              'div',
-                              {
-                                  'aria-live': 'polite',
-                                  class: 'analytics-dashboard__quality',
-                                  role: 'status',
-                              },
-                              qualityMessages.value.join(' · '),
-                          )
-                        : null,
-                    cards.length > 0
-                        ? h(
-                              'div',
-                              {
-                                  class: 'analytics-dashboard__cards',
-                                  style: {
-                                      display: 'grid',
-                                      gap: '1rem',
-                                      gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))',
-                                  },
-                              },
-                              cards,
-                          )
-                        : null,
-                    h(AnalyticsSeriesChart, {
-                        metrics: selectedMetrics.value,
-                        report: props.report,
-                        title: 'Trend',
-                    }),
-                ],
+                { 'aria-label': 'Analytics breakdown', class: 'analytics-breakdown-table' },
+                compactChildren([
+                    slots.table?.({
+                        dimensions: dimensions.value,
+                        metrics: metrics.value,
+                        rows: props.report.rows,
+                    }) ?? table,
+                    renderQuality(props.report.meta.quality, slots.quality),
+                ]),
             )
         }
     },
 })
 
-function emptyState(label: string, message: string, caption?: string) {
+function selectStatValue(
+    report: AnalyticsReport,
+    metric: string,
+): { point?: AnalyticsSeriesPoint; value: number | null } | undefined {
+    if (report.kind === 'scalar') {
+        return Object.hasOwn(report.values, metric)
+            ? { value: finiteMetric(report.values[metric]) }
+            : undefined
+    }
+    if (report.kind !== 'series') return undefined
+    const point = [...report.points]
+        .filter((candidate) => Object.hasOwn(candidate.values, metric))
+        .reduce<AnalyticsSeriesPoint | undefined>(
+            (latest, candidate) => (!latest || candidate.time > latest.time ? candidate : latest),
+            undefined,
+        )
+    return point ? { point, value: finiteMetric(point.values[metric]) } : undefined
+}
+
+function resolveSeriesMetrics(
+    report: AnalyticsReport,
+    requested: readonly string[] | undefined,
+): string[] {
+    if (report.kind !== 'series') return []
+    const available = new Set(
+        report.points.flatMap((point) =>
+            Object.entries(point.values).flatMap(([metric, value]) =>
+                finiteMetric(value) === null ? [] : [metric],
+            ),
+        ),
+    )
+    return unique(requested?.length ? requested : [...available]).filter((metric) =>
+        available.has(metric),
+    )
+}
+
+function resolveTableFields(
+    report: AnalyticsReport,
+    requested: readonly string[] | undefined,
+    field: 'dimensions' | 'metrics',
+): string[] {
+    if (report.kind !== 'table') return []
+    const available = new Set(report.rows.flatMap((row) => Object.keys(row[field])))
+    return unique(requested?.length ? requested : [...available]).filter((name) =>
+        available.has(name),
+    )
+}
+
+function renderTableCell(
+    column: string,
+    values: AnalyticsDimensionValues | AnalyticsMetricValues,
+    rowIndex: number,
+    kind: 'dimension' | 'metric',
+    props: { locale: string; maximumFractionDigits: number },
+    slot: ((properties: Record<string, unknown>) => VNodeChild) | undefined,
+) {
+    const value = values[column] ?? null
+    const formatted =
+        typeof value === 'number' && Number.isFinite(value)
+            ? formatNumber(value, props.locale, props.maximumFractionDigits)
+            : value === null
+              ? '—'
+              : String(value)
+    return h(
+        'td',
+        { key: `${kind}:${column}` },
+        slot?.({ column, formatted, kind, rowIndex, value }) ?? formatted,
+    )
+}
+
+function renderSeriesFallback(points: readonly AnalyticsSeriesPoint[], metrics: readonly string[]) {
+    return h(
+        'ol',
+        { class: 'analytics-line-chart__fallback' },
+        points.map((point) =>
+            h(
+                'li',
+                { key: `${point.time}:${JSON.stringify(point.dimensions ?? {})}` },
+                `${point.time}: ${metrics
+                    .map(
+                        (metric) =>
+                            `${formatMetricName(metric)}: ${formatMetricValue(point.values[metric])}`,
+                    )
+                    .join(', ')}`,
+            ),
+        ),
+    )
+}
+
+function renderQuality(
+    quality: AnalyticsReportQuality,
+    slot: ((properties: Record<string, unknown>) => VNodeChild) | undefined,
+): VNodeChild | undefined {
+    const messages = [
+        ...(quality.partial ? ['Partial data'] : []),
+        ...(quality.approximate ? ['Approximate data'] : []),
+        ...(quality.sampled ? ['Sampled data'] : []),
+        ...(quality.thresholded ? ['Thresholded data'] : []),
+        ...(quality.warnings ?? []).map((warning) => warning.message),
+    ]
+    if (messages.length === 0) return undefined
+    return (
+        slot?.({ messages, quality }) ??
+        h(
+            'p',
+            { 'aria-live': 'polite', class: 'analytics-quality', role: 'status' },
+            messages.join(' · '),
+        )
+    )
+}
+
+function renderEmpty(label: string, message: string, slot: VNodeChild | undefined) {
+    if (slot) return slot
     return h(
         'div',
         {
@@ -284,32 +431,16 @@ function emptyState(label: string, message: string, caption?: string) {
             class: 'analytics-empty-state',
             role: 'status',
         },
-        [
-            h('strong', label),
-            h('span', message),
-            caption ? h('p', { class: 'analytics-empty-state__caption' }, caption) : null,
-        ],
+        [h('strong', label), h('span', message)],
     )
 }
 
-function resolveMetrics(
-    report: AnalyticsSeriesReport,
-    requested: readonly string[] | undefined,
-): string[] {
-    if (report.kind !== 'series') return []
+function compactChildren(children: readonly (VNodeChild | undefined)[]): VNodeChild[] {
+    return children.filter((child): child is VNodeChild => child !== undefined && child !== null)
+}
 
-    const available = new Map<string, boolean>()
-    for (const point of report.points) {
-        for (const [name, value] of Object.entries(point.values)) {
-            const numeric = typeof value === 'number' && Number.isFinite(value)
-            available.set(name, available.get(name) === true || numeric)
-        }
-    }
-
-    const candidates = requested?.length
-        ? requested
-        : [...available].filter(([, numeric]) => numeric).map(([name]) => name)
-    return [...new Set(candidates)].filter((metric) => available.has(metric))
+function finiteMetric(value: number | null | undefined): number | null {
+    return typeof value === 'number' && Number.isFinite(value) ? value : null
 }
 
 function formatMetricName(metric: string): string {
@@ -319,19 +450,15 @@ function formatMetricName(metric: string): string {
         .replace(/^./, (character) => character.toUpperCase())
 }
 
-function formatPoint(
-    point: AnalyticsSeriesReport['points'][number],
-    metrics: readonly string[],
-): string {
-    return metrics
-        .map((metric) => `${formatMetricName(metric)}: ${formatMetricValue(point.values[metric])}`)
-        .join(', ')
-}
-
 function formatMetricValue(value: number | null | undefined): string {
-    return typeof value === 'number' && Number.isFinite(value) ? formatValue(value) : 'No data'
+    const metric = finiteMetric(value)
+    return metric === null ? 'No data' : formatNumber(metric, 'en-US', 2)
 }
 
-function formatValue(value: number): string {
-    return new Intl.NumberFormat('en-US', { maximumFractionDigits: 2 }).format(value)
+function formatNumber(value: number, locale: string, maximumFractionDigits: number): string {
+    return new Intl.NumberFormat(locale, { maximumFractionDigits }).format(value)
+}
+
+function unique(values: readonly string[]): string[] {
+    return [...new Set(values)]
 }

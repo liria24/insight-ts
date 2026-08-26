@@ -1,3 +1,4 @@
+import { recommendArchiveMonths } from '../core/archive-metadata.ts'
 import type {
     AnalyticsAdapter,
     AnalyticsFilter,
@@ -126,115 +127,130 @@ export function googleSearchConsole(options: GoogleSearchConsoleOptions): Analyt
         compileGoogleFilters(query.filters)
     }
 
-    return {
-        dataset: {
-            archive: [
-                {
-                    dimensions: ['date'],
-                    grain: 'day',
-                    id: 'daily-search',
-                    metrics: ['clicks', 'impressions', 'ctr'],
-                },
-            ],
-            dimensions: supportedDimensions.map((id) => ({
-                id,
-                valueType:
-                    id === 'date'
-                        ? ('date' as const)
-                        : id === 'hour'
-                          ? ('datetime' as const)
-                          : ('string' as const),
-            })),
-            domain: 'search',
-            id: datasetId,
-            metrics: [
-                { aggregation: 'sum', id: 'clicks', rollup: 'additive', valueType: 'integer' },
-                { aggregation: 'sum', id: 'impressions', rollup: 'additive', valueType: 'integer' },
-                {
-                    aggregation: 'ratio',
-                    derive: { denominator: 'impressions', numerator: 'clicks', operation: 'ratio' },
-                    id: 'ctr',
-                    rollup: 'derived',
-                    valueType: 'ratio',
-                },
-                {
-                    aggregation: 'mean',
-                    id: 'averagePosition',
-                    rollup: 'non-additive',
-                    valueType: 'position',
-                },
-            ],
-        },
-        async query(query: ResolvedAnalyticsQuery): Promise<AnalyticsReport> {
-            validate(query)
-            const accessToken = await options.auth.getAccessToken()
-            if (accessToken.length === 0) {
-                throw new TypeError('Google Search Console access token cannot be empty')
-            }
-
-            const rows: SearchAnalyticsRow[] = []
-            let metadata: SearchAnalyticsMetadata | undefined
-            let startRow = 0
-            while (true) {
-                const remaining = query.limit === undefined ? PAGE_SIZE : query.limit - rows.length
-                if (remaining <= 0) break
-                const rowLimit = Math.min(PAGE_SIZE, remaining)
-                const body = {
-                    dataState,
-                    dimensions: query.dimensions,
-                    endDate: inclusiveCalendarEnd(query.range.to),
-                    rowLimit,
-                    startDate: calendarDate(query.range.from),
-                    startRow,
-                    ...compileGoogleFilters(query.filters),
-                }
-                // Pagination is sequential because the next offset depends on this page's row count.
-                // eslint-disable-next-line no-await-in-loop
-                const response = await fetcher(
-                    `${SEARCH_ANALYTICS_ENDPOINT}/${encodeURIComponent(options.property)}/searchAnalytics/query`,
+    return recommendArchiveMonths(
+        {
+            dataset: {
+                archive: [
                     {
-                        body: JSON.stringify(body),
-                        headers: {
-                            accept: 'application/json',
-                            authorization: `Bearer ${accessToken}`,
-                            'content-type': 'application/json',
-                        },
-                        method: 'POST',
+                        dimensions: ['date'],
+                        grain: 'day',
+                        id: 'daily-search',
+                        metrics: ['clicks', 'impressions', 'ctr'],
                     },
-                )
-                // eslint-disable-next-line no-await-in-loop
-                const payload = await readJson(response)
-                if (!response.ok) {
-                    throw googleApiError(payload, response.status)
+                ],
+                dimensions: supportedDimensions.map((id) => ({
+                    id,
+                    valueType:
+                        id === 'date'
+                            ? ('date' as const)
+                            : id === 'hour'
+                              ? ('datetime' as const)
+                              : ('string' as const),
+                })),
+                domain: 'search',
+                id: datasetId,
+                metrics: [
+                    { aggregation: 'sum', id: 'clicks', rollup: 'additive', valueType: 'integer' },
+                    {
+                        aggregation: 'sum',
+                        id: 'impressions',
+                        rollup: 'additive',
+                        valueType: 'integer',
+                    },
+                    {
+                        aggregation: 'ratio',
+                        derive: {
+                            denominator: 'impressions',
+                            numerator: 'clicks',
+                            operation: 'ratio',
+                        },
+                        id: 'ctr',
+                        rollup: 'derived',
+                        valueType: 'ratio',
+                    },
+                    {
+                        aggregation: 'mean',
+                        id: 'averagePosition',
+                        rollup: 'non-additive',
+                        valueType: 'position',
+                    },
+                ],
+            },
+            async query(query: ResolvedAnalyticsQuery): Promise<AnalyticsReport> {
+                validate(query)
+                const accessToken = await options.auth.getAccessToken()
+                if (accessToken.length === 0) {
+                    throw new TypeError('Google Search Console access token cannot be empty')
                 }
-                const responseRows = record(payload)?.rows
-                if (responseRows !== undefined && !Array.isArray(responseRows)) {
-                    throw new GoogleSearchConsoleApiError(
-                        'Google Search Console returned malformed rows',
-                        502,
-                    )
-                }
-                if (
-                    Array.isArray(responseRows) &&
-                    !responseRows.every((row) => isSearchAnalyticsRow(row, query.dimensions.length))
-                ) {
-                    throw new GoogleSearchConsoleApiError(
-                        'Google Search Console returned malformed rows',
-                        502,
-                    )
-                }
-                const page = Array.isArray(responseRows) ? responseRows : []
-                rows.push(...page)
-                const responseMetadata = record(record(payload)?.metadata)
-                if (responseMetadata !== undefined) metadata = responseMetadata
-                if (page.length < rowLimit) break
-                startRow += page.length
-            }
 
-            return googleReport(query, rows, metadata)
+                const rows: SearchAnalyticsRow[] = []
+                let metadata: SearchAnalyticsMetadata | undefined
+                let startRow = 0
+                while (true) {
+                    const remaining =
+                        query.limit === undefined ? PAGE_SIZE : query.limit - rows.length
+                    if (remaining <= 0) break
+                    const rowLimit = Math.min(PAGE_SIZE, remaining)
+                    const body = {
+                        dataState,
+                        dimensions: query.dimensions,
+                        endDate: inclusiveCalendarEnd(query.range.to),
+                        rowLimit,
+                        startDate: calendarDate(query.range.from),
+                        startRow,
+                        ...compileGoogleFilters(query.filters),
+                    }
+                    // Pagination is sequential because the next offset depends on this page's row count.
+                    // eslint-disable-next-line no-await-in-loop
+                    const response = await fetcher(
+                        `${SEARCH_ANALYTICS_ENDPOINT}/${encodeURIComponent(options.property)}/searchAnalytics/query`,
+                        {
+                            body: JSON.stringify(body),
+                            headers: {
+                                accept: 'application/json',
+                                authorization: `Bearer ${accessToken}`,
+                                'content-type': 'application/json',
+                            },
+                            method: 'POST',
+                        },
+                    )
+                    // eslint-disable-next-line no-await-in-loop
+                    const payload = await readJson(response)
+                    if (!response.ok) {
+                        throw googleApiError(payload, response.status)
+                    }
+                    const responseRows = record(payload)?.rows
+                    if (responseRows !== undefined && !Array.isArray(responseRows)) {
+                        throw new GoogleSearchConsoleApiError(
+                            'Google Search Console returned malformed rows',
+                            502,
+                        )
+                    }
+                    if (
+                        Array.isArray(responseRows) &&
+                        !responseRows.every((row) =>
+                            isSearchAnalyticsRow(row, query.dimensions.length),
+                        )
+                    ) {
+                        throw new GoogleSearchConsoleApiError(
+                            'Google Search Console returned malformed rows',
+                            502,
+                        )
+                    }
+                    const page = Array.isArray(responseRows) ? responseRows : []
+                    rows.push(...page)
+                    const responseMetadata = record(record(payload)?.metadata)
+                    if (responseMetadata !== undefined) metadata = responseMetadata
+                    if (page.length < rowLimit) break
+                    startRow += page.length
+                }
+
+                return googleReport(query, rows, metadata)
+            },
+            validate,
         },
-        validate,
-    }
+        16,
+    )
 }
 
 function compileGoogleFilters(filter: AnalyticsFilter | undefined): {

@@ -1,0 +1,30 @@
+# Architecture overview
+
+The SDK follows one dependency direction:
+
+```text
+Integration -> Adapter -> Core
+```
+
+Core defines provider-independent queries, reports, source selection, rollup safety, event
+schemas, Application State, and archive semantics. Adapters validate provider capability before
+I/O and translate one shared query into provider-native requests and metadata-rich reports.
+Integrations resolve host configuration and connect runtime primitives such as H3, Nitro Storage,
+and Nitro Tasks.
+
+The public package surface mirrors these boundaries:
+
+- `@liria24/analytics` contains core contracts and execution.
+- Provider subpaths contain adapters.
+- `@liria24/analytics/nuxt` contains the build-time Nuxt module.
+- `@liria24/analytics/nuxt/runtime` contains H3/Nitro runtime helpers.
+- `@liria24/analytics/vue` contains optional report-only presentation primitives.
+
+Configuration is split by evaluation time. `nuxt.config.ts` owns declarative resource
+identifiers, event definitions, relay options, and archive policy. `server/analytics.config.ts`
+owns runtime State collection, provider authorization callbacks, optional custom adapters, and
+the custom event-delivery escape hatch.
+
+Archive storage is normalized JSON in unstorage. It is historical materialization, not a result
+cache. Provider coverage is backfilled on first maintenance when the adapter knows its retention;
+later maintenance is incremental and safe to repeat.

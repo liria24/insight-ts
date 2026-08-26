@@ -3,7 +3,6 @@ import { join } from 'node:path'
 import { pathToFileURL } from 'node:url'
 
 import {
-    addComponent,
     addImports,
     addServerHandler,
     addServerImports,
@@ -12,6 +11,7 @@ import {
 } from 'nuxt/kit'
 import type { NuxtModule } from 'nuxt/schema'
 
+import { configureMaintenanceTask, configureR2Storage } from './nitro'
 import type { NuxtAnalyticsModuleOptions } from './types'
 
 const module: NuxtModule<NuxtAnalyticsModuleOptions> = defineNuxtModule<NuxtAnalyticsModuleOptions>(
@@ -32,9 +32,6 @@ const module: NuxtModule<NuxtAnalyticsModuleOptions> = defineNuxtModule<NuxtAnal
                 maxBatchSize: options.relay?.maxBatchSize ?? 20,
                 maxBodySize: options.relay?.maxBodySize ?? 64 * 1024,
                 route: options.relay?.route ?? '/api/_analytics/events',
-            }
-            for (const name of ['AnalyticsDashboard', 'AnalyticsKpiCard', 'AnalyticsSeriesChart']) {
-                addComponent({ export: name, filePath: '@liria24/analytics/vue', name })
             }
             const userConfigPath = join(nuxt.options.srcDir, 'server', 'analytics.config.ts')
             const serverConfig = addTemplate({
@@ -77,7 +74,9 @@ const module: NuxtModule<NuxtAnalyticsModuleOptions> = defineNuxtModule<NuxtAnal
                     getContents: () => maintenanceTaskTemplate,
                     write: true,
                 })
-                configureMaintenanceTask(nuxt.options, maintenance.dst)
+                nuxt.hook('nitro:config', (nitroConfig) => {
+                    configureMaintenanceTask(nitroConfig, maintenance.dst)
+                })
             }
 
             if (r2Binding) {
@@ -85,7 +84,9 @@ const module: NuxtModule<NuxtAnalyticsModuleOptions> = defineNuxtModule<NuxtAnal
                     typeof options.archive === 'object'
                         ? (options.archive.base ?? 'analytics:archive')
                         : 'analytics:archive'
-                configureR2Storage(nuxt.options, base, r2Binding)
+                nuxt.hook('nitro:config', (nitroConfig) => {
+                    configureR2Storage(nitroConfig, base, r2Binding)
+                })
             }
         },
     },
@@ -120,9 +121,7 @@ export function createServerRuntimeTemplate(options: NuxtAnalyticsModuleOptions)
     const analyticsEngine = options.providers?.cloudflare?.analyticsEngine
     const analyticsEngineBinding =
         typeof analyticsEngine === 'string' ? analyticsEngine : analyticsEngine?.binding
-    const eventConfig = options.events
-        ? `{ ...config.config, events: ${JSON.stringify(options.events)} }`
-        : 'config.config'
+    const analyticsConfig = `{ events: ${JSON.stringify(options.events ?? {})}, state: config.state }`
 
     return `import { createAnalytics } from '@liria24/analytics'
 import { cloudflareAnalyticsEngine, cloudflareWebAnalytics } from '@liria24/analytics/cloudflare'
@@ -143,8 +142,9 @@ function createServerAnalytics(event) {
     }
     ${
         searchProperty
-            ? `if (!config.getAccessToken) throw new Error('Search Console getAccessToken is missing')
-    adapters.push(googleSearchConsole({ property: ${JSON.stringify(searchProperty)}, auth: { getAccessToken: config.getAccessToken } }))`
+            ? `const getAccessToken = config.auth?.searchConsole?.getAccessToken
+    if (!getAccessToken) throw new Error('Search Console auth.searchConsole.getAccessToken is missing')
+    adapters.push(googleSearchConsole({ property: ${JSON.stringify(searchProperty)}, auth: { getAccessToken } }))`
             : ''
     }
     ${
@@ -160,7 +160,7 @@ function createServerAnalytics(event) {
     name: ${JSON.stringify(options.name)},
     environment: ${JSON.stringify(options.environment ?? 'default')},
     adapters,
-    config: ${eventConfig},
+    config: ${analyticsConfig},
     defaultSources: config.defaultSources,
     archive: ${archiveExpression},
     })
@@ -235,39 +235,3 @@ const maintenanceTaskTemplate = `export default defineTask({
   },
 })
 `
-
-function configureMaintenanceTask(nuxtOptions: unknown, handler: string): void {
-    const nitro = recordAt(requireRecord(nuxtOptions, 'Nuxt options'), 'nitro')
-    recordAt(nitro, 'experimental').tasks = true
-    recordAt(nitro, 'tasks')['analytics:maintenance'] = {
-        description: 'Refresh and prune analytics archive partitions',
-        handler,
-    }
-}
-
-function configureR2Storage(nuxtOptions: unknown, base: string, binding: string): void {
-    const nitro = recordAt(requireRecord(nuxtOptions, 'Nuxt options'), 'nitro')
-    const storage = recordAt(nitro, 'storage')
-    storage[base] ??= { binding, driver: 'cloudflare-r2-binding' }
-}
-
-function recordAt(parent: Record<string, unknown>, key: string): Record<string, unknown> {
-    const current = parent[key]
-    if (current === undefined) {
-        const record: Record<string, unknown> = {}
-        parent[key] = record
-        return record
-    }
-    return requireRecord(current, `Nitro ${key}`)
-}
-
-function requireRecord(value: unknown, name: string): Record<string, unknown> {
-    if (!isRecord(value)) {
-        throw new TypeError(`${name} must be an object`)
-    }
-    return value
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-    return typeof value === 'object' && value !== null && !Array.isArray(value)
-}

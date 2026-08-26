@@ -1,7 +1,7 @@
 import { createApp, toWebHandler } from 'h3'
 import { describe, expect, it, vi } from 'vitest'
 
-import { createAnalyticsEventHandler, type AnalyticsEventHandlerOptions } from '../src/nuxt'
+import { createAnalyticsEventHandler, type AnalyticsEventHandlerOptions } from '../src/nuxt-runtime'
 
 const definitions = {
     signup: {

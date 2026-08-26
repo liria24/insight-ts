@@ -1,62 +1,111 @@
-import { readFile, rm } from 'node:fs/promises'
+/* eslint-disable no-await-in-loop, vitest/no-conditional-expect -- fixtures build sequentially */
+
+import { access, readFile, rm } from 'node:fs/promises'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 import { buildNuxt, loadNuxt } from 'nuxt/kit'
-import { afterAll, describe, expect, it } from 'vitest'
+import { describe, expect, it } from 'vitest'
 
-const fixture = new URL('./fixtures/nuxt/', import.meta.url)
-const fixtureDirectory = fileURLToPath(fixture)
-const buildDirectory = join(fixtureDirectory, '.nuxt')
-const outputDirectory = join(fixtureDirectory, '.output')
-const fixtureNodeModulesDirectory = join(fixtureDirectory, 'node_modules')
+import { configureMaintenanceTask, configureR2Storage } from '../src/integrations/nuxt/nitro'
+const fixturesDirectory = fileURLToPath(new URL('./fixtures/', import.meta.url))
 
-afterAll(async () => {
-    await Promise.all(
-        [buildDirectory, outputDirectory, fixtureNodeModulesDirectory].map((directory) =>
-            rm(directory, { force: true, recursive: true }),
-        ),
-    )
-})
+const scenarios = [
+    'nuxt-minimal',
+    'nuxt-read-only',
+    'nuxt-events',
+    'nuxt-r2',
+    'nuxt-existing-storage',
+    'nuxt-no-ui',
+    'nuxt-compat5',
+] as const
 
-describe('Nuxt build fixture', () => {
-    it('compiles generated browser, relay, server, task, and storage integration', async () => {
-        const nuxt = await loadNuxt({
-            cwd: fixtureDirectory,
-            ready: true,
-        })
+describe('Nuxt capability fixtures', () => {
+    it('builds only the runtime capabilities each fixture configures', async () => {
+        for (const scenario of scenarios) {
+            const directory = join(fixturesDirectory, scenario)
+            const buildDirectory = join(directory, '.nuxt')
+            const outputDirectory = join(directory, '.output')
+            const nodeModulesDirectory = join(directory, 'node_modules')
+            await cleanup([buildDirectory, outputDirectory, nodeModulesDirectory])
 
-        try {
-            await buildNuxt(nuxt)
+            const nuxt = await loadNuxt({ cwd: directory, ready: true })
+            try {
+                const initialStorage =
+                    scenario === 'nuxt-existing-storage'
+                        ? { 'analytics:archive': { driver: 'memory' } }
+                        : {}
+                const nitroConfig: Record<string, unknown> = { storage: initialStorage }
+                if (scenario === 'nuxt-r2' || scenario === 'nuxt-existing-storage') {
+                    configureMaintenanceTask(nitroConfig, 'analytics/maintenance.mjs')
+                    configureR2Storage(nitroConfig, 'analytics:archive', 'ANALYTICS_ARCHIVE')
+                }
+                await buildNuxt(nuxt)
+                const hasEvents = scenario === 'nuxt-events'
+                const hasArchive = scenario === 'nuxt-r2' || scenario === 'nuxt-existing-storage'
 
-            const server = await readFile(join(buildDirectory, 'analytics/server.mjs'), 'utf8')
-            const relay = await readFile(join(buildDirectory, 'analytics/events.mjs'), 'utf8')
-            const browser = await readFile(join(buildDirectory, 'analytics/browser.ts'), 'utf8')
-            const maintenance = await readFile(
-                join(buildDirectory, 'analytics/maintenance.mjs'),
-                'utf8',
-            )
+                expect(await exists(join(buildDirectory, 'analytics/browser.ts'))).toBe(hasEvents)
+                expect(await exists(join(buildDirectory, 'analytics/events.mjs'))).toBe(hasEvents)
+                expect(await exists(join(buildDirectory, 'analytics/maintenance.mjs'))).toBe(
+                    hasArchive,
+                )
 
-            expect(server).toContain('fixture-site-tag')
-            expect(server).toContain('sc-domain:example.com')
-            expect(server).toContain('ANALYTICS')
-            expect(server).not.toContain('fixture-token')
-            expect(relay).toContain('createAnalyticsEventHandler')
-            expect(browser).toContain('useAnalytics')
-            expect(maintenance).toContain("name: 'analytics:maintenance'")
-            const nitro = readRecord(readRecord(nuxt.options).nitro)
-            const storage = readRecord(nitro.storage)
-            const tasks = readRecord(nitro.tasks)
-            expect(storage['analytics:archive']).toMatchObject({
-                binding: 'ANALYTICS_ARCHIVE',
-                driver: 'cloudflare-r2-binding',
-            })
-            expect(tasks['analytics:maintenance']).toBeDefined()
-        } finally {
-            await nuxt.close()
+                if (scenario === 'nuxt-read-only') {
+                    const server = await readFile(
+                        join(buildDirectory, 'analytics/server.mjs'),
+                        'utf8',
+                    )
+                    expect(server).toContain('site-tag')
+                    expect(server).toContain('sc-domain:example.com')
+                    expect(server).toContain('auth?.searchConsole?.getAccessToken')
+                }
+
+                if (scenario === 'nuxt-r2' || scenario === 'nuxt-existing-storage') {
+                    const storage = readRecord(nitroConfig.storage)
+                    const tasks = readRecord(nitroConfig.tasks)
+                    expect(storage['analytics:archive']).toEqual(
+                        scenario === 'nuxt-existing-storage'
+                            ? { driver: 'memory' }
+                            : {
+                                  binding: 'ANALYTICS_ARCHIVE',
+                                  driver: 'cloudflare-r2-binding',
+                              },
+                    )
+                    expect(tasks['analytics:maintenance']).toBeDefined()
+                    expect(JSON.stringify(nitroConfig)).not.toContain('aws4fetch')
+                }
+
+                if (scenario === 'nuxt-no-ui') {
+                    const components = await readFile(
+                        join(buildDirectory, 'components.d.ts'),
+                        'utf8',
+                    )
+                    expect(components).not.toContain('AnalyticsStat')
+                    expect(components).not.toContain('AnalyticsLineChart')
+                    expect(components).not.toContain('vue-data-ui')
+                }
+            } finally {
+                await nuxt.close()
+                await cleanup([buildDirectory, outputDirectory, nodeModulesDirectory])
+            }
         }
-    }, 120_000)
+    }, 300_000)
 })
+
+async function exists(path: string): Promise<boolean> {
+    try {
+        await access(path)
+        return true
+    } catch {
+        return false
+    }
+}
+
+async function cleanup(directories: readonly string[]): Promise<void> {
+    await Promise.all(
+        directories.map((directory) => rm(directory, { force: true, recursive: true })),
+    )
+}
 
 function readRecord(value: unknown): Record<string, unknown> {
     if (!isRecord(value)) throw new TypeError('Expected an object')

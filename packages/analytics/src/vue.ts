@@ -3,12 +3,13 @@ import { inject, provide, type InjectionKey } from 'vue'
 import type { AnalyticsEventMap, BrowserAnalytics } from './browser'
 
 export {
-    AnalyticsDashboard,
-    AnalyticsKpiCard,
-    AnalyticsSeriesChart,
-    type AnalyticsDashboardProps,
-    type AnalyticsKpiCardProps,
-    type AnalyticsSeriesChartProps,
+    AnalyticsBreakdownTable,
+    AnalyticsLineChart,
+    AnalyticsStat,
+    type AnalyticsBreakdownTableProps,
+    type AnalyticsChartSeries,
+    type AnalyticsLineChartProps,
+    type AnalyticsStatProps,
 } from './vue-ui'
 
 export const analyticsKey: InjectionKey<unknown> = Symbol('analytics')

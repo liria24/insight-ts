@@ -16,7 +16,6 @@ export default defineConfig({
             'unstorage',
             'vue',
             'vue-data-ui',
-            'vue-data-ui/vue-ui-kpi',
             'vue-data-ui/vue-ui-xy',
         ],
     },

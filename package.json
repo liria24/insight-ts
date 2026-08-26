@@ -20,7 +20,7 @@
         "lint": "oxlint .",
         "test": "bun --filter @liria24/analytics test",
         "test:package": "bun packages/analytics/scripts/test-package.ts",
-        "typecheck": "bun --filter '*' typecheck"
+        "typecheck": "bun --filter @liria24/analytics typecheck"
     },
     "devDependencies": {
         "changelogen": "^0.6.2",

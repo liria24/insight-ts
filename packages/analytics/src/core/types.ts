@@ -158,6 +158,7 @@ export interface AnalyticsScalarReport {
 }
 
 export interface AnalyticsSeriesPoint {
+    dimensions?: AnalyticsDimensionValues
     time: string
     values: AnalyticsMetricValues
 }
@@ -219,6 +220,12 @@ export interface AnalyticsEventDefinition {
 export type AnalyticsEventDefinitions = Readonly<Record<string, AnalyticsEventDefinition>>
 
 export type AnalyticsStateDimensionValue = boolean | number | string
+
+export type AnalyticsNormalizedStateRow = Readonly<
+    Record<string, AnalyticsStateDimensionValue> & { value: number }
+>
+
+export type AnalyticsNormalizedStateValue = number | readonly AnalyticsNormalizedStateRow[]
 
 export interface AnalyticsStateMetricDefinition {
     dimensions?: Readonly<Record<string, readonly AnalyticsStateDimensionValue[]>>

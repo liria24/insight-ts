@@ -1,5 +1,6 @@
 /* eslint-disable no-await-in-loop -- partition coverage and writes are intentionally ordered */
 
+import { recommendedArchiveStart } from './archive-metadata.ts'
 import { AnalyticsError } from './errors.ts'
 import { resolveRange } from './query.ts'
 import type {
@@ -9,6 +10,7 @@ import type {
     AnalyticsMaintenanceResult,
     AnalyticsMetricDescriptor,
     AnalyticsMetricValues,
+    AnalyticsNormalizedStateValue,
     AnalyticsReport,
     AnalyticsReportQuality,
     AnalyticsSeriesPoint,
@@ -46,7 +48,7 @@ interface PartitionIndex {
 
 interface StateObservation {
     timestamp: string
-    values: Readonly<Record<string, number>>
+    values: Readonly<Record<string, AnalyticsNormalizedStateValue>>
 }
 
 interface StatePartition {
@@ -633,8 +635,26 @@ function isStatePartition(value: unknown): value is StatePartition {
                 Number.isFinite(new Date(observation.timestamp).valueOf()) &&
                 'values' in observation &&
                 isObject(observation.values) &&
-                Object.values(observation.values).every(
-                    (metric) => typeof metric === 'number' && Number.isFinite(metric),
+                Object.values(observation.values).every(isNormalizedStateValue),
+        )
+    )
+}
+
+function isNormalizedStateValue(value: unknown): value is AnalyticsNormalizedStateValue {
+    if (typeof value === 'number') return Number.isFinite(value)
+    return (
+        Array.isArray(value) &&
+        value.every(
+            (row) =>
+                isObject(row) &&
+                typeof row.value === 'number' &&
+                Number.isFinite(row.value) &&
+                Object.entries(row).every(
+                    ([dimension, dimensionValue]) =>
+                        dimension === 'value' ||
+                        typeof dimensionValue === 'boolean' ||
+                        typeof dimensionValue === 'string' ||
+                        (typeof dimensionValue === 'number' && Number.isFinite(dimensionValue)),
                 ),
         )
     )
@@ -770,7 +790,7 @@ export class AnalyticsArchive {
     }
 
     async maintainState(
-        values: Readonly<Record<string, number>>,
+        values: Readonly<Record<string, AnalyticsNormalizedStateValue>>,
     ): Promise<AnalyticsMaintenanceResult> {
         const now = this.#now()
         const baseKey = this.#baseKey('state', 'observations')
@@ -868,7 +888,7 @@ export class AnalyticsArchive {
                 }),
             )
         }
-        const buckets = new Map<string, number>()
+        const buckets = new Map<string, AnalyticsNormalizedStateValue>()
         for (const observation of sorted(observations, (left, right) =>
             left.timestamp.localeCompare(right.timestamp),
         )) {
@@ -883,8 +903,15 @@ export class AnalyticsArchive {
                 source: 'state',
                 temporal: { bucketTimezone: 'UTC', grain, sourceTimezone: 'UTC' },
             },
-            points: sorted([...buckets], ([left], [right]) => left.localeCompare(right)).map(
-                ([time, value]) => ({ time, values: { [metric]: value } }),
+            points: sorted([...buckets], ([left], [right]) => left.localeCompare(right)).flatMap(
+                ([time, value]) =>
+                    typeof value === 'number'
+                        ? [{ time, values: { [metric]: value } }]
+                        : value.map(({ value: metricValue, ...dimensions }) => ({
+                              dimensions,
+                              time,
+                              values: { [metric]: metricValue },
+                          })),
             ),
         }
     }
@@ -1025,12 +1052,13 @@ export class AnalyticsArchive {
                     ...discoveredKeys,
                 ])
                 const discoveredStart = sorted(discoveredKeys.map((key) => key.slice(-7)))[0]
+                const providerStart = recommendedArchiveStart(adapter, now)
                 const configuredStart = new Date(
                     materialization.start ??
                         index?.start ??
                         (discoveredStart
                             ? `${discoveredStart}-01T00:00:00.000Z`
-                            : monthStart(now).toISOString()),
+                            : (providerStart?.toISOString() ?? monthStart(now).toISOString())),
                 )
                 if (!Number.isFinite(configuredStart.valueOf())) {
                     throw new AnalyticsError(

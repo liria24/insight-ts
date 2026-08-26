@@ -1,3 +1,4 @@
+import { recommendArchiveMonths } from '../core/archive-metadata.ts'
 import type {
     AnalyticsAdapter,
     AnalyticsAdapterBundle,
@@ -95,101 +96,104 @@ export function cloudflareWebAnalytics(options: CloudflareWebAnalyticsOptions): 
     const fetcher = options.fetch ?? globalThis.fetch
     const datasetId = options.datasetId ?? 'cloudflare.web-analytics'
 
-    return {
-        dataset: {
-            archive: [
-                {
-                    dimensions: ['time'],
-                    grain: 'day',
-                    id: 'daily-traffic',
-                    metrics: ['pageViews', 'visits'],
-                },
-            ],
-            dimensions: [
-                { id: 'time', valueType: 'datetime' },
-                ...Object.keys(webDimensionFields).map((id) => ({
-                    id,
-                    valueType: 'string' as const,
-                })),
-            ],
-            domain: 'traffic',
-            id: datasetId,
-            metrics: [
-                {
-                    aggregation: 'sum',
-                    id: 'pageViews',
-                    rollup: 'additive',
-                    valueType: 'integer',
-                },
-                {
-                    aggregation: 'sum',
-                    id: 'visits',
-                    rollup: 'additive',
-                    valueType: 'integer',
-                },
-            ],
-        },
-        async query(query: ResolvedAnalyticsQuery): Promise<AnalyticsReport> {
-            validateWebQuery(query)
-            const timeField = query.dimensions.includes('time')
-                ? webTimeField(query.grain)
-                : undefined
-            const nativeLimit =
-                timeField === 'date' && !['auto', 'day'].includes(query.grain)
-                    ? MAX_GRAPHQL_ROWS
-                    : Math.min(query.limit ?? MAX_GRAPHQL_ROWS, MAX_GRAPHQL_ROWS)
-            const providerFilter = compileWebFilter(query.filters)
-            const filter = {
-                AND: [
+    return recommendArchiveMonths(
+        {
+            dataset: {
+                archive: [
                     {
-                        datetime_geq: query.range.from,
-                        datetime_lt: query.range.to,
-                        siteTag: options.siteTag,
+                        dimensions: ['time'],
+                        grain: 'day',
+                        id: 'daily-traffic',
+                        metrics: ['pageViews', 'visits'],
                     },
-                    ...(providerFilter === undefined ? [] : [providerFilter]),
                 ],
-            }
-            const body = JSON.stringify({
-                query: webGraphqlQuery(query, timeField),
-                variables: { accountTag: options.accountId, filter, limit: nativeLimit },
-            })
-            const response = await fetcher(GRAPHQL_ENDPOINT, {
-                body,
-                headers: {
-                    accept: 'application/json',
-                    authorization: `Bearer ${options.apiToken}`,
-                    'content-type': 'application/json',
-                },
-                method: 'POST',
-            })
-            const payload = await readJson(response, 'Cloudflare GraphQL')
-            if (!response.ok) {
-                throw apiError(payload, response.status, 'Cloudflare GraphQL request failed')
-            }
+                dimensions: [
+                    { id: 'time', valueType: 'datetime' },
+                    ...Object.keys(webDimensionFields).map((id) => ({
+                        id,
+                        valueType: 'string' as const,
+                    })),
+                ],
+                domain: 'traffic',
+                id: datasetId,
+                metrics: [
+                    {
+                        aggregation: 'sum',
+                        id: 'pageViews',
+                        rollup: 'additive',
+                        valueType: 'integer',
+                    },
+                    {
+                        aggregation: 'sum',
+                        id: 'visits',
+                        rollup: 'additive',
+                        valueType: 'integer',
+                    },
+                ],
+            },
+            async query(query: ResolvedAnalyticsQuery): Promise<AnalyticsReport> {
+                validateWebQuery(query)
+                const timeField = query.dimensions.includes('time')
+                    ? webTimeField(query.grain)
+                    : undefined
+                const nativeLimit =
+                    timeField === 'date' && !['auto', 'day'].includes(query.grain)
+                        ? MAX_GRAPHQL_ROWS
+                        : Math.min(query.limit ?? MAX_GRAPHQL_ROWS, MAX_GRAPHQL_ROWS)
+                const providerFilter = compileWebFilter(query.filters)
+                const filter = {
+                    AND: [
+                        {
+                            datetime_geq: query.range.from,
+                            datetime_lt: query.range.to,
+                            siteTag: options.siteTag,
+                        },
+                        ...(providerFilter === undefined ? [] : [providerFilter]),
+                    ],
+                }
+                const body = JSON.stringify({
+                    query: webGraphqlQuery(query, timeField),
+                    variables: { accountTag: options.accountId, filter, limit: nativeLimit },
+                })
+                const response = await fetcher(GRAPHQL_ENDPOINT, {
+                    body,
+                    headers: {
+                        accept: 'application/json',
+                        authorization: `Bearer ${options.apiToken}`,
+                        'content-type': 'application/json',
+                    },
+                    method: 'POST',
+                })
+                const payload = await readJson(response, 'Cloudflare GraphQL')
+                if (!response.ok) {
+                    throw apiError(payload, response.status, 'Cloudflare GraphQL request failed')
+                }
 
-            const errors = graphqlErrors(payload)
-            const rows = webRows(payload)
-            if (rows === undefined) {
-                throw apiError(
-                    payload,
-                    response.status,
-                    'Cloudflare GraphQL response contained no account data',
-                )
-            }
-            if (!rows.every((row) => isWebAnalyticsRow(row, query))) {
-                throw new CloudflareApiError(
-                    'Cloudflare Web Analytics returned malformed rows',
-                    502,
-                )
-            }
-            if (errors.length > 0 && rows.length === 0) {
-                throw apiError(payload, response.status, 'Cloudflare GraphQL query failed')
-            }
+                const errors = graphqlErrors(payload)
+                const rows = webRows(payload)
+                if (rows === undefined) {
+                    throw apiError(
+                        payload,
+                        response.status,
+                        'Cloudflare GraphQL response contained no account data',
+                    )
+                }
+                if (!rows.every((row) => isWebAnalyticsRow(row, query))) {
+                    throw new CloudflareApiError(
+                        'Cloudflare Web Analytics returned malformed rows',
+                        502,
+                    )
+                }
+                if (errors.length > 0 && rows.length === 0) {
+                    throw apiError(payload, response.status, 'Cloudflare GraphQL query failed')
+                }
 
-            return webReport(query, rows, errors, nativeLimit)
+                return webReport(query, rows, errors, nativeLimit)
+            },
+            validate: validateWebQuery,
         },
-        validate: validateWebQuery,
-    }
+        6,
+    )
 }
 
 export function cloudflareAnalyticsEngine(
@@ -319,53 +323,65 @@ function analyticsEngineAdapter(options: AnalyticsEngineReadOptions): AnalyticsA
         compileEngineNameFilter(query.filters)
     }
 
-    return {
-        dataset: {
-            archive: [
-                { dimensions: ['time'], grain: 'day', id: 'daily-events', metrics: ['events'] },
-            ],
-            dimensions: [
-                { id: 'time', valueType: 'datetime' },
-                { id: 'name', valueType: 'string' },
-            ],
-            domain: 'product',
-            id: datasetId,
-            metrics: [
-                { aggregation: 'count', id: 'events', rollup: 'additive', valueType: 'integer' },
-            ],
-        },
-        async query(query: ResolvedAnalyticsQuery): Promise<AnalyticsReport> {
-            validate(query)
-            const sql = analyticsEngineSql(options.dataset, query)
-            const response = await fetcher(
-                `${ANALYTICS_ENGINE_ENDPOINT}/${encodeURIComponent(options.accountId)}/analytics_engine/sql`,
-                {
-                    body: sql,
-                    headers: { authorization: `Bearer ${options.apiToken}` },
-                    method: 'POST',
-                },
-            )
-            const payload = await readJson(response, 'Cloudflare Analytics Engine')
-            if (!response.ok) {
-                throw apiError(payload, response.status, 'Cloudflare Analytics Engine query failed')
-            }
-            const data = record(payload)?.data
-            if (!Array.isArray(data)) {
-                throw new CloudflareApiError(
-                    'Cloudflare Analytics Engine returned malformed data',
-                    502,
+    return recommendArchiveMonths(
+        {
+            dataset: {
+                archive: [
+                    { dimensions: ['time'], grain: 'day', id: 'daily-events', metrics: ['events'] },
+                ],
+                dimensions: [
+                    { id: 'time', valueType: 'datetime' },
+                    { id: 'name', valueType: 'string' },
+                ],
+                domain: 'product',
+                id: datasetId,
+                metrics: [
+                    {
+                        aggregation: 'count',
+                        id: 'events',
+                        rollup: 'additive',
+                        valueType: 'integer',
+                    },
+                ],
+            },
+            async query(query: ResolvedAnalyticsQuery): Promise<AnalyticsReport> {
+                validate(query)
+                const sql = analyticsEngineSql(options.dataset, query)
+                const response = await fetcher(
+                    `${ANALYTICS_ENGINE_ENDPOINT}/${encodeURIComponent(options.accountId)}/analytics_engine/sql`,
+                    {
+                        body: sql,
+                        headers: { authorization: `Bearer ${options.apiToken}` },
+                        method: 'POST',
+                    },
                 )
-            }
-            if (!data.every((row) => isAnalyticsEngineRow(row, query))) {
-                throw new CloudflareApiError(
-                    'Cloudflare Analytics Engine returned malformed rows',
-                    502,
-                )
-            }
-            return analyticsEngineReport(query, data)
+                const payload = await readJson(response, 'Cloudflare Analytics Engine')
+                if (!response.ok) {
+                    throw apiError(
+                        payload,
+                        response.status,
+                        'Cloudflare Analytics Engine query failed',
+                    )
+                }
+                const data = record(payload)?.data
+                if (!Array.isArray(data)) {
+                    throw new CloudflareApiError(
+                        'Cloudflare Analytics Engine returned malformed data',
+                        502,
+                    )
+                }
+                if (!data.every((row) => isAnalyticsEngineRow(row, query))) {
+                    throw new CloudflareApiError(
+                        'Cloudflare Analytics Engine returned malformed rows',
+                        502,
+                    )
+                }
+                return analyticsEngineReport(query, data)
+            },
+            validate,
         },
-        validate,
-    }
+        3,
+    )
 }
 
 function analyticsEngineSql(dataset: string, query: ResolvedAnalyticsQuery): string {

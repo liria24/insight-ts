@@ -7,7 +7,8 @@ import {
     type H3Event,
 } from 'h3'
 
-import type { NuxtAnalyticsEventDefinitions, NuxtAnalyticsServerEvent } from './types'
+import type { NuxtAnalyticsServerEvent } from './runtime-types'
+import type { NuxtAnalyticsEventDefinitions } from './types'
 
 export interface AnalyticsEventHandlerOptions {
     deliver(events: readonly NuxtAnalyticsServerEvent[], event: H3Event): Promise<void>

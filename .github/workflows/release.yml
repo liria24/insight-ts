@@ -7,33 +7,58 @@ on:
         types: [closed]
         branches: [main]
     workflow_dispatch:
+        inputs:
+            prerelease:
+                description: 'Cut a prerelease instead of a normal release, e.g. `alpha`, `beta`, or `rc`'
+                required: false
+                default: ''
+            npm-tag:
+                description: 'npm dist-tag override'
+                required: false
+                default: ''
 
 permissions: {}
 
 jobs:
     pr:
-        if: github.event_name == 'push' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
+        if: |
+            !github.event.repository.fork
+            && (
+              (
+                github.event_name == 'push'
+                && github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
+              ) || (
+                github.event_name == 'workflow_dispatch'
+                && !startsWith(github.ref, 'refs/tags/')
+              )
+            )
         runs-on: ubuntu-latest
         permissions:
             contents: write
             pull-requests: write
         steps:
-            - uses: danielroe/uppt/pr@7bcfb5397c37202ef882363f755423130419d28a # v0.5.5
+            - uses: danielroe/uppt/pr@09882a5a0a1a20a0e802613a77ad59fcb1c1611c # v0.6.9
               with:
                   packages: packages/analytics
+                  prerelease: ${{ inputs.prerelease }}
                   token: ${{ secrets.GITHUB_TOKEN }}
 
     release:
-        if: github.event.pull_request.merged == true && startsWith(github.event.pull_request.head.ref, 'release/v') && github.event.pull_request.head.repo.full_name == github.repository
+        if: |
+            github.event_name == 'pull_request'
+            && github.event.pull_request.merged == true
+            && startsWith(github.event.pull_request.head.ref, 'release/v')
+            && github.event.pull_request.head.repo.full_name == github.repository
+            && !github.event.repository.fork
         runs-on: ubuntu-latest
         concurrency:
-            group: release
+            group: release-${{ github.event.pull_request.number }}
             cancel-in-progress: false
         permissions:
             actions: write
             contents: write
         steps:
-            - uses: danielroe/uppt/release@7bcfb5397c37202ef882363f755423130419d28a # v0.5.5
+            - uses: danielroe/uppt/release@09882a5a0a1a20a0e802613a77ad59fcb1c1611c # v0.6.9
               with:
                   packages: packages/analytics
                   token: ${{ secrets.GITHUB_TOKEN }}
@@ -41,6 +66,9 @@ jobs:
     pack:
         if: github.event_name == 'workflow_dispatch' && startsWith(github.ref, 'refs/tags/v')
         runs-on: ubuntu-latest
+        concurrency:
+            group: pack-${{ github.ref }}
+            cancel-in-progress: false
         permissions:
             contents: read
         outputs:
@@ -57,20 +85,24 @@ jobs:
                   bun-version: 1.3.14
             - run: bun ci
             - id: pack
-              uses: danielroe/uppt/pack@7bcfb5397c37202ef882363f755423130419d28a # v0.5.5
+              uses: danielroe/uppt/pack@09882a5a0a1a20a0e802613a77ad59fcb1c1611c # v0.6.9
               with:
                   checkout: false
                   install: false
                   packages: packages/analytics
 
     publish:
-        if: github.event_name == 'workflow_dispatch' && startsWith(github.ref, 'refs/tags/v') && needs.pack.outputs.files != ''
+        if: github.event_name == 'workflow_dispatch' && startsWith(github.ref, 'refs/tags/v') && needs.pack.outputs.files != '' && needs.pack.outputs.files != '[]'
         needs: pack
         runs-on: ubuntu-latest
+        concurrency:
+            group: publish-${{ github.ref }}
+            cancel-in-progress: false
         permissions:
             id-token: write
         environment: npm
         steps:
-            - uses: danielroe/uppt/publish@7bcfb5397c37202ef882363f755423130419d28a # v0.5.5
+            - uses: danielroe/uppt/publish@09882a5a0a1a20a0e802613a77ad59fcb1c1611c # v0.6.9
               with:
                   files: ${{ needs.pack.outputs.files }}
+                  npm-tag: ${{ inputs.npm-tag }}

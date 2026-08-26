@@ -52,8 +52,8 @@ See [analytics.liria.me](https://analytics.liria.me) for Nuxt, provider, archive
 
 ## Vue UI
 
-The optional `@liria24/analytics/vue` entry provides report-first KPI, series chart, and dashboard
-components backed by `vue-data-ui`:
+The optional `@liria24/analytics/vue` entry provides small report-only primitives. It never
+queries providers, caches results, or chooses a dashboard layout:
 
 ```sh
 bun add vue-data-ui jspdf
@@ -61,13 +61,13 @@ bun add vue-data-ui jspdf
 
 ```ts
 import 'vue-data-ui/style.css'
-import { AnalyticsDashboard } from '@liria24/analytics/vue'
+import { AnalyticsLineChart, AnalyticsStat } from '@liria24/analytics/vue'
 
-// <AnalyticsDashboard :report="report" />
+// <AnalyticsStat :report="report" metric="pageViews" />
+// <AnalyticsLineChart :report="report" :metrics="['pageViews', 'visits']" />
 ```
 
-The Nuxt module auto-imports `AnalyticsDashboard`, `AnalyticsKpiCard`, and `AnalyticsSeriesChart`
-when the module is enabled.
+The Nuxt module does not register UI components. Import primitives explicitly from the Vue entry.
 
 ## License
 

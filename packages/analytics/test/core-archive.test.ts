@@ -2,6 +2,7 @@ import { createStorage } from 'unstorage'
 import memoryDriver from 'unstorage/drivers/memory'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
+import { googleSearchConsole } from '../src/google-search-console.ts'
 import {
     createAnalytics,
     defineAnalyticsConfig,
@@ -513,7 +514,42 @@ describe('monthly archive', () => {
         ).rejects.toMatchObject({ code: 'ARCHIVE_CORRUPT' })
     })
 
-    it('starts omitted archive coverage at the current month and finalizes it next month', async () => {
+    it('backfills known provider coverage on first maintenance', async () => {
+        const fetcher = vi.fn<(input: RequestInfo | URL, init?: RequestInit) => Promise<Response>>(
+            async (_input: RequestInfo | URL, _init?: RequestInit) =>
+                new Response(JSON.stringify({ rows: [] }), {
+                    headers: { 'content-type': 'application/json' },
+                }),
+        )
+        const source = googleSearchConsole({
+            auth: { getAccessToken: async () => 'token' },
+            fetch: fetcher,
+            property: 'sc-domain:example.com',
+        })
+        const analytics = createAnalytics({
+            adapters: [source],
+            archive: { storage },
+            name: 'project',
+            now: () => now,
+        })
+
+        expect(await analytics.maintenance.run()).toEqual({ pruned: 0, refreshed: 17 })
+        expect(fetcher).toHaveBeenCalledTimes(17)
+        expect(
+            await storage.getItem<any>(
+                'analytics:v1:project:default:google-search-console.search-analytics:daily-search:2024-11',
+            ),
+        ).toMatchObject({
+            query: {
+                range: {
+                    from: '2024-11-15T00:00:00.000Z',
+                    to: '2024-12-01T00:00:00.000Z',
+                },
+            },
+        })
+    })
+
+    it('falls back to the current month when an adapter has no coverage metadata', async () => {
         let clock = now
         const source = archiveAdapter([pageViews])
         source.dataset.archive = [
@@ -598,7 +634,7 @@ describe('monthly archive', () => {
         expect(getItem).not.toHaveBeenCalled()
     })
 
-    it('stores one daily State observation, sums dimensions, and applies retention', async () => {
+    it('stores one daily State observation, preserves dimensions, and applies retention', async () => {
         let clock = new Date('2026-01-01T12:00:00.000Z')
         let reports = 10
         let active = 3
@@ -639,7 +675,13 @@ describe('monthly archive', () => {
             'analytics:v1:project:default:state:observations:2026-01',
         )
         expect(partition.observations).toHaveLength(1)
-        expect(partition.observations[0].values).toEqual({ reports: 12, users: 6 })
+        expect(partition.observations[0].values).toEqual({
+            reports: 12,
+            users: [
+                { status: 'active', value: 4 },
+                { status: 'banned', value: 2 },
+            ],
+        })
 
         clock = new Date('2026-01-02T12:00:00.000Z')
         reports = 15
@@ -675,7 +717,16 @@ describe('monthly archive', () => {
             { time: '2026-01-03T00:00:00.000Z', values: { reports: 20 } },
         ])
         expect(userSeries.points).toEqual([
-            { time: '2025-12-29T00:00:00.000Z', values: { users: 10 } },
+            {
+                dimensions: { status: 'active' },
+                time: '2025-12-29T00:00:00.000Z',
+                values: { users: 8 },
+            },
+            {
+                dimensions: { status: 'banned' },
+                time: '2025-12-29T00:00:00.000Z',
+                values: { users: 2 },
+            },
         ])
 
         await storage.removeItem('analytics:v1:project:default:state:observations:index')
