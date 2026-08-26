@@ -52,7 +52,7 @@
         "build": "tsdown",
         "prepack": "bun run build",
         "test": "vitest run",
-        "typecheck": "tsc --noEmit"
+        "typecheck": "vue-tsc --noEmit"
     },
     "dependencies": {
         "unstorage": "^1.17.5"
@@ -63,8 +63,9 @@
         "publint": "^0.3.24",
         "tsdown": "^0.22.14",
         "typescript": "6.0.3",
+        "unplugin-vue": "^7.2.0",
         "vitest": "^4.1.11",
-        "vue-tsc": "^3.3.10"
+        "vue-tsc": "^3.3.11"
     },
     "peerDependencies": {
         "h3": "^1.15",

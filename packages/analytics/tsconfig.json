@@ -4,5 +4,11 @@
         "rootDir": ".",
         "types": ["bun", "vitest/globals"]
     },
-    "include": ["scripts/**/*.ts", "src/**/*.ts", "test/**/*.ts", "tsdown.config.ts"]
+    "include": [
+        "scripts/**/*.ts",
+        "src/**/*.ts",
+        "src/**/*.vue",
+        "test/**/*.ts",
+        "tsdown.config.ts"
+    ]
 }

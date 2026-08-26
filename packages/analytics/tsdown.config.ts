@@ -1,4 +1,5 @@
 import { defineConfig } from 'tsdown'
+import Vue from 'unplugin-vue/rolldown'
 
 export default defineConfig({
     attw: {
@@ -19,7 +20,9 @@ export default defineConfig({
             'vue-data-ui/vue-ui-xy',
         ],
     },
-    dts: true,
+    dts: {
+        vue: true,
+    },
     entry: {
         browser: 'src/browser.ts',
         cloudflare: 'src/cloudflare.ts',
@@ -32,6 +35,7 @@ export default defineConfig({
     exports: false,
     format: ['esm'],
     platform: 'neutral',
+    plugins: [Vue({ isProduction: true })],
     publint: true,
     sourcemap: true,
 })
