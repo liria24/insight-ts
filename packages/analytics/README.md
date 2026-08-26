@@ -56,7 +56,7 @@ The optional `@liria24/analytics/vue` entry provides small report-only primitive
 queries providers, caches results, or chooses a dashboard layout:
 
 ```sh
-bun add vue-data-ui jspdf
+bun add vue vue-data-ui
 ```
 
 ```ts

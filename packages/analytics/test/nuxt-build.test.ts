@@ -7,15 +7,21 @@ import { fileURLToPath } from 'node:url'
 import { buildNuxt, loadNuxt } from 'nuxt/kit'
 import { describe, expect, it } from 'vitest'
 
-import { configureMaintenanceTask, configureR2Storage } from '../src/integrations/nuxt/nitro'
+import {
+    configureMaintenanceTask,
+    configureR2Storage,
+    requireStorageMount,
+} from '../src/integrations/nuxt/nitro'
 const fixturesDirectory = fileURLToPath(new URL('./fixtures/', import.meta.url))
 
 const scenarios = [
     'nuxt-minimal',
     'nuxt-read-only',
     'nuxt-events',
+    'nuxt-events-only',
     'nuxt-r2',
     'nuxt-existing-storage',
+    'nuxt-custom-storage',
     'nuxt-no-ui',
     'nuxt-compat5',
 ] as const
@@ -34,18 +40,28 @@ describe('Nuxt capability fixtures', () => {
                 const initialStorage =
                     scenario === 'nuxt-existing-storage'
                         ? { 'analytics:archive': { driver: 'memory' } }
-                        : {}
+                        : scenario === 'nuxt-custom-storage'
+                          ? { 'custom:archive': { driver: 'memory' } }
+                          : {}
                 const nitroConfig: Record<string, unknown> = { storage: initialStorage }
                 if (scenario === 'nuxt-r2' || scenario === 'nuxt-existing-storage') {
-                    configureMaintenanceTask(nitroConfig, 'analytics/maintenance.mjs')
                     configureR2Storage(nitroConfig, 'analytics:archive', 'ANALYTICS_ARCHIVE')
                 }
+                const hasArchive =
+                    scenario === 'nuxt-r2' ||
+                    scenario === 'nuxt-existing-storage' ||
+                    scenario === 'nuxt-custom-storage'
+                if (hasArchive) {
+                    const base =
+                        scenario === 'nuxt-custom-storage' ? 'custom:archive' : 'analytics:archive'
+                    requireStorageMount(nitroConfig, base)
+                    configureMaintenanceTask(nitroConfig, 'analytics/maintenance.mjs')
+                }
                 await buildNuxt(nuxt)
-                const hasEvents = scenario === 'nuxt-events'
-                const hasArchive = scenario === 'nuxt-r2' || scenario === 'nuxt-existing-storage'
+                const hasRelay = scenario === 'nuxt-events'
 
-                expect(await exists(join(buildDirectory, 'analytics/browser.ts'))).toBe(hasEvents)
-                expect(await exists(join(buildDirectory, 'analytics/events.mjs'))).toBe(hasEvents)
+                expect(await exists(join(buildDirectory, 'analytics/browser.ts'))).toBe(hasRelay)
+                expect(await exists(join(buildDirectory, 'analytics/events.mjs'))).toBe(hasRelay)
                 expect(await exists(join(buildDirectory, 'analytics/maintenance.mjs'))).toBe(
                     hasArchive,
                 )
@@ -60,17 +76,25 @@ describe('Nuxt capability fixtures', () => {
                     expect(server).toContain('auth?.searchConsole?.getAccessToken')
                 }
 
-                if (scenario === 'nuxt-r2' || scenario === 'nuxt-existing-storage') {
+                if (
+                    scenario === 'nuxt-r2' ||
+                    scenario === 'nuxt-existing-storage' ||
+                    scenario === 'nuxt-custom-storage'
+                ) {
                     const storage = readRecord(nitroConfig.storage)
                     const tasks = readRecord(nitroConfig.tasks)
-                    expect(storage['analytics:archive']).toEqual(
-                        scenario === 'nuxt-existing-storage'
-                            ? { driver: 'memory' }
-                            : {
-                                  binding: 'ANALYTICS_ARCHIVE',
-                                  driver: 'cloudflare-r2-binding',
-                              },
-                    )
+                    if (scenario === 'nuxt-custom-storage') {
+                        expect(storage['custom:archive']).toEqual({ driver: 'memory' })
+                    } else {
+                        expect(storage['analytics:archive']).toEqual(
+                            scenario === 'nuxt-existing-storage'
+                                ? { driver: 'memory' }
+                                : {
+                                      binding: 'ANALYTICS_ARCHIVE',
+                                      driver: 'cloudflare-r2-binding',
+                                  },
+                        )
+                    }
                     expect(tasks['analytics:maintenance']).toBeDefined()
                     expect(JSON.stringify(nitroConfig)).not.toContain('aws4fetch')
                 }
@@ -90,6 +114,34 @@ describe('Nuxt capability fixtures', () => {
             }
         }
     }, 300_000)
+
+    it.each([
+        [
+            'nuxt-archive-missing',
+            'analytics.archive requires an existing Nitro Storage mount named "analytics:archive"',
+        ],
+        ['nuxt-relay-only', 'analytics.relay requires at least one analytics.events entry'],
+    ])(
+        'rejects invalid %s capability configuration',
+        async (scenario, message) => {
+            const directory = join(fixturesDirectory, scenario)
+            const buildDirectory = join(directory, '.nuxt')
+            const outputDirectory = join(directory, '.output')
+            const nodeModulesDirectory = join(directory, 'node_modules')
+            await cleanup([buildDirectory, outputDirectory, nodeModulesDirectory])
+
+            await expect(async () => {
+                const nuxt = await loadNuxt({ cwd: directory, ready: true })
+                try {
+                    await buildNuxt(nuxt)
+                } finally {
+                    await nuxt.close()
+                }
+            }).rejects.toThrow(message)
+            await cleanup([buildDirectory, outputDirectory, nodeModulesDirectory])
+        },
+        120_000,
+    )
 })
 
 async function exists(path: string): Promise<boolean> {

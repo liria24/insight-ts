@@ -1,6 +1,6 @@
 /* eslint-disable no-await-in-loop -- partition coverage and writes are intentionally ordered */
 
-import { recommendedArchiveStart } from './archive-metadata.ts'
+import { archiveProviderMetadata, recommendedArchiveStart } from './archive-metadata.ts'
 import { AnalyticsError } from './errors.ts'
 import { resolveRange } from './query.ts'
 import type {
@@ -1052,7 +1052,11 @@ export class AnalyticsArchive {
                     ...discoveredKeys,
                 ])
                 const discoveredStart = sorted(discoveredKeys.map((key) => key.slice(-7)))[0]
+                const providerMetadata = archiveProviderMetadata(adapter)
                 const providerStart = recommendedArchiveStart(adapter, now)
+                const finalizationCutoff = providerMetadata
+                    ? new Date(resolveRange(providerMetadata.finalizationDelay, now).from)
+                    : now
                 const configuredStart = new Date(
                     materialization.start ??
                         index?.start ??
@@ -1076,13 +1080,17 @@ export class AnalyticsArchive {
                     month = nextMonth(month)
                 ) {
                     const key = this.#partitionKey(adapter.dataset.id, materialization.id, month)
-                    const end = dateMin(nextMonth(month), now)
+                    const partitionEnd = nextMonth(month)
+                    const end = dateMin(partitionEnd, now)
                     const start = dateMax(month, configuredStart)
                     if (start >= end) continue
                     if (retentionCutoff && nextMonth(month) <= retentionCutoff) continue
+                    const coverageStart =
+                        retentionCutoff && start < retentionCutoff && retentionCutoff < end
+                            ? retentionCutoff
+                            : start
 
                     const existing = await this.#options.storage.getItem<unknown>(key)
-                    const isCurrentMonth = nextMonth(month) > now
                     const matchesIdentity =
                         isArchivePartition(existing) &&
                         existing.project === this.#name &&
@@ -1093,11 +1101,10 @@ export class AnalyticsArchive {
                         ? new Date(existing.query.range.from)
                         : undefined
                     if (
-                        !isCurrentMonth &&
+                        partitionEnd < finalizationCutoff &&
                         matchesIdentity &&
                         existingFrom &&
-                        existingFrom >= start &&
-                        existingFrom < end &&
+                        existingFrom <= coverageStart &&
                         existing.query.range.to === end.toISOString()
                     ) {
                         knownKeys.add(key)

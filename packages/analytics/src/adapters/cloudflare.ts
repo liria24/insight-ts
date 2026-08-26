@@ -1,4 +1,4 @@
-import { recommendArchiveMonths } from '../core/archive-metadata.ts'
+import { withArchiveProviderMetadata } from '../core/archive-metadata.ts'
 import type {
     AnalyticsAdapter,
     AnalyticsAdapterBundle,
@@ -96,7 +96,7 @@ export function cloudflareWebAnalytics(options: CloudflareWebAnalyticsOptions): 
     const fetcher = options.fetch ?? globalThis.fetch
     const datasetId = options.datasetId ?? 'cloudflare.web-analytics'
 
-    return recommendArchiveMonths(
+    return withArchiveProviderMetadata(
         {
             dataset: {
                 archive: [
@@ -192,7 +192,7 @@ export function cloudflareWebAnalytics(options: CloudflareWebAnalyticsOptions): 
             },
             validate: validateWebQuery,
         },
-        6,
+        { finalizationDelay: '1d', initialLookbackMonths: 6 },
     )
 }
 
@@ -323,7 +323,7 @@ function analyticsEngineAdapter(options: AnalyticsEngineReadOptions): AnalyticsA
         compileEngineNameFilter(query.filters)
     }
 
-    return recommendArchiveMonths(
+    return withArchiveProviderMetadata(
         {
             dataset: {
                 archive: [
@@ -380,7 +380,7 @@ function analyticsEngineAdapter(options: AnalyticsEngineReadOptions): AnalyticsA
             },
             validate,
         },
-        3,
+        { finalizationDelay: '1d', initialLookbackMonths: 3 },
     )
 }
 

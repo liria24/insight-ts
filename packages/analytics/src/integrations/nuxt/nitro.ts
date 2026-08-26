@@ -13,6 +13,16 @@ export function configureR2Storage(nitroConfig: unknown, base: string, binding: 
     storage[base] ??= { binding, driver: 'cloudflare-r2-binding' }
 }
 
+export function requireStorageMount(nitroConfig: unknown, base: string): void {
+    const nitro = requireRecord(nitroConfig, 'Nitro config')
+    const storage = nitro.storage
+    if (!isRecord(storage) || !isRecord(storage[base])) {
+        throw new TypeError(
+            `analytics.archive requires an existing Nitro Storage mount named "${base}"`,
+        )
+    }
+}
+
 function recordAt(parent: Record<string, unknown>, key: string): Record<string, unknown> {
     const current = parent[key]
     if (current === undefined) {

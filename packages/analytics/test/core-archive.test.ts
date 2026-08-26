@@ -549,6 +549,66 @@ describe('monthly archive', () => {
         })
     })
 
+    it('refreshes delayed Search Console data until the partition finalization window closes', async () => {
+        let clock = new Date('2026-03-03T00:00:00.000Z')
+        let februaryClicks = 1
+        const fetcher = vi.fn<(input: RequestInfo | URL, init?: RequestInit) => Promise<Response>>(
+            async (_input, init) => {
+                const body = init?.body
+                if (typeof body !== 'string') throw new TypeError('expected a JSON request body')
+                return Response.json({
+                    rows: body.includes('"endDate":"2026-02-28"')
+                        ? [
+                              {
+                                  clicks: februaryClicks,
+                                  ctr: februaryClicks / 10,
+                                  impressions: 10,
+                                  keys: ['2026-02-28'],
+                                  position: 1,
+                              },
+                          ]
+                        : [],
+                })
+            },
+        )
+        const source = googleSearchConsole({
+            auth: { getAccessToken: async () => 'token' },
+            fetch: fetcher,
+            property: 'sc-domain:example.com',
+        })
+        const analytics = createAnalytics({
+            adapters: [source],
+            archive: { storage },
+            name: 'project',
+            now: () => clock,
+        })
+        const februaryKey =
+            'analytics:v1:project:default:google-search-console.search-analytics:daily-search:2026-02'
+
+        await analytics.maintenance.run()
+        expect(await storage.getItem<any>(februaryKey)).toMatchObject({
+            report: { points: [{ values: { clicks: 1 } }] },
+        })
+
+        februaryClicks = 3
+        clock = new Date('2026-03-07T00:00:00.000Z')
+        fetcher.mockClear()
+        expect(await analytics.maintenance.run()).toEqual({ pruned: 0, refreshed: 2 })
+        expect(fetcher).toHaveBeenCalledTimes(2)
+        expect(await storage.getItem<any>(februaryKey)).toMatchObject({
+            report: { points: [{ values: { clicks: 3 } }] },
+        })
+
+        februaryClicks = 5
+        clock = new Date('2026-03-09T00:00:00.000Z')
+        fetcher.mockClear()
+        expect(await analytics.maintenance.run()).toEqual({ pruned: 0, refreshed: 1 })
+        expect(fetcher).toHaveBeenCalledOnce()
+        expect(await storage.getItem<any>(februaryKey)).toMatchObject({
+            report: { points: [{ values: { clicks: 3 } }] },
+        })
+    })
+
     it('falls back to the current month when an adapter has no coverage metadata', async () => {
         let clock = now
         const source = archiveAdapter([pageViews])
