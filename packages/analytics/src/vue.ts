@@ -3,14 +3,14 @@ import { inject, provide, type InjectionKey } from 'vue'
 import type { AnalyticsEventMap, BrowserAnalytics } from './browser'
 
 export {
-    AnalyticsBreakdownTable,
-    AnalyticsLineChart,
-    AnalyticsStat,
     type AnalyticsBreakdownTableProps,
     type AnalyticsChartSeries,
     type AnalyticsLineChartProps,
     type AnalyticsStatProps,
 } from './vue-ui'
+export { default as AnalyticsBreakdownTable } from './components/AnalyticsBreakdownTable.vue'
+export { default as AnalyticsLineChart } from './components/AnalyticsLineChart.vue'
+export { default as AnalyticsStat } from './components/AnalyticsStat.vue'
 
 export const analyticsKey: InjectionKey<unknown> = Symbol('analytics')
 
