@@ -1,5 +1,5 @@
-import { existsSync } from 'node:fs'
-import { join } from 'node:path'
+import { existsSync, readdirSync, readFileSync } from 'node:fs'
+import { extname, join } from 'node:path'
 import { pathToFileURL } from 'node:url'
 
 import {
@@ -8,6 +8,7 @@ import {
     addServerImports,
     addTemplate,
     defineNuxtModule,
+    updateTemplates,
 } from 'nuxt/kit'
 import type { NuxtModule } from 'nuxt/schema'
 
@@ -64,6 +65,29 @@ const module: NuxtModule<NuxtAnalyticsModuleOptions> = defineNuxtModule<NuxtAnal
                 { from: serverRuntime.dst, name: 'useServerAnalytics' },
             ])
 
+            const styleMode = options.ui?.styles ?? 'auto'
+            if (styleMode !== false) {
+                const vueStyles = addTemplate({
+                    filename: 'analytics/vue.css',
+                    getContents: () => createVueStyleTemplate(styleMode, nuxt.options.srcDir),
+                    write: true,
+                })
+                nuxt.options.css.push(vueStyles.dst)
+                if (styleMode === 'auto') {
+                    nuxt.hook('builder:watch', async (event, path) => {
+                        if (
+                            event === 'addDir' ||
+                            event === 'unlinkDir' ||
+                            vueSourceExtensions.has(extname(path))
+                        ) {
+                            await updateTemplates({
+                                filter: (template) => template.dst === vueStyles.dst,
+                            })
+                        }
+                    })
+                }
+            }
+
             if (relayEnabled) {
                 const browserRuntime = addTemplate({
                     filename: 'analytics/browser.ts',
@@ -99,6 +123,47 @@ const module: NuxtModule<NuxtAnalyticsModuleOptions> = defineNuxtModule<NuxtAnal
 )
 
 export default module
+
+const vueSourceExtensions = new Set(['.vue', '.ts', '.tsx', '.js', '.jsx'])
+const ignoredSourceDirectories = new Set(['.git', '.nuxt', '.output', 'dist', 'node_modules'])
+const analyticsComponentPattern = /\bAnalytics(?:Stat|LineChart|BreakdownTable)\b/
+const analyticsNamespacePattern =
+    /\b(?:import|export)\s*\*\s*(?:as\s+[\w$]+\s*)?from\s*['"]@liria24\/analytics\/vue['"]/
+const analyticsDynamicImportPattern = /\bimport\s*\(\s*['"]@liria24\/analytics\/vue['"]\s*\)/
+
+export function sourceUsesAnalyticsVueComponents(source: string): boolean {
+    return (
+        analyticsComponentPattern.test(source) ||
+        analyticsNamespacePattern.test(source) ||
+        analyticsDynamicImportPattern.test(source)
+    )
+}
+
+export function directoryUsesAnalyticsVueComponents(directory: string): boolean {
+    for (const entry of readdirSync(directory, { withFileTypes: true })) {
+        if (entry.isDirectory()) {
+            if (
+                !ignoredSourceDirectories.has(entry.name) &&
+                directoryUsesAnalyticsVueComponents(join(directory, entry.name))
+            ) {
+                return true
+            }
+        } else if (
+            entry.isFile() &&
+            vueSourceExtensions.has(extname(entry.name)) &&
+            sourceUsesAnalyticsVueComponents(readFileSync(join(directory, entry.name), 'utf8'))
+        ) {
+            return true
+        }
+    }
+    return false
+}
+
+export function createVueStyleTemplate(mode: true | 'auto', sourceDirectory: string): string {
+    return mode === true || directoryUsesAnalyticsVueComponents(sourceDirectory)
+        ? "@import '@liria24/analytics/vue/style.css';\n"
+        : '/* empty */\n'
+}
 
 function createServerConfigTemplate(userConfigPath: string): string {
     const userConfigImport = existsSync(userConfigPath)

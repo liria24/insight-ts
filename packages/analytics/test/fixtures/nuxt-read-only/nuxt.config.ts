@@ -10,5 +10,6 @@ export default defineNuxtConfig({
             cloudflare: { webAnalytics: 'site-tag' },
             searchConsole: 'sc-domain:example.com',
         },
+        ui: { styles: false },
     },
 })

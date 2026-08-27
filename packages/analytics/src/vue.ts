@@ -4,9 +4,22 @@ import type { AnalyticsEventMap, BrowserAnalytics } from './browser'
 
 export {
     type AnalyticsBreakdownTableProps,
+    type AnalyticsBreakdownTableUI,
     type AnalyticsChartSeries,
+    type AnalyticsChartTooltipValue,
     type AnalyticsLineChartProps,
+    type AnalyticsLineChartUI,
     type AnalyticsStatProps,
+    type AnalyticsStatUI,
+    type AnalyticsTimeFormatContext,
+    type AnalyticsTimezone,
+    type AnalyticsUIClass,
+    type AnalyticsXAxisOptions,
+    type AnalyticsYAxisDomain,
+    type AnalyticsYAxisOptions,
+    createAnalyticsTimeFormatContext,
+    formatAnalyticsTime,
+    resolveAnalyticsTimezone,
 } from './vue-ui'
 export { default as AnalyticsBreakdownTable } from './components/AnalyticsBreakdownTable.vue'
 export { default as AnalyticsLineChart } from './components/AnalyticsLineChart.vue'

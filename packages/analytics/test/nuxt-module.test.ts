@@ -1,6 +1,14 @@
+import { mkdtemp, rm, writeFile } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+
 import { describe, expect, it } from 'vitest'
 
-import { createServerRuntimeTemplate } from '../src/integrations/nuxt/module'
+import {
+    createServerRuntimeTemplate,
+    createVueStyleTemplate,
+    sourceUsesAnalyticsVueComponents,
+} from '../src/integrations/nuxt/module'
 
 describe('Nuxt module templates', () => {
     it('serializes resource identifiers but resolves credentials at runtime', () => {
@@ -28,5 +36,51 @@ describe('Nuxt module templates', () => {
         expect(template).not.toContain('apiToken: "')
         expect(template).not.toContain('config.config')
         expect(template).not.toContain('config.getAccessToken')
+    })
+
+    it('detects component usage without treating composable-only imports as UI', () => {
+        expect(
+            sourceUsesAnalyticsVueComponents(
+                "import { AnalyticsStat as Stat } from '@liria24/analytics/vue'",
+            ),
+        ).toBe(true)
+        expect(
+            sourceUsesAnalyticsVueComponents(
+                "import * as AnalyticsUI from '@liria24/analytics/vue'",
+            ),
+        ).toBe(true)
+        expect(
+            sourceUsesAnalyticsVueComponents(
+                "import { provideAnalytics, useAnalytics } from '@liria24/analytics/vue'",
+            ),
+        ).toBe(false)
+    })
+
+    it('regenerates auto style content when component source is added or removed', async () => {
+        const directory = await mkdtemp(join(tmpdir(), 'analytics-vue-detection-'))
+        const component = join(directory, 'app.vue')
+        try {
+            await writeFile(
+                component,
+                "<script setup>import { provideAnalytics } from '@liria24/analytics/vue'</script>",
+            )
+            expect(createVueStyleTemplate('auto', directory)).toBe('/* empty */\n')
+
+            await writeFile(
+                component,
+                '<template><AnalyticsLineChart :report="report" /></template>',
+            )
+            expect(createVueStyleTemplate('auto', directory)).toContain(
+                '@liria24/analytics/vue/style.css',
+            )
+
+            await rm(component)
+            expect(createVueStyleTemplate('auto', directory)).toBe('/* empty */\n')
+            expect(createVueStyleTemplate(true, directory)).toContain(
+                '@liria24/analytics/vue/style.css',
+            )
+        } finally {
+            await rm(directory, { force: true, recursive: true })
+        }
     })
 })

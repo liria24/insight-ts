@@ -1,0 +1,134 @@
+@import 'vue-data-ui/style.css';
+
+:where(.analytics-stat, .analytics-line-chart, .analytics-breakdown-table) {
+    --analytics-text: var(--ui-text, #3f3f46);
+    --analytics-text-muted: var(--ui-text-muted, #71717a);
+    --analytics-text-highlighted: var(--ui-text-highlighted, #18181b);
+    --analytics-border: var(--ui-border, #e4e4e7);
+    --analytics-background: var(--ui-bg, #ffffff);
+    --analytics-chart-axis: var(--ui-text-muted, #71717a);
+    --analytics-chart-grid: var(--ui-border, #e4e4e7);
+    box-sizing: border-box;
+    color: var(--analytics-text);
+}
+
+:where(.analytics-stat__label, .analytics-stat__value, .analytics-stat__caption) {
+    margin: 0;
+}
+
+.analytics-stat__label,
+.analytics-stat__caption,
+.analytics-quality {
+    color: var(--analytics-text-muted);
+}
+
+.analytics-stat__value {
+    color: var(--analytics-text-highlighted);
+    font-variant-numeric: tabular-nums;
+}
+
+.analytics-line-chart__header {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 1rem;
+}
+
+.analytics-line-chart__title,
+.analytics-line-chart__tooltip-label {
+    margin: 0;
+    color: var(--analytics-text-highlighted);
+}
+
+.analytics-line-chart__canvas {
+    width: 100%;
+}
+
+.analytics-line-chart__legend,
+.analytics-line-chart__tooltip ul {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.75rem;
+    margin: 0;
+    padding: 0;
+    list-style: none;
+}
+
+.analytics-line-chart__legend-item,
+.analytics-line-chart__tooltip-value {
+    display: flex;
+    align-items: center;
+    gap: 0.375rem;
+}
+
+.analytics-line-chart__legend-indicator {
+    display: inline-block;
+    width: 0.625rem;
+    height: 0.625rem;
+    flex: none;
+    border-radius: 9999px;
+}
+
+.analytics-line-chart__tooltip {
+    min-width: 10rem;
+    padding: 0.75rem;
+    border: 1px solid var(--analytics-border);
+    border-radius: 0.5rem;
+    background: var(--analytics-background);
+    color: var(--analytics-text);
+}
+
+.analytics-line-chart__tooltip ul {
+    display: grid;
+    gap: 0.375rem;
+    margin-top: 0.5rem;
+}
+
+.analytics-line-chart__tooltip-value {
+    justify-content: space-between;
+}
+
+.analytics-line-chart__fallback {
+    margin: 0;
+    color: var(--analytics-text-muted);
+}
+
+.analytics-line-chart .vue-ui-xy,
+.analytics-line-chart .vue-ui-accordion-head,
+.analytics-line-chart .vue-ui-accordion-content {
+    background: transparent !important;
+    color: var(--analytics-text) !important;
+}
+
+.analytics-line-chart .vue-ui-xy text {
+    fill: var(--analytics-chart-axis);
+}
+
+.analytics-breakdown-table__table {
+    width: 100%;
+    border-collapse: collapse;
+}
+
+.analytics-breakdown-table__th,
+.analytics-breakdown-table__td {
+    padding: 0.625rem 0.75rem;
+    border-bottom: 1px solid var(--analytics-border);
+    text-align: left;
+}
+
+.analytics-breakdown-table__th {
+    color: var(--analytics-text-muted);
+    font-weight: 500;
+}
+
+.analytics-empty-state {
+    display: flex;
+    flex-direction: column;
+    gap: 0.25rem;
+    color: var(--analytics-text-muted);
+}
+
+.analytics-quality {
+    margin: 0.75rem 0 0;
+    font-size: 0.75rem;
+}

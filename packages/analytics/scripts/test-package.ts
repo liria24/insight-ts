@@ -75,6 +75,8 @@ import {
     AnalyticsBreakdownTable,
     AnalyticsLineChart,
     AnalyticsStat,
+    type AnalyticsLineChartProps,
+    type AnalyticsUIClass,
 } from '@liria24/analytics/vue'
 import { createSSRApp, h } from 'vue'
 import { renderToString } from 'vue/server-renderer'
@@ -89,9 +91,14 @@ const report: AnalyticsScalarReport = {
     },
     values: { visits: 12 },
 }
+const rootClass: AnalyticsUIClass = ['rounded', { highlighted: true }]
+const chartProps: AnalyticsLineChartProps = { class: rootClass, report }
+const style = await Bun.file(new URL(import.meta.resolve('@liria24/analytics/vue/style.css'))).text()
 const html = await renderToString(createSSRApp(() => h(AnalyticsStat, { metric: 'visits', report })))
 if (
     !html.includes('12') ||
+    chartProps.report !== report ||
+    !style.includes('--analytics-chart-axis') ||
     typeof AnalyticsLineChart !== 'object' ||
     typeof AnalyticsBreakdownTable !== 'object'
 ) throw new Error('A packed Vue primitive is missing')
@@ -132,6 +139,14 @@ try {
     const filename = basename(packOutput.trim())
     if (!filename.endsWith('.tgz')) throw new Error('bun pm pack did not report a tarball')
     const tarball = join(packRoot, filename)
+    const packedFiles = await run(['tar', '-tf', tarball], { cwd: packRoot })
+    if (!packedFiles.split(/\r?\n/).includes('package/dist/vue/style.css')) {
+        throw new Error('Packed Vue stylesheet is missing')
+    }
+    const vueDeclaration = await Bun.file(join(packageDirectory, 'dist', 'vue.d.ts')).text()
+    if (vueDeclaration.includes('VueUiXy')) {
+        throw new Error('Vue Data UI renderer types leaked into the public Vue declaration')
+    }
 
     for (const consumer of consumers) {
         const directory = join(packRoot, consumer.name)

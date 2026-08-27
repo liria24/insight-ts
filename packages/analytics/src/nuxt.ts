@@ -4,4 +4,5 @@ export {
     type NuxtAnalyticsEventDefinitions,
     type NuxtAnalyticsModuleOptions,
     type NuxtAnalyticsRelayOptions,
+    type NuxtAnalyticsUIOptions,
 } from './integrations/nuxt/types'

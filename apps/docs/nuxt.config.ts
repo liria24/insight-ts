@@ -9,8 +9,6 @@ export default defineNuxtConfig({
         name: 'docs',
     },
 
-    css: ['vue-data-ui/style.css'],
-
     nitro: {
         preset: 'cloudflare_module',
         compressPublicAssets: true,

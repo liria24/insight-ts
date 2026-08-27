@@ -3,10 +3,12 @@ import Vue from 'unplugin-vue/rolldown'
 
 export default defineConfig({
     attw: {
+        excludeEntrypoints: ['./vue/style.css'],
         level: 'error',
         profile: 'esm-only',
     },
     clean: true,
+    copy: [{ from: 'src/style.css', to: 'dist/vue' }],
     deps: {
         onlyImport: [
             'h3',

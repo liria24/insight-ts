@@ -13,7 +13,9 @@
         "README.md"
     ],
     "type": "module",
-    "sideEffects": false,
+    "sideEffects": [
+        "**/*.css"
+    ],
     "exports": {
         ".": {
             "types": "./dist/index.d.ts",
@@ -43,6 +45,7 @@
             "types": "./dist/vue.d.ts",
             "import": "./dist/vue.js"
         },
+        "./vue/style.css": "./dist/vue/style.css",
         "./package.json": "./package.json"
     },
     "publishConfig": {

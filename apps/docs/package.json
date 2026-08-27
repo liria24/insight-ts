@@ -7,6 +7,7 @@
         "build": "nuxt build",
         "dev": "nuxt dev",
         "generate": "nuxt generate",
+        "test": "bun test",
         "typecheck": "nuxt typecheck"
     },
     "dependencies": {

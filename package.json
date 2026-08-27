@@ -18,7 +18,7 @@
         "format:check": "oxfmt . --check",
         "lint": "oxlint .",
         "preview:package": "pkg-pr-new publish ./packages/analytics --bun --compact --previewVersion",
-        "test": "bun --filter @liria24/analytics test",
+        "test": "bun --filter @liria24/analytics test && bun --filter @liria24/analytics-docs test",
         "test:package": "bun packages/analytics/scripts/test-package.ts",
         "typecheck": "bun --filter @liria24/analytics typecheck"
     },

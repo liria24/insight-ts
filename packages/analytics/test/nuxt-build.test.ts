@@ -66,6 +66,18 @@ describe('Nuxt capability fixtures', () => {
                     hasArchive,
                 )
 
+                const vueStylesPath = join(buildDirectory, 'analytics/vue.css')
+                if (scenario === 'nuxt-read-only') {
+                    expect(await exists(vueStylesPath)).toBe(false)
+                } else {
+                    const vueStyles = await readFile(vueStylesPath, 'utf8')
+                    const shouldImportStyles =
+                        scenario === 'nuxt-minimal' || scenario === 'nuxt-compat5'
+                    expect(vueStyles.includes('@liria24/analytics/vue/style.css')).toBe(
+                        shouldImportStyles,
+                    )
+                }
+
                 if (scenario === 'nuxt-read-only') {
                     const server = await readFile(
                         join(buildDirectory, 'analytics/server.mjs'),

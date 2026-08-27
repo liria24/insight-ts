@@ -1,12 +1,54 @@
 <script setup lang="ts">
 import type { AnalyticsSeriesReport } from '@liria24/analytics'
-import { AnalyticsLineChart, AnalyticsStat } from '@liria24/analytics/vue'
+import {
+    AnalyticsLineChart,
+    AnalyticsStat,
+    resolveAnalyticsTimezone,
+    type AnalyticsLineChartUI,
+    type AnalyticsStatUI,
+} from '@liria24/analytics/vue'
+
+import { formatDemoReportTime, selectDemoReportRange } from '../utils/demo-report'
 
 const { data, status } = useLazyFetch<AnalyticsSeriesReport>('/api/demo', {
     server: false,
 })
 
+const locale = 'en-US'
+const range = ref<[number, number]>([0, 0])
 const isLoading = computed(() => status.value === 'idle' || status.value === 'pending')
+const maxRangeIndex = computed(() => Math.max((data.value?.points.length ?? 1) - 1, 0))
+const timezone = computed(() => (data.value ? resolveAnalyticsTimezone(data.value) : 'UTC'))
+const visibleReport = computed<AnalyticsSeriesReport | undefined>(() => {
+    const report = data.value
+    if (!report) return undefined
+    return selectDemoReportRange(report, range.value)
+})
+
+const statUI = {
+    caption: 'mt-1 text-xs text-muted',
+    label: 'text-xs font-medium uppercase tracking-wide text-muted',
+    value: 'mt-2 text-3xl font-semibold tabular-nums tracking-tight text-highlighted',
+} satisfies AnalyticsStatUI
+
+const chartUI = {
+    chart: 'mt-4 overflow-hidden rounded-md',
+    legend: 'flex gap-3 text-xs text-muted',
+    title: 'text-sm font-semibold text-highlighted',
+} satisfies AnalyticsLineChartUI
+
+watch(
+    data,
+    (report) => {
+        if (report) range.value = [0, Math.max(report.points.length - 1, 0)]
+    },
+    { immediate: true },
+)
+
+function rangeLabel(index: number): string {
+    const report = data.value
+    return report ? formatDemoReportTime(report, index, locale, timezone.value) : ''
+}
 </script>
 
 <template>
@@ -29,6 +71,9 @@ const isLoading = computed(() => status.value === 'idle' || status.value === 'pe
 
         <div v-if="isLoading" aria-live="polite" role="status">
             <span class="sr-only">Loading demo data…</span>
+            <div class="border-b border-default p-5 sm:p-6">
+                <USkeleton class="h-4 w-full" />
+            </div>
             <div class="grid divide-y divide-default sm:grid-cols-2 sm:divide-x sm:divide-y-0">
                 <div v-for="index in 2" :key="index" class="space-y-3 p-5 sm:p-6">
                     <USkeleton class="h-4 w-24" />
@@ -41,7 +86,7 @@ const isLoading = computed(() => status.value === 'idle' || status.value === 'pe
             </div>
         </div>
 
-        <div v-else-if="!data" class="p-4 sm:p-6">
+        <div v-else-if="!data || !visibleReport" class="p-4 sm:p-6">
             <UAlert
                 color="neutral"
                 description="Try refreshing the page or open the JSON response below."
@@ -52,92 +97,39 @@ const isLoading = computed(() => status.value === 'idle' || status.value === 'pe
         </div>
 
         <div v-else>
-            <div
-                class="demo-dashboard__stats grid divide-y divide-default sm:grid-cols-2 sm:divide-x sm:divide-y-0"
-            >
+            <div class="border-b border-default p-5 sm:p-6">
+                <div class="mb-3 flex items-center justify-between gap-4 text-xs text-muted">
+                    <time :datetime="data.points[range[0]]?.time">{{ rangeLabel(range[0]) }}</time>
+                    <time :datetime="data.points[range[1]]?.time">{{ rangeLabel(range[1]) }}</time>
+                </div>
+                <USlider
+                    v-model="range"
+                    aria-label="Visible report date range"
+                    :max="maxRangeIndex"
+                    :min="0"
+                    :step="1"
+                />
+            </div>
+
+            <div class="grid divide-y divide-default sm:grid-cols-2 sm:divide-x sm:divide-y-0">
                 <div class="p-5 sm:p-6">
-                    <AnalyticsStat :report="data" metric="pageViews" />
+                    <AnalyticsStat :report="visibleReport" metric="pageViews" :ui="statUI" />
                 </div>
                 <div class="p-5 sm:p-6">
-                    <AnalyticsStat :report="data" metric="visits" />
+                    <AnalyticsStat :report="visibleReport" metric="visits" :ui="statUI" />
                 </div>
             </div>
             <div class="border-t border-default p-5 sm:p-6">
                 <AnalyticsLineChart
-                    :report="data"
-                    :metrics="['pageViews', 'visits']"
                     :height="320"
+                    :locale="locale"
+                    :metrics="['pageViews', 'visits']"
+                    :report="visibleReport"
                     title="Traffic over time"
+                    :timezone="timezone"
+                    :ui="chartUI"
                 />
             </div>
         </div>
     </UCard>
 </template>
-
-<style scoped>
-.demo-dashboard :deep(.analytics-stat__label),
-.demo-dashboard :deep(.analytics-stat__value),
-.demo-dashboard :deep(.analytics-stat__caption),
-.demo-dashboard :deep(.analytics-line-chart__title) {
-    margin: 0;
-}
-
-.demo-dashboard :deep(.analytics-stat__label) {
-    color: var(--ui-text-muted);
-    font-size: 0.75rem;
-    font-weight: 500;
-    line-height: 1rem;
-    text-transform: uppercase;
-    letter-spacing: 0.05em;
-}
-
-.demo-dashboard :deep(.analytics-stat__value) {
-    margin-top: 0.5rem;
-    color: var(--ui-text-highlighted);
-    font-size: 1.875rem;
-    font-variant-numeric: tabular-nums;
-    font-weight: 600;
-    line-height: 2.25rem;
-    letter-spacing: -0.025em;
-}
-
-.demo-dashboard :deep(.analytics-stat__caption) {
-    margin-top: 0.25rem;
-    color: var(--ui-text-muted);
-    font-size: 0.75rem;
-    line-height: 1rem;
-}
-
-.demo-dashboard :deep(.analytics-line-chart__title) {
-    color: var(--ui-text-highlighted);
-    font-size: 0.875rem;
-    font-weight: 600;
-    line-height: 1.25rem;
-}
-
-.demo-dashboard :deep(.analytics-line-chart__canvas) {
-    margin-top: 1rem;
-    overflow: hidden;
-    border-radius: var(--radius-md);
-}
-
-/* ponytail: adapt vue-data-ui's current defaults here; move theming into the primitive if more consumers need it. */
-.demo-dashboard :deep(.vue-ui-xy),
-.demo-dashboard :deep(.vue-ui-accordion-head),
-.demo-dashboard :deep(.vue-ui-accordion-content) {
-    background: transparent !important;
-    color: var(--ui-text-muted) !important;
-}
-
-.demo-dashboard :deep(.vue-ui-xy text) {
-    fill: var(--ui-text-muted) !important;
-}
-
-.demo-dashboard :deep(.vue-ui-xy [stroke='#e1e5e8ff' i]) {
-    stroke: var(--ui-border) !important;
-}
-
-.demo-dashboard :deep(.vue-ui-xy [stroke^='#ffffff' i]) {
-    stroke: var(--ui-bg) !important;
-}
-</style>

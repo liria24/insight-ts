@@ -15,6 +15,10 @@ export interface NuxtAnalyticsRelayOptions {
     route?: string
 }
 
+export interface NuxtAnalyticsUIOptions {
+    styles?: 'auto' | boolean
+}
+
 export interface NuxtAnalyticsModuleOptions {
     archive?: boolean | NuxtAnalyticsArchiveOptions
     environment?: string
@@ -29,6 +33,7 @@ export interface NuxtAnalyticsModuleOptions {
         searchConsole?: string | { property: string }
     }
     relay?: boolean | NuxtAnalyticsRelayOptions
+    ui?: NuxtAnalyticsUIOptions
 }
 
 export type NuxtAnalyticsEventDefinitions = Readonly<
