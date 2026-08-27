@@ -20,6 +20,7 @@ const scenarios = [
     'nuxt-events',
     'nuxt-events-only',
     'nuxt-r2',
+    'nuxt-r2-custom-base',
     'nuxt-existing-storage',
     'nuxt-custom-storage',
     'nuxt-no-ui',
@@ -44,16 +45,29 @@ describe('Nuxt capability fixtures', () => {
                           ? { 'custom:archive': { driver: 'memory' } }
                           : {}
                 const nitroConfig: Record<string, unknown> = { storage: initialStorage }
-                if (scenario === 'nuxt-r2' || scenario === 'nuxt-existing-storage') {
-                    configureR2Storage(nitroConfig, 'analytics:archive', 'ANALYTICS_ARCHIVE')
+                if (
+                    scenario === 'nuxt-r2' ||
+                    scenario === 'nuxt-r2-custom-base' ||
+                    scenario === 'nuxt-existing-storage'
+                ) {
+                    configureR2Storage(
+                        nitroConfig,
+                        scenario === 'nuxt-r2-custom-base' ? 'my-archive' : 'analytics:archive',
+                        'ANALYTICS_ARCHIVE',
+                    )
                 }
                 const hasArchive =
                     scenario === 'nuxt-r2' ||
+                    scenario === 'nuxt-r2-custom-base' ||
                     scenario === 'nuxt-existing-storage' ||
                     scenario === 'nuxt-custom-storage'
                 if (hasArchive) {
                     const base =
-                        scenario === 'nuxt-custom-storage' ? 'custom:archive' : 'analytics:archive'
+                        scenario === 'nuxt-custom-storage'
+                            ? 'custom:archive'
+                            : scenario === 'nuxt-r2-custom-base'
+                              ? 'my-archive'
+                              : 'analytics:archive'
                     requireStorageMount(nitroConfig, base)
                     configureMaintenanceTask(nitroConfig, 'analytics/maintenance.mjs')
                 }
@@ -90,6 +104,7 @@ describe('Nuxt capability fixtures', () => {
 
                 if (
                     scenario === 'nuxt-r2' ||
+                    scenario === 'nuxt-r2-custom-base' ||
                     scenario === 'nuxt-existing-storage' ||
                     scenario === 'nuxt-custom-storage'
                 ) {
@@ -97,6 +112,11 @@ describe('Nuxt capability fixtures', () => {
                     const tasks = readRecord(nitroConfig.tasks)
                     if (scenario === 'nuxt-custom-storage') {
                         expect(storage['custom:archive']).toEqual({ driver: 'memory' })
+                    } else if (scenario === 'nuxt-r2-custom-base') {
+                        expect(storage['my-archive']).toEqual({
+                            binding: 'ANALYTICS_ARCHIVE',
+                            driver: 'cloudflare-r2-binding',
+                        })
                     } else {
                         expect(storage['analytics:archive']).toEqual(
                             scenario === 'nuxt-existing-storage'

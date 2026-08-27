@@ -136,6 +136,45 @@ describe('Cloudflare Web Analytics', () => {
         })
     })
 
+    it('retries transient GraphQL read failures', async () => {
+        const fetcher = vi
+            .fn<TestFetch>()
+            .mockResolvedValueOnce(
+                Response.json({}, { headers: { 'retry-after': '0' }, status: 503 }),
+            )
+            .mockResolvedValueOnce(
+                Response.json({
+                    data: {
+                        viewer: {
+                            accounts: [
+                                {
+                                    rows: [
+                                        {
+                                            avg: { sampleInterval: 1 },
+                                            count: 3,
+                                            sum: { visits: 2 },
+                                        },
+                                    ],
+                                },
+                            ],
+                        },
+                    },
+                }),
+            )
+        const adapter = cloudflareWebAnalytics({
+            accountId: 'account',
+            apiToken: 'token',
+            fetch: fetcher,
+            siteTag: 'site',
+        })
+
+        await expect(adapter.query(query())).resolves.toMatchObject({
+            kind: 'scalar',
+            values: { pageViews: 3, visits: 2 },
+        })
+        expect(fetcher).toHaveBeenCalledTimes(2)
+    })
+
     it('normalizes HTTP and GraphQL failures', async () => {
         const adapter = cloudflareWebAnalytics({
             accountId: 'account',
@@ -143,7 +182,7 @@ describe('Cloudflare Web Analytics', () => {
             fetch: vi.fn<TestFetch>(async () =>
                 Response.json(
                     { errors: [{ extensions: { code: 'rate_limited' }, message: 'Slow down' }] },
-                    { status: 429 },
+                    { headers: { 'retry-after': '0' }, status: 429 },
                 ),
             ),
             siteTag: 'site',

@@ -13,6 +13,7 @@ interface Consumer {
     dependencies: readonly string[]
     forbiddenPackages?: readonly string[]
     name: string
+    nuxtBuild?: boolean
     source: string
 }
 
@@ -57,6 +58,7 @@ if (
         dependencies: ['nuxt@4.5.2'],
         forbiddenPackages: ['vue-data-ui'],
         name: 'consumer-nuxt',
+        nuxtBuild: true,
         source: `import analyticsModule, {
     type NuxtAnalyticsModuleOptions,
 } from '@liria24/analytics/nuxt'
@@ -214,6 +216,34 @@ try {
             env: environment,
         })
         await run([process.execPath, 'run', 'verify.ts'], { cwd: directory, env: environment })
+
+        if (consumer.nuxtBuild) {
+            await Bun.write(
+                join(directory, 'nuxt.config.ts'),
+                `export default defineNuxtConfig({
+  modules: ['@liria24/analytics/nuxt'],
+  analytics: { name: 'packed-nuxt' },
+})
+`,
+            )
+            await Bun.write(
+                join(directory, 'app.vue'),
+                '<template><main>Packed Nuxt</main></template>',
+            )
+            await run([process.execPath, 'x', 'nuxt', 'build'], {
+                cwd: directory,
+                env: environment,
+            })
+            const generatedRuntime = await Bun.file(
+                join(directory, '.nuxt', 'analytics', 'server.mjs'),
+            ).text()
+            if (
+                !(await exists(join(directory, '.output', 'server', 'index.mjs'))) ||
+                !generatedRuntime.includes("from '@liria24/analytics'")
+            ) {
+                throw new Error('The packed Nuxt application did not build its runtime templates')
+            }
+        }
     }
 } finally {
     await rm(packRoot, { force: true, recursive: true })

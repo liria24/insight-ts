@@ -7,6 +7,7 @@ import { describe, expect, it } from 'vitest'
 import {
     createServerRuntimeTemplate,
     createVueStyleTemplate,
+    resolveArchiveBase,
     sourceUsesAnalyticsVueComponents,
 } from '../src/integrations/nuxt/module'
 
@@ -31,11 +32,29 @@ describe('Nuxt module templates', () => {
         expect(template).toContain('events: {"pageViewed":{"properties":{"path":"string"}}}')
         expect(template).toContain('config.auth?.searchConsole?.getAccessToken')
         expect(template).toContain('state: config.state')
+        expect(template).toContain("from '#imports'")
+        expect(template).toContain("import config from '#analytics/server-config'")
         expect(template).toContain('event?.context.cloudflare?.env?.["ANALYTICS"]')
         expect(template).toContain('eventSink')
         expect(template).not.toContain('apiToken: "')
         expect(template).not.toContain('config.config')
         expect(template).not.toContain('config.getAccessToken')
+    })
+
+    it('resolves the archive mount before applying an R2 binding', () => {
+        expect(resolveArchiveBase({ name: 'r2', providers: { cloudflare: { r2: 'R2' } } })).toBe(
+            'analytics:archive',
+        )
+        expect(resolveArchiveBase({ archive: { base: 'my-archive' }, name: 'archive' })).toBe(
+            'my-archive',
+        )
+        expect(
+            resolveArchiveBase({
+                archive: { base: 'my-archive' },
+                name: 'r2-custom',
+                providers: { cloudflare: { r2: 'R2' } },
+            }),
+        ).toBe('my-archive')
     })
 
     it('detects component usage without treating composable-only imports as UI', () => {

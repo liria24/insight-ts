@@ -1,4 +1,5 @@
 const publicUrl = 'https://analytics.liria.me'
+const cloudflareSiteTag = process.env.CLOUDFLARE_SITE_TAG
 
 export default defineNuxtConfig({
     extends: ['docus'],
@@ -7,6 +8,9 @@ export default defineNuxtConfig({
 
     analytics: {
         name: 'docs',
+        ...(cloudflareSiteTag
+            ? { providers: { cloudflare: { webAnalytics: cloudflareSiteTag } } }
+            : {}),
     },
 
     nitro: {

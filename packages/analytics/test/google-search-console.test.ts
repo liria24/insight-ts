@@ -307,6 +307,30 @@ describe('Google Search Console', () => {
         })
     })
 
+    it('retries rate-limited Search Analytics reads', async () => {
+        const fetcher = vi
+            .fn<TestFetch>()
+            .mockResolvedValueOnce(
+                Response.json({}, { headers: { 'retry-after': '0' }, status: 429 }),
+            )
+            .mockResolvedValueOnce(
+                Response.json({
+                    rows: [{ clicks: 1, ctr: 0.5, impressions: 2, position: 3 }],
+                }),
+            )
+        const adapter = googleSearchConsole({
+            auth: { getAccessToken: async () => 'token' },
+            fetch: fetcher,
+            property: 'sc-domain:example.com',
+        })
+
+        await expect(adapter.query(query())).resolves.toMatchObject({
+            kind: 'scalar',
+            values: { clicks: 1, impressions: 2 },
+        })
+        expect(fetcher).toHaveBeenCalledTimes(2)
+    })
+
     it('rejects malformed provider rows', async () => {
         const adapter = googleSearchConsole({
             auth: { getAccessToken: async () => 'token' },

@@ -11,6 +11,7 @@ import type {
     AnalyticsReportMeta,
     ResolvedAnalyticsQuery,
 } from '../core/types.ts'
+import { fetchWithRetry } from './fetch-with-retry.ts'
 
 const GRAPHQL_ENDPOINT = 'https://api.cloudflare.com/client/v4/graphql'
 const ANALYTICS_ENGINE_ENDPOINT = 'https://api.cloudflare.com/client/v4/accounts'
@@ -155,7 +156,7 @@ export function cloudflareWebAnalytics(options: CloudflareWebAnalyticsOptions): 
                     query: webGraphqlQuery(query, timeField),
                     variables: { accountTag: options.accountId, filter, limit: nativeLimit },
                 })
-                const response = await fetcher(GRAPHQL_ENDPOINT, {
+                const response = await fetchWithRetry(fetcher, GRAPHQL_ENDPOINT, {
                     body,
                     headers: {
                         accept: 'application/json',
@@ -347,7 +348,8 @@ function analyticsEngineAdapter(options: AnalyticsEngineReadOptions): AnalyticsA
             async query(query: ResolvedAnalyticsQuery): Promise<AnalyticsReport> {
                 validate(query)
                 const sql = analyticsEngineSql(options.dataset, query)
-                const response = await fetcher(
+                const response = await fetchWithRetry(
+                    fetcher,
                     `${ANALYTICS_ENGINE_ENDPOINT}/${encodeURIComponent(options.accountId)}/analytics_engine/sql`,
                     {
                         body: sql,

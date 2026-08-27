@@ -6,6 +6,7 @@ import {
     addImports,
     addServerHandler,
     addServerImports,
+    addServerTemplate,
     addTemplate,
     defineNuxtModule,
     updateTemplates,
@@ -29,10 +30,7 @@ const module: NuxtModule<NuxtAnalyticsModuleOptions> = defineNuxtModule<NuxtAnal
             const r2 = options.providers?.cloudflare?.r2
             const r2Binding = typeof r2 === 'string' ? r2 : r2?.binding
             const archiveEnabled = Boolean(options.archive || r2Binding)
-            const archiveBase =
-                r2Binding || typeof options.archive !== 'object'
-                    ? 'analytics:archive'
-                    : (options.archive.base ?? 'analytics:archive')
+            const archiveBase = resolveArchiveBase(options)
             if (archiveBase.length === 0) {
                 throw new TypeError('analytics.archive.base cannot be empty')
             }
@@ -47,22 +45,27 @@ const module: NuxtModule<NuxtAnalyticsModuleOptions> = defineNuxtModule<NuxtAnal
                 route: relayOptions.route ?? '/api/_analytics/events',
             }
             const userConfigPath = join(nuxt.options.srcDir, 'server', 'analytics.config.ts')
-            const serverConfig = addTemplate({
+            const getServerConfig = () => createServerConfigTemplate(userConfigPath)
+            addTemplate({
                 filename: 'analytics/server-config.mjs',
-                getContents: () => createServerConfigTemplate(userConfigPath),
+                getContents: getServerConfig,
                 write: true,
             })
-            nuxt.options.alias['#analytics/server-config'] = serverConfig.dst
+            addServerTemplate({
+                filename: '#analytics/server-config',
+                getContents: getServerConfig,
+            })
 
-            const serverRuntime = addTemplate({
+            const getServerRuntime = () => createServerRuntimeTemplate(options)
+            addTemplate({
                 filename: 'analytics/server.mjs',
-                getContents: () => createServerRuntimeTemplate(options),
+                getContents: getServerRuntime,
                 write: true,
             })
-            nuxt.options.alias['#analytics/server'] = serverRuntime.dst
+            addServerTemplate({ filename: '#analytics/server', getContents: getServerRuntime })
             addServerImports([
-                { from: serverRuntime.dst, name: 'deliverEvents' },
-                { from: serverRuntime.dst, name: 'useServerAnalytics' },
+                { from: '#analytics/server', name: 'deliverEvents' },
+                { from: '#analytics/server', name: 'useServerAnalytics' },
             ])
 
             const styleMode = options.ui?.styles ?? 'auto'
@@ -112,7 +115,7 @@ const module: NuxtModule<NuxtAnalyticsModuleOptions> = defineNuxtModule<NuxtAnal
                 })
                 nuxt.hook('nitro:config', (nitroConfig) => {
                     if (r2Binding) {
-                        configureR2Storage(nitroConfig, 'analytics:archive', r2Binding)
+                        configureR2Storage(nitroConfig, archiveBase, r2Binding)
                     }
                     requireStorageMount(nitroConfig, archiveBase)
                     configureMaintenanceTask(nitroConfig, maintenance.dst)
@@ -175,15 +178,18 @@ export default { ...config, adapters: config.adapters || [] }
 `
 }
 
+export function resolveArchiveBase(options: NuxtAnalyticsModuleOptions): string {
+    return typeof options.archive === 'object'
+        ? (options.archive.base ?? 'analytics:archive')
+        : 'analytics:archive'
+}
+
 export function createServerRuntimeTemplate(options: NuxtAnalyticsModuleOptions): string {
     const archive = typeof options.archive === 'object' ? options.archive : {}
     const r2 = options.providers?.cloudflare?.r2
     const r2Binding = typeof r2 === 'string' ? r2 : r2?.binding
     const archiveEnabled = Boolean(options.archive || r2Binding)
-    const archiveBase =
-        r2Binding || typeof options.archive !== 'object'
-            ? 'analytics:archive'
-            : (options.archive.base ?? 'analytics:archive')
+    const archiveBase = resolveArchiveBase(options)
     const archiveExpression = archiveEnabled
         ? `{ storage: useStorage(${JSON.stringify(archiveBase)}), ${
               archive.retention ? `retention: ${JSON.stringify(archive.retention)}` : ''
@@ -203,6 +209,7 @@ export function createServerRuntimeTemplate(options: NuxtAnalyticsModuleOptions)
     return `import { createAnalytics } from '@liria24/analytics'
 import { cloudflareAnalyticsEngine, cloudflareWebAnalytics } from '@liria24/analytics/cloudflare'
 import { googleSearchConsole } from '@liria24/analytics/google-search-console'
+import { useRuntimeConfig, useStorage } from '#imports'
 import config from '#analytics/server-config'
 
 let analytics

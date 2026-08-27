@@ -7,6 +7,7 @@ import type {
     AnalyticsReportMeta,
     ResolvedAnalyticsQuery,
 } from '../core/types.ts'
+import { fetchWithRetry } from './fetch-with-retry.ts'
 
 const SEARCH_ANALYTICS_ENDPOINT = 'https://www.googleapis.com/webmasters/v3/sites'
 const PAGE_SIZE = 25_000
@@ -202,7 +203,8 @@ export function googleSearchConsole(options: GoogleSearchConsoleOptions): Analyt
                     }
                     // Pagination is sequential because the next offset depends on this page's row count.
                     // eslint-disable-next-line no-await-in-loop
-                    const response = await fetcher(
+                    const response = await fetchWithRetry(
+                        fetcher,
                         `${SEARCH_ANALYTICS_ENDPOINT}/${encodeURIComponent(options.property)}/searchAnalytics/query`,
                         {
                             body: JSON.stringify(body),
