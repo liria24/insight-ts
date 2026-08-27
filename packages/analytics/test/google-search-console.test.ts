@@ -1,8 +1,15 @@
 import { describe, expect, it, vi } from 'vitest'
 
 import type { ResolvedAnalyticsQuery } from '../src/core/types.ts'
+import {
+    GoogleSearchConsoleApiError,
+    googleSearchConsole as googleSearchConsoleProvider,
+} from '../src/google-search-console.ts'
 
 type TestFetch = (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>
+function googleSearchConsole(options: Parameters<typeof googleSearchConsoleProvider>[0]) {
+    return googleSearchConsoleProvider(options).sources[0]!
+}
 
 function bodyText(init: RequestInit | undefined): string {
     if (typeof init?.body !== 'string') throw new TypeError('Expected a string request body')
@@ -13,8 +20,6 @@ function requestUrl(input: RequestInfo | URL): string {
     if (typeof input === 'string') return input
     return input instanceof URL ? input.href : input.url
 }
-import { GoogleSearchConsoleApiError, googleSearchConsole } from '../src/google-search-console.ts'
-
 function query(overrides: Partial<ResolvedAnalyticsQuery> = {}): ResolvedAnalyticsQuery {
     return {
         dimensions: [],
@@ -28,6 +33,21 @@ function query(overrides: Partial<ResolvedAnalyticsQuery> = {}): ResolvedAnalyti
 }
 
 describe('Google Search Console', () => {
+    it('returns a Provider and reports a missing token callback by code', async () => {
+        const provider = googleSearchConsoleProvider({
+            auth: {},
+            property: 'sc-domain:example.com',
+        })
+
+        expect(provider).toMatchObject({
+            id: 'google-search-console',
+            sources: [{ id: 'google-search-console.search-analytics' }],
+        })
+        await expect(provider.sources[0]?.query(query())).rejects.toMatchObject({
+            code: 'CONFIGURATION_MISSING',
+        })
+    })
+
     it('gets one access token and paginates in 25,000 row pages', async () => {
         const getAccessToken = vi.fn<() => Promise<string>>(async () => 'access-token')
         const firstPage = Array.from({ length: 25_000 }, () => ({

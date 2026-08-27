@@ -1,52 +1,23 @@
-import { AnalyticsError } from './errors.ts'
+import { AnalyticsError } from './errors'
 import type {
-    AnalyticsAbsoluteRange,
-    AnalyticsAdapter,
-    AnalyticsDatasetDescriptor,
     AnalyticsFilter,
+    AnalyticsInternalSource,
+    AnalyticsNormalizedSourceDescriptor,
     AnalyticsQuery,
+    AnalyticsRange,
     ResolvedAnalyticsQuery,
-} from './types.ts'
+} from './types'
 
-const durationPattern = /^(\d+)([hdwmy])$/
-const durationMilliseconds = {
-    d: 86_400_000,
-    h: 3_600_000,
-    m: 2_592_000_000,
-    w: 604_800_000,
-    y: 31_536_000_000,
-} as const
-
-function isDurationUnit(value: string | undefined): value is keyof typeof durationMilliseconds {
-    return value === 'd' || value === 'h' || value === 'm' || value === 'w' || value === 'y'
-}
-
-export function resolveRange(range: AnalyticsQuery['range'], now: Date): AnalyticsAbsoluteRange {
-    if (typeof range !== 'string') {
-        const from = new Date(range.from)
-        const to = new Date(range.to)
-        if (!Number.isFinite(from.valueOf()) || !Number.isFinite(to.valueOf()) || from >= to) {
-            throw new AnalyticsError(
-                'INVALID_QUERY',
-                'Query range must have valid from and to dates',
-            )
-        }
-        return { from: from.toISOString(), to: to.toISOString() }
+export function normalizeRange(range: AnalyticsRange): AnalyticsRange {
+    const from = new Date(range.from)
+    const to = new Date(range.to)
+    if (!Number.isFinite(from.valueOf()) || !Number.isFinite(to.valueOf()) || from >= to) {
+        throw new AnalyticsError(
+            'INVALID_QUERY',
+            'Query range must contain valid from and to timestamps with from before to',
+        )
     }
-
-    const match = durationPattern.exec(range)
-    if (!match) {
-        throw new AnalyticsError('INVALID_QUERY', `Invalid relative range: ${range}`)
-    }
-    const amount = Number(match[1])
-    const unit = match[2]
-    if (amount <= 0 || !isDurationUnit(unit)) {
-        throw new AnalyticsError('INVALID_QUERY', 'Query range must be greater than zero')
-    }
-    return {
-        from: new Date(now.valueOf() - amount * durationMilliseconds[unit]).toISOString(),
-        to: now.toISOString(),
-    }
+    return { from: from.toISOString(), to: to.toISOString() }
 }
 
 function filterDimensions(filter: AnalyticsFilter): string[] {
@@ -56,9 +27,9 @@ function filterDimensions(filter: AnalyticsFilter): string[] {
     return filters.flatMap(filterDimensions)
 }
 
-function supports(dataset: AnalyticsDatasetDescriptor, query: AnalyticsQuery): boolean {
-    const metrics = new Set(dataset.metrics.map(({ id }) => id))
-    const dimensions = new Set(dataset.dimensions.map(({ id }) => id))
+function supports(source: AnalyticsNormalizedSourceDescriptor, query: AnalyticsQuery): boolean {
+    const metrics = new Set(source.metrics.map(({ id }) => id))
+    const dimensions = new Set(source.dimensions.map(({ id }) => id))
     return (
         query.metrics.every((metric) => metrics.has(metric)) &&
         [
@@ -68,15 +39,15 @@ function supports(dataset: AnalyticsDatasetDescriptor, query: AnalyticsQuery): b
     )
 }
 
-function validateSchema(dataset: AnalyticsDatasetDescriptor, query: AnalyticsQuery): void {
-    const metrics = new Set(dataset.metrics.map(({ id }) => id))
-    const dimensions = new Set(dataset.dimensions.map(({ id }) => id))
+function validateSchema(source: AnalyticsNormalizedSourceDescriptor, query: AnalyticsQuery): void {
+    const metrics = new Set(source.metrics.map(({ id }) => id))
+    const dimensions = new Set(source.dimensions.map(({ id }) => id))
 
     for (const metric of query.metrics) {
         if (!metrics.has(metric)) {
             throw new AnalyticsError(
                 'UNSUPPORTED_METRIC',
-                `Dataset "${dataset.id}" does not support metric "${metric}"`,
+                `Source "${source.id}" does not support metric "${metric}"`,
             )
         }
     }
@@ -87,32 +58,32 @@ function validateSchema(dataset: AnalyticsDatasetDescriptor, query: AnalyticsQue
         if (!dimensions.has(dimension)) {
             throw new AnalyticsError(
                 'UNSUPPORTED_DIMENSION',
-                `Dataset "${dataset.id}" does not support dimension "${dimension}"`,
+                `Source "${source.id}" does not support dimension "${dimension}"`,
             )
         }
     }
 }
 
-export function resolveAdapter(
-    adapters: readonly AnalyticsAdapter[],
+export function resolveSource(
+    sources: readonly AnalyticsInternalSource[],
     query: AnalyticsQuery,
-    defaultSources: Readonly<Record<string, string>>,
-): AnalyticsAdapter {
+    defaults: Readonly<Record<string, string>>,
+): AnalyticsInternalSource {
     if (query.source) {
-        const adapter = adapters.find(({ dataset }) => dataset.id === query.source)
-        if (!adapter) {
+        const source = sources.find(({ source: descriptor }) => descriptor.id === query.source)
+        if (!source) {
             throw new AnalyticsError(
                 'SOURCE_NOT_FOUND',
                 `Unknown analytics source: ${query.source}`,
             )
         }
-        validateSchema(adapter.dataset, query)
-        return adapter
+        validateSchema(source.source, query)
+        return source
     }
 
-    const candidates = adapters.filter(({ dataset }) => supports(dataset, query))
+    const candidates = sources.filter(({ source }) => supports(source, query))
     const defaultCandidates = candidates.filter(
-        ({ dataset }) => defaultSources[dataset.domain] === dataset.id,
+        ({ source }) => defaults[source.domain] === source.id,
     )
     const selected = defaultCandidates.length === 1 ? defaultCandidates[0] : candidates[0]
     if (candidates.length === 0 || !selected) {
@@ -122,37 +93,33 @@ export function resolveAdapter(
         throw new AnalyticsError(
             'SOURCE_AMBIGUOUS',
             `Query matches multiple analytics sources: ${candidates
-                .map(({ dataset }) => dataset.id)
+                .map(({ source }) => source.id)
                 .join(', ')}`,
         )
     }
-    validateSchema(selected.dataset, query)
+    validateSchema(selected.source, query)
     return selected
 }
 
-export function validateQuery(query: AnalyticsQuery, now: Date): void {
+export function validateQuery(query: AnalyticsQuery): void {
     if (query.metrics.length === 0) {
         throw new AnalyticsError('INVALID_QUERY', 'Query must request at least one metric')
     }
     if (query.limit !== undefined && (!Number.isInteger(query.limit) || query.limit <= 0)) {
         throw new AnalyticsError('INVALID_QUERY', 'Query limit must be a positive integer')
     }
-    resolveRange(query.range, now)
+    normalizeRange(query.range)
 }
 
-export function resolveQuery(
-    query: AnalyticsQuery,
-    source: string,
-    now: Date,
-): ResolvedAnalyticsQuery {
-    validateQuery(query, now)
+export function resolveQuery(query: AnalyticsQuery, source: string): ResolvedAnalyticsQuery {
+    validateQuery(query)
     return {
         ...(query.filters ? { filters: query.filters } : {}),
         ...(query.limit === undefined ? {} : { limit: query.limit }),
         dimensions: query.dimensions ?? [],
         grain: query.grain ?? 'auto',
         metrics: query.metrics,
-        range: resolveRange(query.range, now),
+        range: normalizeRange(query.range),
         source,
         timezone: query.timezone ?? 'UTC',
     }

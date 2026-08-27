@@ -1,12 +1,12 @@
 /* eslint-disable no-await-in-loop -- partition coverage and writes are intentionally ordered */
 
-import { archiveProviderMetadata, recommendedArchiveStart } from './archive-metadata.ts'
 import { AnalyticsError } from './errors.ts'
-import { resolveRange } from './query.ts'
+import { normalizeRange } from './query.ts'
 import type {
-    AnalyticsAdapter,
     AnalyticsArchiveMaterialization,
     AnalyticsArchiveOptions,
+    AnalyticsDuration,
+    AnalyticsInternalSource,
     AnalyticsMaintenanceResult,
     AnalyticsMetricDescriptor,
     AnalyticsMetricValues,
@@ -140,8 +140,24 @@ function dateMin(left: Date, right: Date): Date {
     return left < right ? left : right
 }
 
-function metricMap(adapter: AnalyticsAdapter): Map<string, AnalyticsMetricDescriptor> {
-    return new Map(adapter.dataset.metrics.map((metric) => [metric.id, metric]))
+function durationStart(duration: AnalyticsDuration, now: Date): Date {
+    const match = /^(\d+)([hdwmy])$/.exec(duration)
+    const amount = Number(match?.[1])
+    const unit = match?.[2]
+    if (!Number.isInteger(amount) || amount <= 0 || !unit) {
+        throw new AnalyticsError('INVALID_QUERY', `Invalid archive duration: ${duration}`)
+    }
+    const start = new Date(now)
+    if (unit === 'h') start.setUTCHours(start.getUTCHours() - amount)
+    else if (unit === 'd') start.setUTCDate(start.getUTCDate() - amount)
+    else if (unit === 'w') start.setUTCDate(start.getUTCDate() - amount * 7)
+    else if (unit === 'm') start.setUTCMonth(start.getUTCMonth() - amount)
+    else start.setUTCFullYear(start.getUTCFullYear() - amount)
+    return start
+}
+
+function metricMap(source: AnalyticsInternalSource): Map<string, AnalyticsMetricDescriptor> {
+    return new Map(source.source.metrics.map((metric) => [metric.id, metric]))
 }
 
 function expandMetrics(
@@ -175,7 +191,7 @@ function canRollup(
 }
 
 function findMaterialization(
-    adapter: AnalyticsAdapter,
+    adapter: AnalyticsInternalSource,
     query: ResolvedAnalyticsQuery,
 ): AnalyticsArchiveMaterialization | undefined {
     if (query.filters || query.limit || query.timezone !== 'UTC') return undefined
@@ -184,7 +200,7 @@ function findMaterialization(
     if (!canRollup(query.metrics, descriptors)) return undefined
 
     const grainOrder = ['minute', 'hour', 'day', 'week', 'month', 'year'] as const
-    return adapter.dataset.archive?.find((materialization) => {
+    return adapter.source.archive?.materializations.find((materialization) => {
         const available = expandMetrics(materialization.metrics, descriptors)
         const materializedDimensions = materialization.dimensions ?? []
         const extraDimensions = materializedDimensions.filter(
@@ -194,7 +210,7 @@ function findMaterialization(
             expanded.every((metric) => available.includes(metric)) &&
             query.dimensions.every((dimension) => materializedDimensions.includes(dimension)) &&
             extraDimensions.every((dimension) => {
-                const valueType = adapter.dataset.dimensions.find(
+                const valueType = adapter.source.dimensions.find(
                     ({ id }) => id === dimension,
                 )?.valueType
                 return valueType === 'date' || valueType === 'datetime'
@@ -351,7 +367,7 @@ function mergeFreshness(
 
 function mergeReports(
     reports: readonly AnalyticsReport[],
-    adapter: AnalyticsAdapter,
+    adapter: AnalyticsInternalSource,
     query: ResolvedAnalyticsQuery,
     queriedAt: string,
     imported: boolean,
@@ -393,8 +409,7 @@ function mergeReports(
     const temporalDimension =
         query.dimensions.length === 1 &&
         ['date', 'datetime'].includes(
-            adapter.dataset.dimensions.find(({ id }) => id === query.dimensions[0])?.valueType ??
-                '',
+            adapter.source.dimensions.find(({ id }) => id === query.dimensions[0])?.valueType ?? '',
         )
             ? query.dimensions[0]
             : undefined
@@ -429,7 +444,7 @@ function mergeReports(
             const dimensions = Object.fromEntries(
                 query.dimensions.map((dimension) => {
                     const value = row.dimensions[dimension] ?? null
-                    const valueType = adapter.dataset.dimensions.find(
+                    const valueType = adapter.source.dimensions.find(
                         ({ id }) => id === dimension,
                     )?.valueType
                     return [
@@ -830,7 +845,7 @@ export class AnalyticsArchive {
         keys.add(key)
         let pruned = 0
         if (this.#options.retention) {
-            const cutoff = new Date(resolveRange(this.#options.retention, now).from)
+            const cutoff = durationStart(this.#options.retention, now)
             for (const partitionKey of keys) {
                 const partition = await this.#readState(partitionKey)
                 if (!partition) continue
@@ -872,7 +887,7 @@ export class AnalyticsArchive {
             )
         }
         const now = this.#now()
-        const range = resolveRange(query.range, now)
+        const range = normalizeRange(query.range)
         const from = new Date(range.from)
         const to = new Date(range.to)
         const observations: StateObservation[] = []
@@ -917,7 +932,7 @@ export class AnalyticsArchive {
     }
 
     async query(
-        adapter: AnalyticsAdapter,
+        adapter: AnalyticsInternalSource,
         query: ResolvedAnalyticsQuery,
     ): Promise<AnalyticsReport> {
         const materialization = findMaterialization(adapter, query)
@@ -940,7 +955,7 @@ export class AnalyticsArchive {
             }
         }
         const temporalDimensions = (materialization.dimensions ?? []).filter((dimension) => {
-            const valueType = adapter.dataset.dimensions.find(
+            const valueType = adapter.source.dimensions.find(
                 ({ id }) => id === dimension,
             )?.valueType
             return valueType === 'date' || valueType === 'datetime'
@@ -952,8 +967,8 @@ export class AnalyticsArchive {
             const requestedFrom = dateMax(from, month)
             const requestedTo = dateMin(to, nextMonth(month))
             const partition = await this.#read(
-                this.#partitionKey(adapter.dataset.id, materialization.id, month),
-                adapter.dataset.id,
+                this.#partitionKey(adapter.source.id, materialization.id, month),
+                adapter.source.id,
                 materialization.id,
             )
             if (!partition) {
@@ -1025,16 +1040,18 @@ export class AnalyticsArchive {
         )
     }
 
-    async maintain(adapters: readonly AnalyticsAdapter[]): Promise<AnalyticsMaintenanceResult> {
+    async maintain(
+        sources: readonly AnalyticsInternalSource[],
+    ): Promise<AnalyticsMaintenanceResult> {
         const now = this.#now()
         let pruned = 0
         let refreshed = 0
         const warnings: AnalyticsWarning[] = []
 
-        for (const adapter of adapters) {
+        for (const adapter of sources) {
             const descriptors = metricMap(adapter)
-            for (const materialization of adapter.dataset.archive ?? []) {
-                const baseKey = this.#baseKey(adapter.dataset.id, materialization.id)
+            for (const materialization of adapter.source.archive?.materializations ?? []) {
+                const baseKey = this.#baseKey(adapter.source.id, materialization.id)
                 const indexKey = `${baseKey}:index`
                 const isMonthlyPartitionKey = (key: string) =>
                     key.startsWith(`${baseKey}:`) &&
@@ -1052,10 +1069,11 @@ export class AnalyticsArchive {
                     ...discoveredKeys,
                 ])
                 const discoveredStart = sorted(discoveredKeys.map((key) => key.slice(-7)))[0]
-                const providerMetadata = archiveProviderMetadata(adapter)
-                const providerStart = recommendedArchiveStart(adapter, now)
-                const finalizationCutoff = providerMetadata
-                    ? new Date(resolveRange(providerMetadata.finalizationDelay, now).from)
+                const providerStart = adapter.source.archive?.initialLookback
+                    ? durationStart(adapter.source.archive.initialLookback, now)
+                    : undefined
+                const finalizationCutoff = adapter.source.archive?.finalizationDelay
+                    ? durationStart(adapter.source.archive.finalizationDelay, now)
                     : now
                 const configuredStart = new Date(
                     materialization.start ??
@@ -1071,7 +1089,7 @@ export class AnalyticsArchive {
                     )
                 }
                 const retentionCutoff = this.#options.retention
-                    ? new Date(resolveRange(this.#options.retention, now).from)
+                    ? durationStart(this.#options.retention, now)
                     : undefined
 
                 for (
@@ -1079,7 +1097,7 @@ export class AnalyticsArchive {
                     month <= monthStart(now);
                     month = nextMonth(month)
                 ) {
-                    const key = this.#partitionKey(adapter.dataset.id, materialization.id, month)
+                    const key = this.#partitionKey(adapter.source.id, materialization.id, month)
                     const partitionEnd = nextMonth(month)
                     const end = dateMin(partitionEnd, now)
                     const start = dateMax(month, configuredStart)
@@ -1095,7 +1113,7 @@ export class AnalyticsArchive {
                         isArchivePartition(existing) &&
                         existing.project === this.#name &&
                         existing.environment === this.#environment &&
-                        existing.source === adapter.dataset.id &&
+                        existing.source === adapter.source.id &&
                         existing.materialization === materialization.id
                     const existingFrom = matchesIdentity
                         ? new Date(existing.query.range.from)
@@ -1116,7 +1134,7 @@ export class AnalyticsArchive {
                         grain: materialization.grain ?? 'day',
                         metrics: expandMetrics(materialization.metrics, descriptors),
                         range: { from: start.toISOString(), to: end.toISOString() },
-                        source: adapter.dataset.id,
+                        source: adapter.source.id,
                         timezone: 'UTC',
                     }
                     adapter.validate?.(query)
@@ -1129,7 +1147,7 @@ export class AnalyticsArchive {
                         query,
                         report,
                         schemaVersion,
-                        source: adapter.dataset.id,
+                        source: adapter.source.id,
                     }
                     await this.#options.storage.setItem(key, partition)
                     knownKeys.add(key)
@@ -1154,13 +1172,13 @@ export class AnalyticsArchive {
                         ) {
                             const partition = await this.#read(
                                 key,
-                                adapter.dataset.id,
+                                adapter.source.id,
                                 materialization.id,
                             )
                             if (!partition) continue
                             const temporalDimensions = (materialization.dimensions ?? []).filter(
                                 (dimension) => {
-                                    const valueType = adapter.dataset.dimensions.find(
+                                    const valueType = adapter.source.dimensions.find(
                                         ({ id: datasetDimension }) =>
                                             datasetDimension === dimension,
                                     )?.valueType

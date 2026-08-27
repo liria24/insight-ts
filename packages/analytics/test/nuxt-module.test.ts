@@ -7,6 +7,7 @@ import { describe, expect, it } from 'vitest'
 import {
     createServerRuntimeTemplate,
     createVueStyleTemplate,
+    missingProviderWarnings,
     resolveArchiveBase,
     sourceUsesAnalyticsVueComponents,
 } from '../src/integrations/nuxt/module'
@@ -21,7 +22,7 @@ describe('Nuxt module templates', () => {
                     analyticsEngine: 'ANALYTICS',
                     webAnalytics: 'site-tag',
                 },
-                searchConsole: 'sc-domain:example.com',
+                googleSearchConsole: 'sc-domain:example.com',
             },
         })
 
@@ -30,12 +31,12 @@ describe('Nuxt module templates', () => {
         expect(template).toContain('siteTag: "site-tag"')
         expect(template).toContain('property: "sc-domain:example.com"')
         expect(template).toContain('events: {"pageViewed":{"properties":{"path":"string"}}}')
-        expect(template).toContain('config.auth?.searchConsole?.getAccessToken')
+        expect(template).toContain('config.providers?.googleSearchConsole?.getAccessToken')
         expect(template).toContain('state: config.state')
         expect(template).toContain("from '#imports'")
         expect(template).toContain("import config from '#analytics/server-config'")
         expect(template).toContain('event?.context.cloudflare?.env?.["ANALYTICS"]')
-        expect(template).toContain('eventSink')
+        expect(template).toContain('eventDestination')
         expect(template).not.toContain('apiToken: "')
         expect(template).not.toContain('config.config')
         expect(template).not.toContain('config.getAccessToken')
@@ -55,6 +56,46 @@ describe('Nuxt module templates', () => {
         })
 
         expect(template).toContain('siteTag: "site-tag", host: "analytics.liria.me"')
+    })
+
+    it('resolves request-scoped custom Providers without caching the client', () => {
+        const template = createServerRuntimeTemplate({ name: 'website' })
+
+        expect(template).toContain("typeof config.customProviders === 'function'")
+        expect(template).toContain('await config.customProviders({ event })')
+        expect(template).toContain('return createServerAnalytics(event)')
+    })
+
+    it('omits provider imports and warns when configured identifiers are missing', () => {
+        const options = {
+            name: 'website',
+            providers: {
+                cloudflare: {
+                    analyticsEngine: {},
+                    r2: {},
+                    webAnalytics: {},
+                },
+                googleSearchConsole: {},
+            },
+        }
+        const template = createServerRuntimeTemplate(options)
+
+        expect(missingProviderWarnings(options)).toHaveLength(4)
+        expect(template).not.toContain('@liria24/analytics/cloudflare')
+        expect(template).not.toContain('@liria24/analytics/google-search-console')
+        expect(template).not.toContain("from '#imports'")
+    })
+
+    it('disables only a provider whose runtime credentials are missing', () => {
+        const template = createServerRuntimeTemplate({
+            name: 'website',
+            providers: { cloudflare: { webAnalytics: 'site-tag' } },
+        })
+
+        expect(template).toContain("import { cloudflare } from '@liria24/analytics/cloudflare'")
+        expect(template).not.toContain('googleSearchConsole')
+        expect(template).toContain('Cloudflare Web Analytics is unavailable because')
+        expect(template).not.toContain('Cloudflare Web Analytics credentials are missing')
     })
 
     it('resolves the archive mount before applying an R2 binding', () => {

@@ -2,8 +2,8 @@ import type { H3Event } from 'h3'
 
 import type { CloudflareAnalyticsEngineBinding } from '../../adapters/cloudflare'
 import type {
-    AnalyticsAdapterInput,
     AnalyticsClient,
+    AnalyticsProvider,
     AnalyticsStateConfig,
     AnalyticsStateMetricDefinitions,
 } from '../../core/types'
@@ -19,18 +19,22 @@ export interface NuxtAnalyticsServerEvent {
 export interface NuxtAnalyticsServerConfig<
     TState extends AnalyticsStateMetricDefinitions = AnalyticsStateMetricDefinitions,
 > {
-    adapters?: readonly AnalyticsAdapterInput[]
-    auth?: {
-        searchConsole?: {
-            getAccessToken(): Promise<string>
+    customProviders?:
+        | readonly AnalyticsProvider[]
+        | ((context: {
+              event?: H3Event
+          }) => Promise<readonly AnalyticsProvider[]> | readonly AnalyticsProvider[])
+    defaults?: Readonly<Record<string, string>>
+    providers?: {
+        cloudflare?: {
+            accountId?: string
+            apiToken?: string
+            bindings?: Readonly<Record<string, CloudflareAnalyticsEngineBinding>>
+        }
+        googleSearchConsole?: {
+            getAccessToken?(): Promise<string>
         }
     }
-    cloudflare?: {
-        accountId?: string
-        apiToken?: string
-        bindings?: Readonly<Record<string, CloudflareAnalyticsEngineBinding>>
-    }
-    defaultSources?: Readonly<Record<string, string>>
     eventHandler?(events: readonly NuxtAnalyticsServerEvent[], event: H3Event): Promise<void> | void
     state?: AnalyticsStateConfig<TState>
 }

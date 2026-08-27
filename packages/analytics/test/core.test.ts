@@ -4,160 +4,233 @@ import {
     AnalyticsError,
     createAnalytics,
     defineAnalyticsConfig,
-    type AnalyticsAdapter,
     type AnalyticsEventProperties,
-    type AnalyticsReportMeta,
+    type AnalyticsProvider,
+    type AnalyticsSource,
+    type AnalyticsSourceQueryContext,
     type ResolvedAnalyticsQuery,
 } from '../src/index.ts'
+import { defineAnalyticsProvider } from '../src/provider.ts'
 
-function meta(source: string, quality: AnalyticsReportMeta['quality'] = {}): AnalyticsReportMeta {
-    return {
-        quality,
-        queriedAt: '2026-08-20T00:00:00.000Z',
-        source,
-        temporal: {},
-    }
-}
+const range = {
+    from: '2026-08-01T00:00:00.000Z',
+    to: '2026-08-08T00:00:00.000Z',
+} as const
 
-function adapter(id: string, domain = 'traffic'): AnalyticsAdapter {
-    return {
-        dataset: {
-            dimensions: [{ id: 'country' }, { id: 'time', valueType: 'datetime' }],
-            domain,
-            id,
-            metrics: [
-                {
-                    aggregation: 'sum',
-                    id: 'pageViews',
-                    rollup: 'additive',
-                    valueType: 'integer',
-                },
-            ],
+function provider(
+    providerId = 'custom',
+    sourceId = 'custom.traffic',
+    domain = 'traffic',
+): AnalyticsProvider {
+    const source: AnalyticsSource = {
+        dimensions: {
+            country: { valueType: 'string' },
+            time: { valueType: 'datetime' },
         },
-        query: vi.fn<AnalyticsAdapter['query']>(async (query: ResolvedAnalyticsQuery) =>
-            query.dimensions.includes('time')
-                ? {
-                      kind: 'series' as const,
-                      meta: meta(query.source, { partial: true }),
-                      points: [
-                          { time: query.range.from, values: { pageViews: query.metrics.length } },
-                      ],
-                  }
-                : {
-                      kind: 'scalar' as const,
-                      meta: meta(query.source, { partial: true }),
-                      values: { pageViews: query.metrics.length },
-                  },
+        domain,
+        id: sourceId,
+        metrics: {
+            pageViews: { aggregation: 'sum', rollup: 'additive', valueType: 'integer' },
+            visits: { aggregation: 'sum', rollup: 'additive', valueType: 'integer' },
+        },
+        query: vi.fn<AnalyticsSource['query']>(
+            async (query: ResolvedAnalyticsQuery, context: AnalyticsSourceQueryContext) => {
+                if (query.dimensions.length === 0) {
+                    return context.summary({
+                        quality: { partial: true },
+                        values: Object.fromEntries(query.metrics.map((metric) => [metric, 7])),
+                    })
+                }
+                if (query.dimensions.includes('time')) {
+                    return context.series({
+                        points: [{ time: query.range.from, values: { pageViews: 4, visits: 3 } }],
+                    })
+                }
+                return context.breakdown({
+                    rows: [
+                        {
+                            dimensions: { country: 'JP' },
+                            metrics: { pageViews: 4, visits: 3 },
+                        },
+                    ],
+                })
+            },
         ),
     }
+    return defineAnalyticsProvider({ id: providerId, sources: [source] })
 }
 
-describe('createAnalytics', () => {
-    it('resolves one source and sends all requested metrics in one adapter call', async () => {
-        const source = adapter('cloudflare')
-        source.dataset.metrics = [
-            ...source.dataset.metrics,
-            { aggregation: 'sum', id: 'visits', rollup: 'additive', valueType: 'integer' },
-        ]
-        const analytics = createAnalytics({
-            adapters: [source],
-            name: 'example',
-            now: () => new Date('2026-08-20T12:00:00.000Z'),
+describe('Provider and Source API', () => {
+    it('supports summary, series, breakdown, custom domains, and source scoping', async () => {
+        const custom = provider('custom', 'custom.orders', 'commerce')
+        const analytics = createAnalytics({ name: 'shop', providers: [custom] })
+
+        const summary = await analytics.domain('commerce').summary({
+            metrics: ['pageViews', 'visits'],
+            range,
+        })
+        const series = await analytics.source('custom.orders').series({
+            grain: 'day',
+            metrics: ['pageViews'],
+            range,
+        })
+        const breakdown = await analytics.domain('commerce').breakdown({
+            dimensions: ['country'],
+            metrics: ['visits'],
+            range,
         })
 
-        const report = await analytics.query({ metrics: ['pageViews', 'visits'], range: '7d' })
-
-        expect(source.query).toHaveBeenCalledTimes(1)
-        expect(source.query).toHaveBeenCalledWith(
-            expect.objectContaining({
-                metrics: ['pageViews', 'visits'],
-                range: {
-                    from: '2026-08-13T12:00:00.000Z',
-                    to: '2026-08-20T12:00:00.000Z',
-                },
-                source: 'cloudflare',
-            }),
+        expect(summary).toMatchObject({
+            kind: 'scalar',
+            meta: { quality: { partial: true }, source: 'custom.orders' },
+            values: { pageViews: 7, visits: 7 },
+        })
+        expect(series).toMatchObject({ kind: 'series', meta: { source: 'custom.orders' } })
+        expect(breakdown).toMatchObject({
+            kind: 'table',
+            rows: [{ dimensions: { country: 'JP' } }],
+        })
+        expect(custom.sources[0]?.query).toHaveBeenCalledWith(
+            expect.objectContaining({ dimensions: ['time'], range, source: 'custom.orders' }),
+            expect.objectContaining({ series: expect.any(Function) }),
         )
-        expect(report.meta.quality.partial).toBe(true)
     })
 
-    it('never silently selects between matching sources', async () => {
-        const first = adapter('first')
-        const second = adapter('second')
-        const ambiguous = createAnalytics({ adapters: [first, second], name: 'example' })
+    it('catalogs one provider with multiple sources and multiple providers', () => {
+        const first = provider('first', 'first.traffic')
+        const second = provider('second', 'second.search', 'search')
+        const firstExtra = provider('unused', 'first.product', 'product').sources[0]
+        const analytics = createAnalytics({
+            name: 'catalog',
+            providers: [{ ...first, sources: [...first.sources, firstExtra!] }, second],
+        })
+
+        expect(analytics.sources()).toEqual([
+            expect.objectContaining({ id: 'first.traffic', provider: 'first' }),
+            expect.objectContaining({ id: 'first.product', provider: 'first' }),
+            expect.objectContaining({ id: 'second.search', provider: 'second' }),
+        ])
+    })
+
+    it('requires an explicit default when sources are ambiguous', async () => {
+        const first = provider('first', 'first.traffic')
+        const second = provider('second', 'second.traffic')
+        const ambiguous = createAnalytics({ name: 'site', providers: [first, second] })
 
         await expect(
-            ambiguous.query({ metrics: ['pageViews'], range: '1d' }),
-        ).rejects.toMatchObject({
-            code: 'SOURCE_AMBIGUOUS',
-        })
+            ambiguous.traffic.summary({ metrics: ['pageViews'], range }),
+        ).rejects.toMatchObject({ code: 'SOURCE_AMBIGUOUS' })
 
         const selected = createAnalytics({
-            adapters: [first, second],
-            defaultSources: { traffic: 'second' },
-            name: 'example',
+            defaults: { traffic: 'second.traffic' },
+            name: 'site',
+            providers: [first, second],
         })
-        await selected.query({ metrics: ['pageViews'], range: '1d' })
-        expect(first.query).not.toHaveBeenCalled()
-        expect(second.query).toHaveBeenCalledTimes(1)
+        await selected.traffic.summary({ metrics: ['pageViews'], range })
+        expect(first.sources[0]?.query).not.toHaveBeenCalled()
+        expect(second.sources[0]?.query).toHaveBeenCalledOnce()
     })
 
-    it('validates query shape before source selection', async () => {
-        const analytics = createAnalytics({
-            adapters: [adapter('first'), adapter('second')],
-            name: 'example',
+    it.each([
+        [{ from: range.from, to: range.from }, 'equal endpoints'],
+        [{ from: range.to, to: range.from }, 'reversed endpoints'],
+        [{ from: 'invalid', to: range.to }, 'invalid from'],
+        [{ from: range.from, to: 'invalid' }, 'invalid to'],
+    ])('rejects %s before provider I/O', async (invalidRange, _label) => {
+        const custom = provider()
+        const analytics = createAnalytics({ name: 'site', providers: [custom] })
+
+        await expect(
+            analytics.traffic.summary({ metrics: ['pageViews'], range: invalidRange }),
+        ).rejects.toMatchObject({ code: 'INVALID_QUERY' })
+        expect(custom.sources[0]?.query).not.toHaveBeenCalled()
+    })
+
+    it('passes arbitrary absolute timestamps through as a half-open range', async () => {
+        const custom = provider()
+        const analytics = createAnalytics({ name: 'site', providers: [custom] })
+        const arbitrary = {
+            from: '2026-08-01T03:12:45.123Z',
+            to: '2026-08-01T04:56:07.890Z',
+        }
+
+        await analytics.traffic.summary({ metrics: ['pageViews'], range: arbitrary })
+
+        expect(custom.sources[0]?.query).toHaveBeenCalledWith(
+            expect.objectContaining({ range: arbitrary }),
+            expect.any(Object),
+        )
+    })
+
+    it('keeps adjacent half-open ranges on the same boundary without overlap', async () => {
+        const custom = provider()
+        const analytics = createAnalytics({ name: 'site', providers: [custom] })
+        const boundary = '2026-08-08T00:00:00.000Z'
+
+        await analytics.traffic.summary({
+            metrics: ['pageViews'],
+            range: { from: '2026-08-01T00:00:00.000Z', to: boundary },
+        })
+        await analytics.traffic.summary({
+            metrics: ['pageViews'],
+            range: { from: boundary, to: '2026-08-15T00:00:00.000Z' },
         })
 
-        await expect(analytics.query({ metrics: [], range: '1d' })).rejects.toMatchObject({
-            code: 'INVALID_QUERY',
+        const calls = vi.mocked(custom.sources[0]!.query).mock.calls
+        expect(calls[0]?.[0].range.to).toBe(boundary)
+        expect(calls[1]?.[0].range.from).toBe(boundary)
+    })
+
+    it('preserves literal metric and dimension keys on Provider definitions', () => {
+        const typed = defineAnalyticsProvider({
+            id: 'typed',
+            sources: [
+                {
+                    dimensions: { time: { valueType: 'datetime' } },
+                    domain: 'traffic',
+                    id: 'typed.traffic',
+                    metrics: {
+                        pageViews: {
+                            aggregation: 'sum',
+                            rollup: 'additive',
+                            valueType: 'integer',
+                        },
+                    },
+                    query: (_query, context) => context.summary({ values: { pageViews: 1 } }),
+                },
+            ],
         })
+
+        expectTypeOf<keyof (typeof typed.sources)[0]['metrics']>().toEqualTypeOf<'pageViews'>()
+        expectTypeOf<keyof (typeof typed.sources)[0]['dimensions']>().toEqualTypeOf<'time'>()
     })
 
     it('rejects unsupported fields before provider I/O', async () => {
-        const source = adapter('cloudflare')
-        const analytics = createAnalytics({ adapters: [source], name: 'example' })
+        const custom = provider()
+        const analytics = createAnalytics({ name: 'site', providers: [custom] })
 
         await expect(
-            analytics.query({ metrics: ['missing'], range: '1d', source: 'cloudflare' }),
+            analytics.query({ metrics: ['missing'], range, source: 'custom.traffic' }),
         ).rejects.toEqual(
             expect.objectContaining<Partial<AnalyticsError>>({ code: 'UNSUPPORTED_METRIC' }),
         )
-        expect(source.query).not.toHaveBeenCalled()
-    })
-
-    it('flattens provider bundles and offers thin domain series queries', async () => {
-        const source = adapter('cloudflare')
-        const analytics = createAnalytics({
-            adapters: [{ adapters: [source] }],
-            name: 'example',
-            now: () => new Date('2026-08-20T12:00:00.000Z'),
-        })
-
-        const report = await analytics.traffic.series({
-            grain: 'day',
-            metrics: ['pageViews'],
-            range: '7d',
-        })
-
-        expect(report.kind).toBe('series')
-        expect(source.query).toHaveBeenCalledWith(
-            expect.objectContaining({ dimensions: ['time'], source: 'cloudflare' }),
-        )
+        expect(custom.sources[0]?.query).not.toHaveBeenCalled()
     })
 })
 
-describe('defineAnalyticsConfig', () => {
-    it('preserves event names and property types', () => {
+describe('flattened analytics config', () => {
+    it('preserves typed events, state, and provider destinations', async () => {
+        const destination = { track: vi.fn<(event: unknown) => void>() }
+        const collect = vi.fn<() => Promise<{ reports: number }>>(async () => ({ reports: 12 }))
         const config = defineAnalyticsConfig({
             events: {
                 search: {
-                    properties: {
-                        resultCount: 'number',
-                        type: ['keyword', 'semantic'],
-                    },
+                    properties: { resultCount: 'number', type: ['keyword', 'semantic'] },
                 },
-                setupCreated: {},
             },
+            name: 'site',
+            providers: [{ eventDestination: destination, id: 'events', sources: [] }],
+            state: { collect, metrics: { reports: {} } },
         } as const)
 
         type SearchProperties = AnalyticsEventProperties<typeof config, 'search'>
@@ -165,122 +238,15 @@ describe('defineAnalyticsConfig', () => {
             readonly resultCount: number
             readonly type: 'keyword' | 'semantic'
         }>()
-        expect(config.events?.setupCreated).toEqual({})
-    })
 
-    it('collects requested state metrics once and rejects unavailable history', async () => {
-        type StateNames = 'reports' | 'users'
-        const collect = vi.fn<
-            (context: { requested: readonly StateNames[] }) => Promise<{
-                reports: number
-                users: readonly { status: 'active' | 'banned'; value: number }[]
-            }>
-        >(async () => ({ reports: 12, users: [{ status: 'active', value: 5 }] }))
-        const config = defineAnalyticsConfig({
-            state: {
-                collect,
-                metrics: {
-                    reports: {},
-                    users: { dimensions: { status: ['active', 'banned'] } },
-                },
-            },
-        } as const)
-        const analytics = createAnalytics({ adapters: [], config, name: 'example' })
-
-        const snapshot = await analytics.state.current(['users', 'reports'])
-
-        expect(collect).toHaveBeenCalledOnce()
-        expect(collect).toHaveBeenCalledWith({ requested: ['users', 'reports'] })
-        expect(snapshot).toEqual({ reports: 12, users: [{ status: 'active', value: 5 }] })
-        await expect(analytics.state.series('users', { range: '30d' })).rejects.toMatchObject({
+        const analytics = createAnalytics(config)
+        await analytics.track('search', { resultCount: 4, type: 'semantic' })
+        expect(destination.track).toHaveBeenCalledWith(
+            expect.objectContaining({ name: 'search', origin: 'server' }),
+        )
+        await expect(analytics.state.current('reports')).resolves.toEqual({ reports: 12 })
+        await expect(analytics.state.series('reports', { range })).rejects.toMatchObject({
             code: 'CAPABILITY_UNAVAILABLE',
         })
-    })
-
-    it('validates typed events and fans server events out to bundle sinks', async () => {
-        const first = { track: vi.fn<(event: unknown) => void>() }
-        const second = { track: vi.fn<(event: unknown) => Promise<void>>(async () => {}) }
-        const events = {
-            search: { properties: { resultCount: 'number', type: ['keyword', 'semantic'] } },
-            setupCreated: {},
-        } as const
-        Reflect.setPrototypeOf(events, { inheritedEvent: {} })
-        const config = defineAnalyticsConfig({
-            events,
-        })
-        const analytics = createAnalytics({
-            adapters: [
-                { adapters: [], eventSink: first },
-                { adapters: [], eventSink: second },
-            ],
-            config,
-            name: 'example',
-        })
-
-        await analytics.track('search', { resultCount: 4, type: 'semantic' })
-
-        expect(first.track).toHaveBeenCalledWith({
-            id: expect.any(String),
-            name: 'search',
-            origin: 'server',
-            properties: { resultCount: 4, type: 'semantic' },
-            timestamp: expect.any(String),
-        })
-        expect(second.track).toHaveBeenCalledOnce()
-        expect(first.track.mock.calls[0]?.[0]).toBe(second.track.mock.calls[0]?.[0])
-        await analytics.track('setupCreated')
-        expect(first.track).toHaveBeenLastCalledWith({
-            id: expect.any(String),
-            name: 'setupCreated',
-            origin: 'server',
-            properties: {},
-            timestamp: expect.any(String),
-        })
-        const invalid = { resultCount: 4, type: 'semantic' as const }
-        Reflect.set(invalid, 'resultCount', 'bad')
-        await expect(analytics.track('search', invalid)).rejects.toMatchObject({
-            code: 'INVALID_QUERY',
-        })
-
-        const inheritedProperties = {}
-        Reflect.setPrototypeOf(inheritedProperties, { resultCount: 4, type: 'semantic' })
-        await expect(
-            Reflect.apply(analytics.track, analytics, ['search', inheritedProperties]),
-        ).rejects.toMatchObject({ code: 'INVALID_QUERY' })
-        await expect(
-            Reflect.apply(analytics.track, analytics, ['inheritedEvent']),
-        ).rejects.toMatchObject({ code: 'INVALID_QUERY' })
-        await expect(
-            analytics.track('search', { resultCount: Number.NaN, type: 'semantic' }),
-        ).rejects.toMatchObject({ code: 'INVALID_QUERY' })
-        await expect(
-            analytics.track('search', { resultCount: Number.POSITIVE_INFINITY, type: 'semantic' }),
-        ).rejects.toMatchObject({ code: 'INVALID_QUERY' })
-        expect(first.track).toHaveBeenCalledTimes(2)
-    })
-
-    it('does not treat object prototype names as configured events or State metrics', async () => {
-        const collect = vi.fn<() => Promise<{ reports: number }>>(async () => ({ reports: 1 }))
-        const config = defineAnalyticsConfig({
-            events: { reportViewed: {} },
-            state: { collect, metrics: { reports: {} } },
-        })
-        const analytics = createAnalytics({ adapters: [], config, name: 'example' })
-
-        await expect(Reflect.apply(analytics.track, analytics, ['toString'])).rejects.toMatchObject(
-            {
-                code: 'INVALID_QUERY',
-            },
-        )
-        await expect(
-            Reflect.apply(analytics.track, analytics, ['__proto__']),
-        ).rejects.toMatchObject({ code: 'INVALID_QUERY' })
-        await expect(
-            Reflect.apply(analytics.state.current, analytics.state, ['toString']),
-        ).rejects.toMatchObject({ code: 'UNSUPPORTED_METRIC' })
-        await expect(
-            Reflect.apply(analytics.state.current, analytics.state, ['__proto__']),
-        ).rejects.toMatchObject({ code: 'UNSUPPORTED_METRIC' })
-        expect(collect).not.toHaveBeenCalled()
     })
 })

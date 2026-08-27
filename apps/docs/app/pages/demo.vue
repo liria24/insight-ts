@@ -1,43 +1,65 @@
 <script setup lang="ts">
-import type { AnalyticsSeriesReport } from '@liria24/analytics'
+import { CalendarDate, today } from '@internationalized/date'
 import { AnalyticsLineChart, AnalyticsStat, resolveAnalyticsTimezone } from '@liria24/analytics/vue'
 import { withHttps } from 'ufo'
 
+import { demoRangeOptions, type DemoRangePreset, type DemoReportResponse } from '#shared/demo-range'
+
 const { app } = useAppConfig()
 
-const { data, status } = useLazyFetch<AnalyticsSeriesReport>('/api/demo', {
+const selectedRange = ref<DemoRangePreset | 'custom'>('7d')
+const calendarToday = today('UTC')
+const calendarRange = shallowRef({
+    end: calendarToday,
+    start: calendarToday.subtract({ days: 6 }),
+})
+const reportQuery = computed(() =>
+    selectedRange.value === 'custom'
+        ? {
+              from: `${calendarRange.value.start.toString()}T00:00:00.000Z`,
+              to: `${calendarRange.value.end.add({ days: 1 }).toString()}T00:00:00.000Z`,
+          }
+        : { range: selectedRange.value },
+)
+const rangeItems = computed(() =>
+    selectedRange.value === 'custom'
+        ? [...demoRangeOptions, { label: customRangeLabel.value, value: 'custom' }]
+        : [...demoRangeOptions],
+)
+
+const { data, status } = useLazyFetch<DemoReportResponse>('/api/demo', {
+    query: reportQuery,
+    server: false,
+})
+const { data: onlineData } = useLazyFetch<{ online: number }>('/api/demo/online', {
+    default: () => ({ online: 0 }),
     server: false,
 })
 
 const locale = 'en-US'
 const isLoading = computed(() => status.value === 'idle' || status.value === 'pending')
-
-const range = ref<[number, number]>([0, 0])
-const maxRangeIndex = computed(() => Math.max((data.value?.points.length ?? 1) - 1, 0))
-const timezone = computed(() => (data.value ? resolveAnalyticsTimezone(data.value) : 'UTC'))
-const visibleReport = computed<AnalyticsSeriesReport | undefined>(() => {
-    const report = data.value
-    if (!report) return undefined
-    return selectDemoReportRange(report, range.value)
+const timezone = computed(() => (data.value ? resolveAnalyticsTimezone(data.value.series) : 'UTC'))
+const online = computed(() => Math.max(0, Math.round(onlineData.value?.online ?? 0)))
+const customRangeLabel = computed(() => {
+    const formatter = new Intl.DateTimeFormat(locale, {
+        day: 'numeric',
+        month: 'short',
+        timeZone: 'UTC',
+        year: 'numeric',
+    })
+    const start = new Date(`${calendarRange.value.start.toString()}T00:00:00.000Z`)
+    const end = new Date(`${calendarRange.value.end.toString()}T00:00:00.000Z`)
+    return `${formatter.format(start)} – ${formatter.format(end)}`
 })
 
-watch(
-    data,
-    (report) => {
-        if (report) range.value = [0, Math.max(report.points.length - 1, 0)]
-    },
-    { immediate: true },
-)
-
-const rangeLabel = (index: number): string => {
-    const report = data.value
-    return report ? formatDemoReportTime(report, index, locale, timezone.value) : ''
-}
+watch(calendarRange, ({ end, start }) => {
+    if (start && end) selectedRange.value = 'custom'
+})
 </script>
 
 <template>
     <UContainer class="pt-8">
-        <div class="flex items-center gap-4">
+        <div class="flex flex-col gap-4 sm:flex-row sm:items-center">
             <div class="flex flex-col gap-2">
                 <h2 class="text-highlighted text-4xl">Web Analytics</h2>
 
@@ -47,20 +69,45 @@ const rangeLabel = (index: number): string => {
                     </ULink>
                     <USeparator orientation="vertical" class="h-4" />
                     <div class="flex items-center gap-2">
-                        <div class="size-2.5 rounded-full bg-muted" />
-                        <span class="text-sm text-muted">0 online</span>
+                        <div
+                            class="size-2.5 rounded-full"
+                            :class="online > 0 ? 'bg-success' : 'bg-muted'"
+                        />
+                        <span aria-live="polite" class="text-sm text-muted"
+                            >{{ online }} online</span
+                        >
                     </div>
                 </div>
             </div>
 
-            <UFieldGroup class="ml-auto">
-                <UButton
-                    aria-label="Select range"
-                    icon="mingcute:calendar-2-fill"
-                    variant="outline"
+            <UFieldGroup class="sm:ml-auto">
+                <UPopover>
+                    <UButton
+                        aria-label="Select custom date range"
+                        icon="mingcute:calendar-2-fill"
+                        variant="outline"
+                        color="neutral"
+                    />
+
+                    <template #content>
+                        <UCalendar
+                            v-model="calendarRange"
+                            class="p-2"
+                            :max-value="calendarToday"
+                            :min-value="calendarToday.subtract({ years: 1 })"
+                            :number-of-months="2"
+                            range
+                        />
+                    </template>
+                </UPopover>
+                <USelect
+                    v-model="selectedRange"
+                    :items="rangeItems"
                     color="neutral"
+                    class="min-w-44"
+                    label-key="label"
+                    value-key="value"
                 />
-                <USelect :items="[{ label: 'Last 7 Days' }]" color="neutral" class="min-w-40" />
             </UFieldGroup>
         </div>
 
@@ -86,7 +133,7 @@ const rangeLabel = (index: number): string => {
                 </div>
             </div>
 
-            <div v-else-if="!data || !visibleReport" class="p-4 sm:p-6">
+            <div v-else-if="!data" class="p-4 sm:p-6">
                 <UAlert
                     color="neutral"
                     description="Try refreshing the page or open the JSON response below."
@@ -99,7 +146,7 @@ const rangeLabel = (index: number): string => {
             <div v-else>
                 <div class="grid divide-y divide-default sm:grid-cols-2 sm:divide-x sm:divide-y-0">
                     <AnalyticsStat
-                        :report="visibleReport"
+                        :report="data.summary"
                         metric="pageViews"
                         :ui="{
                             caption: 'mt-1 text-xs text-muted',
@@ -109,7 +156,7 @@ const rangeLabel = (index: number): string => {
                         class="p-5 sm:p-6"
                     />
                     <AnalyticsStat
-                        :report="visibleReport"
+                        :report="data.summary"
                         metric="visits"
                         :ui="{
                             caption: 'mt-1 text-xs text-muted',
@@ -123,7 +170,7 @@ const rangeLabel = (index: number): string => {
                     <AnalyticsLineChart
                         title="Traffic over time"
                         :metrics="['pageViews', 'visits']"
-                        :report="visibleReport"
+                        :report="data.series"
                         :timezone
                         :locale
                         :height="320"
@@ -132,24 +179,6 @@ const rangeLabel = (index: number): string => {
                             legend: 'flex gap-3 text-xs text-muted',
                             title: 'text-sm font-semibold text-highlighted',
                         }"
-                    />
-                </div>
-
-                <div class="border-b border-default p-7 sm:p-8">
-                    <div class="mb-3 flex items-center justify-between gap-4 text-xs text-muted">
-                        <time :datetime="data.points[range[0]]?.time">{{
-                            rangeLabel(range[0])
-                        }}</time>
-                        <time :datetime="data.points[range[1]]?.time">{{
-                            rangeLabel(range[1])
-                        }}</time>
-                    </div>
-                    <USlider
-                        v-model="range"
-                        aria-label="Visible report date range"
-                        :max="maxRangeIndex"
-                        :min="0"
-                        :step="1"
                     />
                 </div>
             </div>

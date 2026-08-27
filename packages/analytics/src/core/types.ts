@@ -1,19 +1,16 @@
 import type { Storage } from 'unstorage'
 
 export type BuiltinAnalyticsDomain = 'traffic' | 'search' | 'product' | 'experience' | 'state'
-
 export type AnalyticsDomain = BuiltinAnalyticsDomain | (string & {})
-export type AnalyticsDatasetRef = string
+export type AnalyticsSourceRef = string
 export type AnalyticsGrain = 'auto' | 'minute' | 'hour' | 'day' | 'week' | 'month' | 'year'
 
-export interface AnalyticsAbsoluteRange {
+export interface AnalyticsRange {
     from: string
     to: string
 }
 
 export type AnalyticsDuration = `${number}${'h' | 'd' | 'w' | 'm' | 'y'}`
-export type AnalyticsRange = AnalyticsAbsoluteRange | AnalyticsDuration
-
 export type AnalyticsFilterValue = boolean | number | string | null
 
 export type AnalyticsFilter =
@@ -43,7 +40,7 @@ export interface AnalyticsQuery {
     limit?: number
     metrics: readonly string[]
     range: AnalyticsRange
-    source?: AnalyticsDatasetRef
+    source?: AnalyticsSourceRef
     timezone?: string
 }
 
@@ -53,8 +50,8 @@ export interface ResolvedAnalyticsQuery {
     grain: AnalyticsGrain
     limit?: number
     metrics: readonly string[]
-    range: AnalyticsAbsoluteRange
-    source: AnalyticsDatasetRef
+    range: AnalyticsRange
+    source: AnalyticsSourceRef
     timezone: string
 }
 
@@ -83,23 +80,29 @@ export type AnalyticsMetricAggregation =
 
 export type AnalyticsMetricRollup = 'additive' | 'derived' | 'non-additive' | 'provider-defined'
 
-export interface AnalyticsMetricDescriptor {
+export interface AnalyticsMetricDefinition {
     aggregation: AnalyticsMetricAggregation
     derive?: {
         denominator: string
         numerator: string
         operation: 'ratio'
     }
-    id: string
     label?: string
     rollup: AnalyticsMetricRollup
     valueType: AnalyticsMetricValueType
 }
 
-export interface AnalyticsDimensionDescriptor {
-    id: string
+export interface AnalyticsDimensionDefinition {
     label?: string
     valueType?: 'boolean' | 'date' | 'datetime' | 'number' | 'string'
+}
+
+export interface AnalyticsMetricDescriptor extends AnalyticsMetricDefinition {
+    id: string
+}
+
+export interface AnalyticsDimensionDescriptor extends AnalyticsDimensionDefinition {
+    id: string
 }
 
 export interface AnalyticsArchiveMaterialization {
@@ -110,11 +113,32 @@ export interface AnalyticsArchiveMaterialization {
     start?: string
 }
 
-export interface AnalyticsDatasetDescriptor {
-    archive?: readonly AnalyticsArchiveMaterialization[]
+export interface AnalyticsSourceArchive {
+    finalizationDelay?: AnalyticsDuration
+    initialLookback?: AnalyticsDuration
+    materializations: readonly AnalyticsArchiveMaterialization[]
+}
+
+export interface AnalyticsSourceDescriptor<
+    TMetrics extends Readonly<Record<string, AnalyticsMetricDefinition>> = Readonly<
+        Record<string, AnalyticsMetricDefinition>
+    >,
+    TDimensions extends Readonly<Record<string, AnalyticsDimensionDefinition>> = Readonly<
+        Record<string, AnalyticsDimensionDefinition>
+    >,
+> {
+    archive?: AnalyticsSourceArchive
+    dimensions: TDimensions
+    domain: AnalyticsDomain
+    id: AnalyticsSourceRef
+    metrics: TMetrics
+}
+
+export interface AnalyticsNormalizedSourceDescriptor {
+    archive?: AnalyticsSourceArchive
     dimensions: readonly AnalyticsDimensionDescriptor[]
     domain: AnalyticsDomain
-    id: AnalyticsDatasetRef
+    id: AnalyticsSourceRef
     metrics: readonly AnalyticsMetricDescriptor[]
 }
 
@@ -140,7 +164,7 @@ export interface AnalyticsReportMeta {
     }
     quality: AnalyticsReportQuality
     queriedAt: string
-    source: AnalyticsDatasetRef
+    source: AnalyticsSourceRef
     temporal: {
         bucketTimezone?: string
         grain?: AnalyticsGrain
@@ -182,9 +206,49 @@ export interface AnalyticsTableReport {
 
 export type AnalyticsReport = AnalyticsScalarReport | AnalyticsSeriesReport | AnalyticsTableReport
 
-export interface AnalyticsAdapter {
-    dataset: AnalyticsDatasetDescriptor
+interface AnalyticsReportFactoryMetadata {
+    freshness?: AnalyticsReportMeta['freshness']
+    quality?: AnalyticsReportQuality
+    temporal?: Omit<AnalyticsReportMeta['temporal'], 'grain'>
+}
+
+export interface AnalyticsSummaryResult extends AnalyticsReportFactoryMetadata {
+    values: AnalyticsMetricValues
+}
+
+export interface AnalyticsSeriesResult extends AnalyticsReportFactoryMetadata {
+    points: readonly AnalyticsSeriesPoint[]
+}
+
+export interface AnalyticsBreakdownResult extends AnalyticsReportFactoryMetadata {
+    rows: readonly AnalyticsTableRow[]
+}
+
+export interface AnalyticsSourceQueryContext {
+    breakdown(result: AnalyticsBreakdownResult): AnalyticsTableReport
+    series(result: AnalyticsSeriesResult): AnalyticsSeriesReport
+    summary(result: AnalyticsSummaryResult): AnalyticsScalarReport
+}
+
+export interface AnalyticsSource<
+    TMetrics extends Readonly<Record<string, AnalyticsMetricDefinition>> = Readonly<
+        Record<string, AnalyticsMetricDefinition>
+    >,
+    TDimensions extends Readonly<Record<string, AnalyticsDimensionDefinition>> = Readonly<
+        Record<string, AnalyticsDimensionDefinition>
+    >,
+> extends AnalyticsSourceDescriptor<TMetrics, TDimensions> {
+    query: (
+        query: ResolvedAnalyticsQuery,
+        context: AnalyticsSourceQueryContext,
+    ) => AnalyticsReport | Promise<AnalyticsReport>
+    validate?: (query: ResolvedAnalyticsQuery) => void
+}
+
+export interface AnalyticsInternalSource {
+    provider: string
     query: (query: ResolvedAnalyticsQuery) => Promise<AnalyticsReport>
+    source: AnalyticsNormalizedSourceDescriptor
     validate?: (query: ResolvedAnalyticsQuery) => void
 }
 
@@ -200,16 +264,17 @@ export interface AnalyticsEvent {
     timestamp: string
 }
 
-export interface AnalyticsEventSink {
+export interface AnalyticsEventDestination {
     track: (event: AnalyticsEvent) => Promise<void> | void
 }
 
-export interface AnalyticsAdapterBundle {
-    adapters: readonly AnalyticsAdapter[]
-    eventSink?: AnalyticsEventSink
+export interface AnalyticsProvider<
+    TSources extends readonly AnalyticsSource[] = readonly AnalyticsSource[],
+> {
+    eventDestination?: AnalyticsEventDestination
+    id: string
+    sources: TSources
 }
-
-export type AnalyticsAdapterInput = AnalyticsAdapter | AnalyticsAdapterBundle
 
 export type AnalyticsEventProperty = 'boolean' | 'number' | 'string' | readonly string[]
 
@@ -218,7 +283,6 @@ export interface AnalyticsEventDefinition {
 }
 
 export type AnalyticsEventDefinitions = Readonly<Record<string, AnalyticsEventDefinition>>
-
 export type AnalyticsStateDimensionValue = boolean | number | string
 
 export type AnalyticsNormalizedStateRow = Readonly<
@@ -266,7 +330,7 @@ export interface AnalyticsStateConfig<
     metrics: TMetrics
 }
 
-export interface AnalyticsConfig<
+export interface AnalyticsSchema<
     TEvents extends AnalyticsEventDefinitions = AnalyticsEventDefinitions,
     TState extends AnalyticsStateMetricDefinitions = AnalyticsStateMetricDefinitions,
 > {
@@ -274,7 +338,31 @@ export interface AnalyticsConfig<
     state?: AnalyticsStateConfig<TState>
 }
 
-export type AnalyticsEventName<TConfig extends AnalyticsConfig> = Extract<
+export interface AnalyticsArchiveOptions {
+    retention?: AnalyticsDuration
+    storage: Storage
+}
+
+export interface AnalyticsConfig<
+    TEvents extends AnalyticsEventDefinitions = AnalyticsEventDefinitions,
+    TState extends AnalyticsStateMetricDefinitions = AnalyticsStateMetricDefinitions,
+    TProviders extends readonly AnalyticsProvider[] = readonly AnalyticsProvider[],
+> extends AnalyticsSchema<TEvents, TState> {
+    archive?: AnalyticsArchiveOptions
+    defaults?: Readonly<Record<string, AnalyticsSourceRef>>
+    environment?: string
+    name: string
+    now?: () => Date
+    providers: TProviders
+}
+
+export type CreateAnalyticsOptions<
+    TEvents extends AnalyticsEventDefinitions = AnalyticsEventDefinitions,
+    TState extends AnalyticsStateMetricDefinitions = AnalyticsStateMetricDefinitions,
+    TProviders extends readonly AnalyticsProvider[] = readonly AnalyticsProvider[],
+> = AnalyticsConfig<TEvents, TState, TProviders>
+
+export type AnalyticsEventName<TConfig extends AnalyticsSchema> = Extract<
     keyof NonNullable<TConfig['events']>,
     string
 >
@@ -288,7 +376,7 @@ type EventPropertyValue<T> = T extends readonly (infer TValue)[]
         : string
 
 export type AnalyticsEventProperties<
-    TConfig extends AnalyticsConfig,
+    TConfig extends AnalyticsSchema,
     TName extends AnalyticsEventName<TConfig>,
 > = NonNullable<TConfig['events']>[TName] extends {
     properties: infer TProperties extends Readonly<Record<string, AnalyticsEventProperty>>
@@ -296,7 +384,7 @@ export type AnalyticsEventProperties<
     ? { [TKey in keyof TProperties]: EventPropertyValue<TProperties[TKey]> }
     : Record<never, never>
 
-export type AnalyticsStateMetricName<TConfig extends AnalyticsConfig> = Extract<
+export type AnalyticsStateMetricName<TConfig extends AnalyticsSchema> = Extract<
     keyof NonNullable<TConfig['state']>['metrics'],
     string
 >
@@ -307,36 +395,41 @@ export interface AnalyticsStateSeriesQuery {
     timezone?: string
 }
 
-export interface AnalyticsArchiveOptions {
-    retention?: AnalyticsDuration
-    storage: Storage
-}
-
-export interface CreateAnalyticsOptions<TConfig extends AnalyticsConfig = AnalyticsConfig> {
-    adapters: readonly AnalyticsAdapterInput[]
-    archive?: AnalyticsArchiveOptions
-    config?: TConfig
-    defaultSources?: Readonly<Record<string, AnalyticsDatasetRef>>
-    environment?: string
-    name: string
-    now?: () => Date
-}
-
 export interface AnalyticsMaintenanceResult {
     pruned: number
     refreshed: number
     warnings?: readonly AnalyticsWarning[]
 }
 
-export type AnalyticsDomainSeriesQuery = Omit<AnalyticsQuery, 'dimensions' | 'source'> & {
-    dimensions?: readonly [string]
+export type AnalyticsSummaryQuery = Omit<AnalyticsQuery, 'dimensions' | 'grain' | 'source'>
+export type AnalyticsSeriesQuery = Omit<AnalyticsQuery, 'dimensions' | 'source'> & {
+    grain: Exclude<AnalyticsGrain, 'auto'>
+}
+export type AnalyticsBreakdownQuery = Omit<AnalyticsQuery, 'grain' | 'source'> & {
+    dimensions: readonly string[]
 }
 
 export interface AnalyticsDomainClient {
-    series: (query: AnalyticsDomainSeriesQuery) => Promise<AnalyticsSeriesReport>
+    breakdown(query: AnalyticsBreakdownQuery): Promise<AnalyticsTableReport>
+    series(query: AnalyticsSeriesQuery): Promise<AnalyticsSeriesReport>
+    summary(query: AnalyticsSummaryQuery): Promise<AnalyticsScalarReport>
 }
 
-export interface AnalyticsStateClient<TConfig extends AnalyticsConfig = AnalyticsConfig> {
+export interface AnalyticsSourceClient {
+    breakdown(query: AnalyticsBreakdownQuery): Promise<AnalyticsTableReport>
+    series(query: AnalyticsSeriesQuery): Promise<AnalyticsSeriesReport>
+    summary(query: AnalyticsSummaryQuery): Promise<AnalyticsScalarReport>
+}
+
+export interface AnalyticsSourceCatalogEntry {
+    dimensions: readonly string[]
+    domain: AnalyticsDomain
+    id: AnalyticsSourceRef
+    metrics: readonly string[]
+    provider: string
+}
+
+export interface AnalyticsStateClient<TConfig extends AnalyticsSchema = AnalyticsSchema> {
     current: (
         requested: AnalyticsStateMetricName<TConfig> | readonly AnalyticsStateMetricName<TConfig>[],
     ) => Promise<Partial<AnalyticsStateSnapshot<NonNullable<TConfig['state']>['metrics']>>>
@@ -347,19 +440,23 @@ export interface AnalyticsStateClient<TConfig extends AnalyticsConfig = Analytic
 }
 
 type AnalyticsTrackArguments<
-    TConfig extends AnalyticsConfig,
+    TConfig extends AnalyticsSchema,
     TName extends AnalyticsEventName<TConfig>,
 > = keyof AnalyticsEventProperties<TConfig, TName> extends never
     ? []
     : [properties: AnalyticsEventProperties<TConfig, TName>]
 
-export interface AnalyticsClient<TConfig extends AnalyticsConfig = AnalyticsConfig> {
+export interface AnalyticsClient<TConfig extends AnalyticsSchema = AnalyticsSchema> {
+    domain(domain: AnalyticsDomain): AnalyticsDomainClient
     experience: AnalyticsDomainClient
     maintenance: {
         run(): Promise<AnalyticsMaintenanceResult>
     }
+    product: AnalyticsDomainClient
     query(query: AnalyticsQuery): Promise<AnalyticsReport>
     search: AnalyticsDomainClient
+    source(source: AnalyticsSourceRef): AnalyticsSourceClient
+    sources(): readonly AnalyticsSourceCatalogEntry[]
     state: AnalyticsStateClient<TConfig>
     track: <TName extends AnalyticsEventName<TConfig>>(
         name: TName,

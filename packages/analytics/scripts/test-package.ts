@@ -44,10 +44,22 @@ const consumers: readonly Consumer[] = [
 import { createBrowserAnalytics } from '@liria24/analytics/browser'
 import { cloudflareWebAnalytics } from '@liria24/analytics/cloudflare'
 import { googleSearchConsole } from '@liria24/analytics/google-search-console'
+import { defineAnalyticsProvider } from '@liria24/analytics/provider'
 
-const analytics = createAnalytics({ adapters: [], name: 'packed-core' })
+const custom = defineAnalyticsProvider({
+    id: 'custom',
+    sources: [{
+        id: 'custom.traffic',
+        domain: 'traffic',
+        metrics: { pageViews: { aggregation: 'sum', rollup: 'additive', valueType: 'integer' } },
+        dimensions: { time: { valueType: 'datetime' } },
+        query: (_query, context) => context.summary({ values: { pageViews: 1 } }),
+    }],
+})
+const analytics = createAnalytics({ name: 'packed-core', providers: [custom] })
 if (
     typeof analytics.query !== 'function' ||
+    analytics.sources()[0]?.id !== 'custom.traffic' ||
     typeof createBrowserAnalytics !== 'function' ||
     typeof cloudflareWebAnalytics !== 'function' ||
     typeof googleSearchConsole !== 'function'
@@ -241,7 +253,10 @@ export default defineEventHandler(async (event) => {
   const pending: Promise<AnalyticsClient> = useServerAnalytics()
   const analytics: AnalyticsClient = await useServerAnalytics(event)
   await pending
-  await analytics.query({ metrics: ['pageViews'], range: '1d' })
+  await analytics.query({
+    metrics: ['pageViews'],
+    range: { from: '2026-08-26T00:00:00.000Z', to: '2026-08-27T00:00:00.000Z' },
+  })
   await analytics.track('pageViewed')
   await analytics.state.current('activeUsers')
   await analytics.maintenance.run()

@@ -15,16 +15,17 @@ and Nitro Tasks.
 The public package surface mirrors these boundaries:
 
 - `@liria24/analytics` contains core contracts and execution.
-- Provider subpaths contain adapters.
+- Provider subpaths contain Provider factories; Adapters remain internal execution primitives.
+- `@liria24/analytics/provider` contains the custom Provider extension helper.
 - `@liria24/analytics/nuxt` contains the build-time Nuxt module.
 - `@liria24/analytics/nuxt/runtime` contains H3/Nitro runtime helpers.
 - `@liria24/analytics/vue` contains optional report-only presentation primitives.
 
 Configuration is split by evaluation time. `nuxt.config.ts` owns declarative resource
 identifiers, event definitions, relay options, and archive policy. `server/analytics.config.ts`
-owns runtime State collection, provider authorization callbacks, optional custom adapters, and
+owns runtime State collection, provider authorization callbacks, optional custom Providers, and
 the custom event-delivery escape hatch.
 
 Archive storage is normalized JSON in unstorage. It is historical materialization, not a result
-cache. Provider coverage is backfilled on first maintenance when the adapter knows its retention;
+cache. Provider coverage is backfilled on first maintenance when the Source declares its lookback;
 later maintenance is incremental and safe to repeat.

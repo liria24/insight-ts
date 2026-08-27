@@ -16,6 +16,7 @@
     "apps/docs": {
       "name": "@liria24/analytics-docs",
       "dependencies": {
+        "@internationalized/date": "^3.12.3",
         "@liria24/analytics": "workspace:*",
         "@nuxt/ui": "^4.11.0",
         "@vueuse/nuxt": "14.4.0",

@@ -11,21 +11,26 @@ archives and Nuxt integration.
 bun add @liria24/analytics
 ```
 
-The package exposes focused entry points for the core API, browser client, Cloudflare adapters,
-Google Search Console adapter, and Nuxt module. Provider credentials remain in your application;
+The package exposes focused entry points for the core API, browser client, providers, custom
+provider definitions, and Nuxt module. Provider credentials remain in your application;
 the SDK does not store OAuth credentials or require a database.
 
 ```ts
 import { createAnalytics } from '@liria24/analytics'
-import { cloudflareWebAnalytics } from '@liria24/analytics/cloudflare'
+import { cloudflare } from '@liria24/analytics/cloudflare'
+
+const range = {
+    from: '2026-08-01T00:00:00.000Z',
+    to: '2026-08-31T00:00:00.000Z',
+}
 
 const analytics = createAnalytics({
     name: 'website',
-    adapters: [
-        cloudflareWebAnalytics({
+    providers: [
+        cloudflare({
             accountId: process.env.CLOUDFLARE_ACCOUNT_ID!,
             apiToken: process.env.CLOUDFLARE_API_TOKEN!,
-            siteTag: process.env.CLOUDFLARE_SITE_TAG!,
+            webAnalytics: { siteTag: process.env.CLOUDFLARE_SITE_TAG! },
         }),
     ],
 })
@@ -33,7 +38,7 @@ const analytics = createAnalytics({
 const report = await analytics.traffic.series({
     grain: 'day',
     metrics: ['pageViews', 'visits'],
-    range: '30d',
+    range,
 })
 ```
 
@@ -60,7 +65,7 @@ bun add vue vue-data-ui
 ```
 
 ```ts
-import 'vue-data-ui/style.css'
+import '@liria24/analytics/vue/style.css'
 import { AnalyticsLineChart, AnalyticsStat } from '@liria24/analytics/vue'
 
 // <AnalyticsStat :report="report" metric="pageViews" />

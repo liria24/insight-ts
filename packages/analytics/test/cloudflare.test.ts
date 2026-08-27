@@ -2,11 +2,13 @@ import { describe, expect, it, vi } from 'vitest'
 
 import {
     CloudflareApiError,
+    cloudflare,
     cloudflareAnalyticsEngine,
     cloudflareWebAnalytics,
 } from '../src/cloudflare.ts'
 import type { CloudflareAnalyticsEngineBinding } from '../src/cloudflare.ts'
 import type { ResolvedAnalyticsQuery } from '../src/core/types.ts'
+import { AnalyticsProviderError } from '../src/index.ts'
 
 type TestFetch = (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>
 
@@ -33,6 +35,31 @@ function query(overrides: Partial<ResolvedAnalyticsQuery> = {}): ResolvedAnalyti
 }
 
 describe('Cloudflare Web Analytics', () => {
+    it('uses the common Provider error base for native API failures', () => {
+        const error = new CloudflareApiError('Unavailable', 503, 'temporary')
+
+        expect(error).toBeInstanceOf(AnalyticsProviderError)
+        expect(error).toMatchObject({ provider: 'cloudflare', retryable: true, status: 503 })
+    })
+
+    it('groups configured capabilities as one Provider and reports missing credentials by code', async () => {
+        const provider = cloudflare({
+            analyticsEngine: { dataset: 'events' },
+            webAnalytics: { siteTag: 'site' },
+        })
+
+        expect(provider).toMatchObject({
+            id: 'cloudflare',
+            sources: [
+                { id: 'cloudflare.web-analytics' },
+                { id: 'cloudflare.analytics-engine.events' },
+            ],
+        })
+        await expect(provider.sources[0]?.query(query())).rejects.toMatchObject({
+            code: 'CONFIGURATION_MISSING',
+        })
+    })
+
     it('queries the account RUM dataset and preserves sampling quality', async () => {
         const fetcher = vi.fn<TestFetch>(async (_input, init) => {
             const body = JSON.parse(bodyText(init))
@@ -134,8 +161,8 @@ describe('Cloudflare Web Analytics', () => {
             siteTag: 'site',
         })
 
-        expect(adapter.dataset.id).toBe('cloudflare.web-analytics:analytics.liria.me')
-        await adapter.query(query({ source: adapter.dataset.id }))
+        expect(adapter.id).toBe('cloudflare.web-analytics:analytics.liria.me')
+        await adapter.query(query({ source: adapter.id }))
     })
 
     it('keeps the configured host and user filters in the same AND filter', async () => {
@@ -163,7 +190,7 @@ describe('Cloudflare Web Analytics', () => {
         await adapter.query(
             query({
                 filters: { dimension: 'path', operator: 'eq', value: '/docs' },
-                source: adapter.dataset.id,
+                source: adapter.id,
             }),
         )
     })
@@ -172,12 +199,102 @@ describe('Cloudflare Web Analytics', () => {
         const adapter = cloudflareWebAnalytics({
             accountId: 'account',
             apiToken: 'token',
-            datasetId: 'traffic.production',
+            sourceId: 'traffic.production',
             host: 'analytics.liria.me',
             siteTag: 'site',
         })
 
-        expect(adapter.dataset.id).toBe('traffic.production')
+        expect(adapter.id).toBe('traffic.production')
+    })
+
+    it('estimates active users from visits observed in the last five minutes', async () => {
+        const fetcher = vi.fn<TestFetch>(async (_input, init) => {
+            const body = JSON.parse(bodyText(init))
+            expect(body.query).toContain('sum { visits }')
+            expect(body.variables.filter.AND[0]).toMatchObject({
+                datetime_geq: '2026-08-03T11:55:00.000Z',
+                datetime_lt: '2026-08-03T12:00:00.000Z',
+            })
+            return Response.json({
+                data: {
+                    viewer: {
+                        accounts: [
+                            {
+                                rows: [
+                                    {
+                                        avg: { sampleInterval: 1 },
+                                        sum: { visits: 4 },
+                                    },
+                                ],
+                            },
+                        ],
+                    },
+                },
+            })
+        })
+        const adapter = cloudflareWebAnalytics({
+            accountId: 'account',
+            apiToken: 'token',
+            fetch: fetcher,
+            siteTag: 'site',
+        })
+
+        await expect(
+            adapter.query(
+                query({
+                    grain: 'minute',
+                    metrics: ['activeUsers'],
+                    range: {
+                        from: '2026-08-03T11:55:00.000Z',
+                        to: '2026-08-03T12:00:00.000Z',
+                    },
+                }),
+            ),
+        ).resolves.toMatchObject({
+            kind: 'scalar',
+            meta: {
+                quality: {
+                    approximate: true,
+                    warnings: [{ code: 'cloudflare-active-users-estimate' }],
+                },
+            },
+            values: { activeUsers: 4 },
+        })
+    })
+
+    it('rejects active user history before provider I/O', async () => {
+        const fetcher = vi.fn<TestFetch>()
+        const adapter = cloudflareWebAnalytics({
+            accountId: 'account',
+            apiToken: 'token',
+            fetch: fetcher,
+            siteTag: 'site',
+        })
+
+        await expect(
+            adapter.query(
+                query({
+                    dimensions: ['time'],
+                    metrics: ['activeUsers'],
+                    range: {
+                        from: '2026-08-03T11:55:00.000Z',
+                        to: '2026-08-03T12:00:00.000Z',
+                    },
+                }),
+            ),
+        ).rejects.toThrow('scalar queries')
+        await expect(
+            adapter.query(
+                query({
+                    metrics: ['activeUsers'],
+                    range: {
+                        from: '2026-08-03T11:54:59.000Z',
+                        to: '2026-08-03T12:00:00.000Z',
+                    },
+                }),
+            ),
+        ).rejects.toThrow('up to five minutes')
+        expect(fetcher).not.toHaveBeenCalled()
     })
 
     it('keeps rows while surfacing GraphQL partial errors', async () => {
@@ -326,7 +443,7 @@ describe('Cloudflare Analytics Engine', () => {
         const writeDataPoint = vi.fn<CloudflareAnalyticsEngineBinding['writeDataPoint']>()
         const resource = cloudflareAnalyticsEngine({ binding: { writeDataPoint } })
 
-        await resource.sink?.track({
+        await resource.eventDestination?.track({
             id: 'event-1',
             name: 'search',
             origin: 'client',
@@ -342,7 +459,7 @@ describe('Cloudflare Analytics Engine', () => {
 
     it('rejects oversized indexes and blobs before writing', () => {
         const writeDataPoint = vi.fn<CloudflareAnalyticsEngineBinding['writeDataPoint']>()
-        const sink = cloudflareAnalyticsEngine({ binding: { writeDataPoint } }).sink
+        const sink = cloudflareAnalyticsEngine({ binding: { writeDataPoint } }).eventDestination
 
         expect(() =>
             sink?.track({
@@ -381,7 +498,7 @@ describe('Cloudflare Analytics Engine', () => {
             dataset: 'events_dataset',
             fetch: fetcher,
             now: () => new Date('2026-08-20T00:00:00.000Z'),
-        }).adapter
+        }).source
 
         const report = await adapter?.query(
             query({
@@ -406,7 +523,7 @@ describe('Cloudflare Analytics Engine', () => {
             dataset: 'events_dataset',
             fetch: fetcher,
             now: () => new Date('2026-08-20T00:00:00.000Z'),
-        }).adapter
+        }).source
 
         await expect(
             adapter?.query(
@@ -435,7 +552,7 @@ describe('Cloudflare Analytics Engine', () => {
                 ),
             ),
             now: () => new Date('2026-08-20T00:00:00.000Z'),
-        }).adapter
+        }).source
 
         await expect(
             adapter?.query(
@@ -454,7 +571,7 @@ describe('Cloudflare Analytics Engine', () => {
             dataset: 'events_dataset',
             fetch: vi.fn<TestFetch>(async () => Response.json({ data: [{}] })),
             now: () => new Date('2026-08-20T00:00:00.000Z'),
-        }).adapter
+        }).source
 
         await expect(
             adapter?.query(

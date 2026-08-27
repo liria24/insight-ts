@@ -32,6 +32,7 @@ export default defineConfig({
         index: 'src/index.ts',
         nuxt: 'src/nuxt.ts',
         'nuxt-runtime': 'src/nuxt-runtime.ts',
+        provider: 'src/provider.ts',
         vue: 'src/vue.ts',
     },
     exports: false,

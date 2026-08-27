@@ -120,7 +120,7 @@ describe('Nuxt capability fixtures', () => {
                     )
                     expect(server).toContain('site-tag')
                     expect(server).toContain('sc-domain:example.com')
-                    expect(server).toContain('auth?.searchConsole?.getAccessToken')
+                    expect(server).toContain('providers?.googleSearchConsole?.getAccessToken')
                 }
 
                 if (

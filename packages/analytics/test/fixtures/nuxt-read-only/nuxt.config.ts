@@ -8,7 +8,7 @@ export default defineNuxtConfig({
         name: 'read-only',
         providers: {
             cloudflare: { webAnalytics: 'site-tag' },
-            searchConsole: 'sc-domain:example.com',
+            googleSearchConsole: 'sc-domain:example.com',
         },
         ui: { styles: false },
     },

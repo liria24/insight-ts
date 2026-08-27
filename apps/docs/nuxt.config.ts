@@ -1,7 +1,6 @@
 import { withoutProtocol } from 'ufo'
 
 const publicUrl = 'https://analytics.liria.me'
-const cloudflareSiteTag = process.env.CLOUDFLARE_SITE_TAG
 
 export default defineNuxtConfig({
     future: { compatibilityVersion: 5 },
@@ -12,18 +11,14 @@ export default defineNuxtConfig({
 
     analytics: {
         name: 'docs',
-        ...(cloudflareSiteTag
-            ? {
-                  providers: {
-                      cloudflare: {
-                          webAnalytics: {
-                              host: withoutProtocol(publicUrl),
-                              siteTag: cloudflareSiteTag,
-                          },
-                      },
-                  },
-              }
-            : {}),
+        providers: {
+            cloudflare: {
+                webAnalytics: {
+                    host: withoutProtocol(publicUrl),
+                    siteTag: process.env.CLOUDFLARE_SITE_TAG,
+                },
+            },
+        },
     },
 
     nitro: {

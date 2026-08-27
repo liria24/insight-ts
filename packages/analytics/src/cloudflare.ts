@@ -12,5 +12,6 @@ export type {
     CloudflareAnalyticsEngineSink,
     CloudflareOptions,
     CloudflareProvider,
+    CloudflareSource,
     CloudflareWebAnalyticsOptions,
 } from './adapters/cloudflare.ts'

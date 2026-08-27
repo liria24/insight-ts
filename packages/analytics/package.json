@@ -41,6 +41,10 @@
             "types": "./dist/nuxt-runtime.d.ts",
             "import": "./dist/nuxt-runtime.js"
         },
+        "./provider": {
+            "types": "./dist/provider.d.ts",
+            "import": "./dist/provider.js"
+        },
         "./vue": {
             "types": "./dist/vue.d.ts",
             "import": "./dist/vue.js"

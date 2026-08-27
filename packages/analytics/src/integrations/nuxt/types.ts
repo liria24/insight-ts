@@ -26,11 +26,11 @@ export interface NuxtAnalyticsModuleOptions {
     name: string
     providers?: {
         cloudflare?: {
-            analyticsEngine?: string | { binding: string }
-            r2?: string | { binding: string }
-            webAnalytics?: string | { host?: string; siteTag: string }
+            analyticsEngine?: string | { binding?: string }
+            r2?: string | { binding?: string }
+            webAnalytics?: string | { host?: string; siteTag?: string }
         }
-        searchConsole?: string | { property: string }
+        googleSearchConsole?: string | { property?: string }
     }
     relay?: boolean | NuxtAnalyticsRelayOptions
     ui?: NuxtAnalyticsUIOptions

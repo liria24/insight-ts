@@ -6,9 +6,9 @@ import { googleSearchConsole } from '../src/google-search-console.ts'
 import {
     createAnalytics,
     defineAnalyticsConfig,
-    type AnalyticsAdapter,
     type AnalyticsMetricDescriptor,
     type AnalyticsReportMeta,
+    type AnalyticsSource,
     type ResolvedAnalyticsQuery,
 } from '../src/index.ts'
 
@@ -27,14 +27,16 @@ function days(query: ResolvedAnalyticsQuery): number {
     return (new Date(query.range.to).valueOf() - new Date(query.range.from).valueOf()) / 86_400_000
 }
 
-function archiveAdapter(
+function archiveSource(
     metrics: readonly AnalyticsMetricDescriptor[],
     materializedMetrics = metrics.map(({ id }) => id),
     bucketTimezone = 'UTC',
-): AnalyticsAdapter {
+): AnalyticsSource {
     return {
-        dataset: {
-            archive: [
+        archive: {
+            finalizationDelay: '1d',
+            initialLookback: '3m',
+            materializations: [
                 {
                     dimensions: ['time'],
                     grain: 'day',
@@ -43,12 +45,12 @@ function archiveAdapter(
                     start: '2026-01-01T00:00:00.000Z',
                 },
             ],
-            dimensions: [{ id: 'time', valueType: 'datetime' }],
-            domain: 'traffic',
-            id: 'traffic',
-            metrics,
         },
-        query: vi.fn<AnalyticsAdapter['query']>(async (query: ResolvedAnalyticsQuery) => {
+        dimensions: { time: { valueType: 'datetime' } },
+        domain: 'traffic',
+        id: 'traffic',
+        metrics: Object.fromEntries(metrics.map(({ id, ...definition }) => [id, definition])),
+        query: vi.fn<AnalyticsSource['query']>(async (query: ResolvedAnalyticsQuery) => {
             const values = Object.fromEntries(
                 query.metrics.map((metric) => {
                     const value = metric === 'impressions' ? days(query) * 4 : days(query) * 2
@@ -76,6 +78,10 @@ function archiveAdapter(
     }
 }
 
+function providers(source: AnalyticsSource) {
+    return [{ id: 'test', sources: [source] }]
+}
+
 const pageViews: AnalyticsMetricDescriptor = {
     aggregation: 'sum',
     id: 'pageViews',
@@ -91,9 +97,9 @@ describe('monthly archive', () => {
     })
 
     it('writes deterministic JSON partitions and refreshes the current month idempotently', async () => {
-        const source = archiveAdapter([pageViews])
+        const source = archiveSource([pageViews])
         const analytics = createAnalytics({
-            adapters: [source],
+            providers: providers(source),
             archive: { storage },
             environment: 'test',
             name: 'project',
@@ -131,9 +137,9 @@ describe('monthly archive', () => {
     })
 
     it('splits live edges from archived whole months without per-row I/O', async () => {
-        const source = archiveAdapter([pageViews], ['pageViews'], 'America/Los_Angeles')
+        const source = archiveSource([pageViews], ['pageViews'], 'America/Los_Angeles')
         const analytics = createAnalytics({
-            adapters: [source],
+            providers: providers(source),
             archive: { storage },
             name: 'project',
             now: () => now,
@@ -159,9 +165,9 @@ describe('monthly archive', () => {
     })
 
     it('uses later archive partitions after a middle-month hole', async () => {
-        const source = archiveAdapter([pageViews])
+        const source = archiveSource([pageViews])
         const analytics = createAnalytics({
-            adapters: [source],
+            providers: providers(source),
             archive: { storage },
             name: 'project',
             now: () => now,
@@ -188,6 +194,7 @@ describe('monthly archive', () => {
                     to: '2026-03-01T00:00:00.000Z',
                 },
             }),
+            expect.any(Object),
         )
         expect(report).toMatchObject({
             meta: { quality: { imported: true } },
@@ -196,9 +203,9 @@ describe('monthly archive', () => {
     })
 
     it('combines live data before materialized coverage with later partitions', async () => {
-        const source = archiveAdapter([pageViews])
+        const source = archiveSource([pageViews])
         const analytics = createAnalytics({
-            adapters: [source],
+            providers: providers(source),
             archive: { storage },
             name: 'project',
             now: () => now,
@@ -224,6 +231,7 @@ describe('monthly archive', () => {
                     to: '2026-01-01T00:00:00.000Z',
                 },
             }),
+            expect.any(Object),
         )
         expect(report).toMatchObject({
             meta: { quality: { imported: true } },
@@ -232,12 +240,12 @@ describe('monthly archive', () => {
     })
 
     it('rolls a daily archive into UTC weeks and months', async () => {
-        const source = archiveAdapter([pageViews])
-        source.validate = vi.fn<NonNullable<AnalyticsAdapter['validate']>>((query) => {
+        const source = archiveSource([pageViews])
+        source.validate = vi.fn<NonNullable<AnalyticsSource['validate']>>((query) => {
             if (query.grain !== 'day') throw new Error('Provider only accepts its native grain')
         })
         const analytics = createAnalytics({
-            adapters: [source],
+            providers: providers(source),
             archive: { storage },
             name: 'project',
             now: () => now,
@@ -293,8 +301,8 @@ describe('monthly archive', () => {
     })
 
     it('keeps merged metrics null when any contributing value is unavailable', async () => {
-        const source = archiveAdapter([pageViews])
-        source.query = vi.fn<AnalyticsAdapter['query']>(async (query) => ({
+        const source = archiveSource([pageViews])
+        source.query = vi.fn<AnalyticsSource['query']>(async (query) => ({
             kind: 'series',
             meta: meta(query.source),
             points: [
@@ -307,7 +315,7 @@ describe('monthly archive', () => {
             ],
         }))
         const analytics = createAnalytics({
-            adapters: [source],
+            providers: providers(source),
             archive: { storage },
             name: 'project',
             now: () => now,
@@ -337,7 +345,7 @@ describe('monthly archive', () => {
     })
 
     it('recomputes derived ratios from additive supporting metrics', async () => {
-        const source = archiveAdapter(
+        const source = archiveSource(
             [
                 {
                     aggregation: 'ratio',
@@ -352,7 +360,7 @@ describe('monthly archive', () => {
             ['ctr'],
         )
         const analytics = createAnalytics({
-            adapters: [source],
+            providers: providers(source),
             archive: { storage },
             name: 'project',
             now: () => now,
@@ -368,9 +376,9 @@ describe('monthly archive', () => {
     })
 
     it('rolls temporal archive rows into a dimensional table', async () => {
-        const source: AnalyticsAdapter = {
-            dataset: {
-                archive: [
+        const source: AnalyticsSource = {
+            archive: {
+                materializations: [
                     {
                         dimensions: ['time', 'country'],
                         grain: 'day',
@@ -379,15 +387,15 @@ describe('monthly archive', () => {
                         start: '2026-01-01T00:00:00.000Z',
                     },
                 ],
-                dimensions: [
-                    { id: 'time', valueType: 'datetime' },
-                    { id: 'country', valueType: 'string' },
-                ],
-                domain: 'traffic',
-                id: 'traffic-country',
-                metrics: [pageViews],
             },
-            query: vi.fn<AnalyticsAdapter['query']>(async (query) => ({
+            dimensions: {
+                country: { valueType: 'string' },
+                time: { valueType: 'datetime' },
+            },
+            domain: 'traffic',
+            id: 'traffic-country',
+            metrics: { pageViews: { ...pageViews } },
+            query: vi.fn<AnalyticsSource['query']>(async (query) => ({
                 kind: 'table',
                 meta: meta(query.source),
                 rows: Array.from({ length: days(query) }, (_, index) => ({
@@ -402,7 +410,7 @@ describe('monthly archive', () => {
             })),
         }
         const analytics = createAnalytics({
-            adapters: [source],
+            providers: providers(source),
             archive: { storage },
             name: 'project',
             now: () => now,
@@ -424,7 +432,7 @@ describe('monthly archive', () => {
     })
 
     it('uses one live query when a metric cannot be safely rolled up', async () => {
-        const source = archiveAdapter([
+        const source = archiveSource([
             {
                 aggregation: 'unique',
                 id: 'visitors',
@@ -433,7 +441,7 @@ describe('monthly archive', () => {
             },
         ])
         const analytics = createAnalytics({
-            adapters: [source],
+            providers: providers(source),
             archive: { storage },
             name: 'project',
             now: () => now,
@@ -450,9 +458,9 @@ describe('monthly archive', () => {
     })
 
     it('prunes partitions by observation month and reports corrupt data', async () => {
-        const source = archiveAdapter([pageViews])
+        const source = archiveSource([pageViews])
         const initial = createAnalytics({
-            adapters: [source],
+            providers: providers(source),
             archive: { storage },
             name: 'project',
             now: () => now,
@@ -461,7 +469,7 @@ describe('monthly archive', () => {
         await storage.removeItem('analytics:v1:project:default:traffic:daily:index')
 
         const retained = createAnalytics({
-            adapters: [source],
+            providers: providers(source),
             archive: { retention: '30d', storage },
             name: 'project',
             now: () => now,
@@ -521,13 +529,13 @@ describe('monthly archive', () => {
                     headers: { 'content-type': 'application/json' },
                 }),
         )
-        const source = googleSearchConsole({
+        const searchProvider = googleSearchConsole({
             auth: { getAccessToken: async () => 'token' },
             fetch: fetcher,
             property: 'sc-domain:example.com',
         })
         const analytics = createAnalytics({
-            adapters: [source],
+            providers: [searchProvider],
             archive: { storage },
             name: 'project',
             now: () => now,
@@ -571,13 +579,13 @@ describe('monthly archive', () => {
                 })
             },
         )
-        const source = googleSearchConsole({
+        const searchProvider = googleSearchConsole({
             auth: { getAccessToken: async () => 'token' },
             fetch: fetcher,
             property: 'sc-domain:example.com',
         })
         const analytics = createAnalytics({
-            adapters: [source],
+            providers: [searchProvider],
             archive: { storage },
             name: 'project',
             now: () => clock,
@@ -611,12 +619,14 @@ describe('monthly archive', () => {
 
     it('falls back to the current month when an adapter has no coverage metadata', async () => {
         let clock = now
-        const source = archiveAdapter([pageViews])
-        source.dataset.archive = [
-            { dimensions: ['time'], grain: 'day', id: 'daily', metrics: ['pageViews'] },
-        ]
+        const source = archiveSource([pageViews])
+        source.archive = {
+            materializations: [
+                { dimensions: ['time'], grain: 'day', id: 'daily', metrics: ['pageViews'] },
+            ],
+        }
         const analytics = createAnalytics({
-            adapters: [source],
+            providers: providers(source),
             archive: { storage },
             name: 'project',
             now: () => clock,
@@ -639,9 +649,9 @@ describe('monthly archive', () => {
     })
 
     it('drops a partially expired partition that cannot be filtered safely', async () => {
-        const source = archiveAdapter([pageViews])
+        const source = archiveSource([pageViews])
         const initial = createAnalytics({
-            adapters: [source],
+            providers: providers(source),
             archive: { storage },
             name: 'project',
             now: () => now,
@@ -655,7 +665,7 @@ describe('monthly archive', () => {
         })
 
         const retained = createAnalytics({
-            adapters: [source],
+            providers: providers(source),
             archive: { retention: '30d', storage },
             name: 'project',
             now: () => now,
@@ -668,17 +678,15 @@ describe('monthly archive', () => {
 
     it('rejects sub-day State grain before archive I/O', async () => {
         const config = defineAnalyticsConfig({
+            archive: { storage },
+            name: 'project',
+            providers: [],
             state: {
                 collect: () => ({ reports: 1 }),
                 metrics: { reports: {} },
             },
         })
-        const analytics = createAnalytics({
-            adapters: [],
-            archive: { storage },
-            config,
-            name: 'project',
-        })
+        const analytics = createAnalytics(config)
         const getItem = vi.spyOn(storage, 'getItem')
 
         await Promise.all(
@@ -686,7 +694,13 @@ describe('monthly archive', () => {
                 expect(
                     Reflect.apply(analytics.state.series, analytics.state, [
                         'reports',
-                        { grain, range: '30d' },
+                        {
+                            grain,
+                            range: {
+                                from: '2026-02-13T00:00:00.000Z',
+                                to: '2026-03-15T00:00:00.000Z',
+                            },
+                        },
                     ]),
                 ).rejects.toMatchObject({ code: 'INVALID_QUERY' }),
             ),
@@ -711,6 +725,10 @@ describe('monthly archive', () => {
             ],
         }))
         const config = defineAnalyticsConfig({
+            archive: { retention: '1d', storage },
+            name: 'project',
+            now: () => clock,
+            providers: [],
             state: {
                 collect,
                 metrics: {
@@ -719,13 +737,7 @@ describe('monthly archive', () => {
                 },
             },
         } as const)
-        const analytics = createAnalytics({
-            adapters: [],
-            archive: { retention: '1d', storage },
-            config,
-            name: 'project',
-            now: () => clock,
-        })
+        const analytics = createAnalytics(config)
 
         await analytics.maintenance.run()
         reports = 12

@@ -11,6 +11,7 @@ import {
     addTypeTemplate,
     defineNuxtModule,
     updateTemplates,
+    useLogger,
 } from 'nuxt/kit'
 import type { NuxtModule } from 'nuxt/schema'
 
@@ -26,10 +27,13 @@ const module: NuxtModule<NuxtAnalyticsModuleOptions> = defineNuxtModule<NuxtAnal
         },
         setup(options, nuxt) {
             if (!options.name) throw new TypeError('analytics.name is required')
+            const logger = useLogger('@liria24/analytics')
+            for (const warning of missingProviderWarnings(options)) logger.warn(warning)
 
             const events = options.events ?? {}
             const r2 = options.providers?.cloudflare?.r2
-            const r2Binding = typeof r2 === 'string' ? r2 : r2?.binding
+            const r2BindingValue = typeof r2 === 'string' ? r2 : r2?.binding
+            const r2Binding = r2BindingValue?.trim() || undefined
             const archiveEnabled = Boolean(options.archive || r2Binding)
             const archiveBase = resolveArchiveBase(options)
             if (archiveBase.length === 0) {
@@ -190,7 +194,7 @@ function createServerConfigTemplate(userConfigPath: string): string {
         : 'const userConfig = {}'
     return `${userConfigImport}
 const config = typeof userConfig === 'function' ? await userConfig() : userConfig
-export default { ...config, adapters: config.adapters || [] }
+export default config
 `
 }
 
@@ -198,6 +202,43 @@ export function resolveArchiveBase(options: NuxtAnalyticsModuleOptions): string 
     return typeof options.archive === 'object'
         ? (options.archive.base ?? 'analytics:archive')
         : 'analytics:archive'
+}
+
+export function missingProviderWarnings(options: NuxtAnalyticsModuleOptions): string[] {
+    const warnings: string[] = []
+    const cloudflare = options.providers?.cloudflare
+    const webAnalytics = cloudflare?.webAnalytics
+    const siteTag = typeof webAnalytics === 'string' ? webAnalytics : webAnalytics?.siteTag
+    const analyticsEngine = cloudflare?.analyticsEngine
+    const analyticsEngineBinding =
+        typeof analyticsEngine === 'string' ? analyticsEngine : analyticsEngine?.binding
+    const r2 = cloudflare?.r2
+    const r2Binding = typeof r2 === 'string' ? r2 : r2?.binding
+    const searchConsole = options.providers?.googleSearchConsole
+    const searchProperty =
+        typeof searchConsole === 'string' ? searchConsole : searchConsole?.property
+
+    if (webAnalytics !== undefined && !siteTag?.trim()) {
+        warnings.push(
+            'Cloudflare Web Analytics is disabled because analytics.providers.cloudflare.webAnalytics.siteTag is missing',
+        )
+    }
+    if (analyticsEngine !== undefined && !analyticsEngineBinding?.trim()) {
+        warnings.push(
+            'Cloudflare Analytics Engine is disabled because analytics.providers.cloudflare.analyticsEngine.binding is missing',
+        )
+    }
+    if (r2 !== undefined && !r2Binding?.trim()) {
+        warnings.push(
+            'Cloudflare R2 archive storage is disabled because analytics.providers.cloudflare.r2.binding is missing',
+        )
+    }
+    if (searchConsole !== undefined && !searchProperty?.trim()) {
+        warnings.push(
+            'Google Search Console is disabled because analytics.providers.googleSearchConsole.property is missing',
+        )
+    }
+    return warnings
 }
 
 function createServerRuntimeTypeTemplate(): string {
@@ -211,7 +252,8 @@ export declare const useServerAnalytics: NuxtAnalyticsServerRuntime['useServerAn
 export function createServerRuntimeTemplate(options: NuxtAnalyticsModuleOptions): string {
     const archive = typeof options.archive === 'object' ? options.archive : {}
     const r2 = options.providers?.cloudflare?.r2
-    const r2Binding = typeof r2 === 'string' ? r2 : r2?.binding
+    const r2BindingValue = typeof r2 === 'string' ? r2 : r2?.binding
+    const r2Binding = r2BindingValue?.trim() || undefined
     const archiveEnabled = Boolean(options.archive || r2Binding)
     const archiveBase = resolveArchiveBase(options)
     const archiveExpression = archiveEnabled
@@ -221,56 +263,83 @@ export function createServerRuntimeTemplate(options: NuxtAnalyticsModuleOptions)
         : 'undefined'
 
     const webAnalytics = options.providers?.cloudflare?.webAnalytics
-    const siteTag = typeof webAnalytics === 'string' ? webAnalytics : webAnalytics?.siteTag
+    const siteTagValue = typeof webAnalytics === 'string' ? webAnalytics : webAnalytics?.siteTag
+    const siteTag = siteTagValue?.trim() || undefined
     const host = typeof webAnalytics === 'string' ? undefined : webAnalytics?.host
-    const searchConsole = options.providers?.searchConsole
-    const searchProperty =
+    const searchConsole = options.providers?.googleSearchConsole
+    const searchPropertyValue =
         typeof searchConsole === 'string' ? searchConsole : searchConsole?.property
+    const searchProperty = searchPropertyValue?.trim() || undefined
     const analyticsEngine = options.providers?.cloudflare?.analyticsEngine
-    const analyticsEngineBinding =
+    const analyticsEngineBindingValue =
         typeof analyticsEngine === 'string' ? analyticsEngine : analyticsEngine?.binding
-    const analyticsConfig = `{ events: ${JSON.stringify(options.events ?? {})}, state: config.state }`
+    const analyticsEngineBinding = analyticsEngineBindingValue?.trim() || undefined
+    const cloudflareImports = [
+        ...(siteTag || analyticsEngineBinding ? ['cloudflare'] : []),
+        ...(analyticsEngineBinding ? ['cloudflareAnalyticsEngine'] : []),
+    ]
+    const nuxtImports = [
+        ...(siteTag ? ['useRuntimeConfig'] : []),
+        ...(archiveEnabled ? ['useStorage'] : []),
+    ]
 
     return `import { createAnalytics } from '@liria24/analytics'
-import { cloudflareAnalyticsEngine, cloudflareWebAnalytics } from '@liria24/analytics/cloudflare'
-import { googleSearchConsole } from '@liria24/analytics/google-search-console'
-import { useRuntimeConfig, useStorage } from '#imports'
+${cloudflareImports.length > 0 ? `import { ${cloudflareImports.join(', ')} } from '@liria24/analytics/cloudflare'` : ''}
+${searchProperty ? "import { googleSearchConsole } from '@liria24/analytics/google-search-console'" : ''}
+${nuxtImports.length > 0 ? `import { ${nuxtImports.join(', ')} } from '#imports'` : ''}
 import config from '#analytics/server-config'
 
 let analytics
-function createServerAnalytics(event) {
-    const runtimeConfig = useRuntimeConfig()
-    const adapters = [...(config.adapters || [])]
+let warnedCloudflare = false
+let warnedSearchConsole = false
+async function createServerAnalytics(event) {
+    ${siteTag ? 'const runtimeConfig = useRuntimeConfig()' : ''}
+    const customProviders = typeof config.customProviders === 'function'
+      ? await config.customProviders({ event })
+      : (config.customProviders || [])
+    const providers = [...customProviders]
     ${
         siteTag
-            ? `const accountId = config.cloudflare?.accountId || runtimeConfig.cloudflare?.accountId || process.env.CLOUDFLARE_ACCOUNT_ID
-    const apiToken = config.cloudflare?.apiToken || runtimeConfig.cloudflare?.apiToken || process.env.CLOUDFLARE_API_TOKEN
-    if (!accountId || !apiToken) throw new Error('Cloudflare Web Analytics credentials are missing')
-    adapters.push(cloudflareWebAnalytics({ accountId, apiToken, siteTag: ${JSON.stringify(siteTag)}${host === undefined ? '' : `, host: ${JSON.stringify(host)}`} }))`
+            ? `const accountId = config.providers?.cloudflare?.accountId || runtimeConfig.cloudflare?.accountId || process.env.CLOUDFLARE_ACCOUNT_ID
+    const apiToken = config.providers?.cloudflare?.apiToken || runtimeConfig.cloudflare?.apiToken || process.env.CLOUDFLARE_API_TOKEN
+    if ((!accountId || !apiToken) && !warnedCloudflare) {
+      warnedCloudflare = true
+      const missing = [!accountId && 'accountId', !apiToken && 'apiToken'].filter(Boolean).join(', ')
+      console.warn('[analytics] Cloudflare Web Analytics is unavailable because ' + missing + ' is missing')
+    }`
             : ''
     }
     ${
         searchProperty
-            ? `const getAccessToken = config.auth?.searchConsole?.getAccessToken
-    if (!getAccessToken) throw new Error('Search Console auth.searchConsole.getAccessToken is missing')
-    adapters.push(googleSearchConsole({ property: ${JSON.stringify(searchProperty)}, auth: { getAccessToken } }))`
+            ? `const getAccessToken = config.providers?.googleSearchConsole?.getAccessToken
+    if (!getAccessToken && !warnedSearchConsole) {
+      warnedSearchConsole = true
+      console.warn('[analytics] Google Search Console is unavailable because providers.googleSearchConsole.getAccessToken is missing')
+    }`
             : ''
     }
     ${
         analyticsEngineBinding
-            ? `const analyticsEngineBinding = event?.context.cloudflare?.env?.[${JSON.stringify(analyticsEngineBinding)}] || config.cloudflare?.bindings?.[${JSON.stringify(analyticsEngineBinding)}]
-    if (analyticsEngineBinding) {
-      const eventSink = cloudflareAnalyticsEngine({ binding: analyticsEngineBinding }).sink
-      adapters.push({ adapters: [], eventSink })
-    }`
+            ? `const analyticsEngineBinding = event?.context.cloudflare?.env?.[${JSON.stringify(analyticsEngineBinding)}] || config.providers?.cloudflare?.bindings?.[${JSON.stringify(analyticsEngineBinding)}]`
             : ''
     }
+    ${
+        siteTag || analyticsEngineBinding
+            ? `providers.push(cloudflare({
+      ${siteTag ? 'accountId, apiToken,' : ''}
+      ${siteTag ? `webAnalytics: { siteTag: ${JSON.stringify(siteTag)}${host === undefined ? '' : `, host: ${JSON.stringify(host)}`} },` : ''}
+      ${analyticsEngineBinding ? '...(analyticsEngineBinding ? { analyticsEngine: { binding: analyticsEngineBinding } } : {}),' : ''}
+    }))`
+            : ''
+    }
+    ${searchProperty ? `providers.push(googleSearchConsole({ property: ${JSON.stringify(searchProperty)}, auth: { ...(getAccessToken ? { getAccessToken } : {}) } }))` : ''}
     return createAnalytics({
     name: ${JSON.stringify(options.name)},
     environment: ${JSON.stringify(options.environment ?? 'default')},
-    adapters,
-    config: ${analyticsConfig},
-    defaultSources: config.defaultSources,
+    providers,
+    events: ${JSON.stringify(options.events ?? {})},
+    state: config.state,
+    defaults: config.defaults,
     archive: ${archiveExpression},
     })
 }
@@ -279,19 +348,20 @@ export function useServerAnalytics(event) {
   ${
       analyticsEngineBinding
           ? `if (event?.context.cloudflare?.env?.[${JSON.stringify(analyticsEngineBinding)}]) {
-    return Promise.resolve(createServerAnalytics(event))
+    return createServerAnalytics(event)
   }`
           : ''
   }
-  return analytics ||= Promise.resolve().then(() => createServerAnalytics())
+  if (typeof config.customProviders === 'function') return createServerAnalytics(event)
+  return analytics ||= createServerAnalytics()
 }
 
 export async function deliverEvents(events, event) {
   ${
       analyticsEngineBinding
-          ? `const binding = event.context.cloudflare?.env?.[${JSON.stringify(analyticsEngineBinding)}] || config.cloudflare?.bindings?.[${JSON.stringify(analyticsEngineBinding)}]
+          ? `const binding = event.context.cloudflare?.env?.[${JSON.stringify(analyticsEngineBinding)}] || config.providers?.cloudflare?.bindings?.[${JSON.stringify(analyticsEngineBinding)}]
   if (!binding) throw new Error('Cloudflare Analytics Engine binding is missing')
-  const sink = cloudflareAnalyticsEngine({ binding }).sink
+  const sink = cloudflareAnalyticsEngine({ binding }).eventDestination
   await Promise.all(events.map((item) => sink.track(item)))`
           : ''
   }

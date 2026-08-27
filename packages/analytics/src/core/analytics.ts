@@ -1,35 +1,40 @@
-import { AnalyticsArchive } from './archive.ts'
-import { AnalyticsError } from './errors.ts'
-import { resolveAdapter, resolveQuery, validateQuery } from './query.ts'
+import { AnalyticsArchive } from './archive'
+import { AnalyticsError } from './errors'
+import { resolveQuery, resolveSource, validateQuery } from './query'
 import type {
-    AnalyticsAdapter,
-    AnalyticsAdapterBundle,
-    AnalyticsAdapterInput,
+    AnalyticsBreakdownQuery,
     AnalyticsClient,
     AnalyticsConfig,
     AnalyticsDomain,
-    AnalyticsDomainSeriesQuery,
+    AnalyticsDomainClient,
     AnalyticsEventDefinition,
     AnalyticsEventDefinitions,
+    AnalyticsInternalSource,
+    AnalyticsNormalizedSourceDescriptor,
     AnalyticsNormalizedStateValue,
+    AnalyticsProvider,
     AnalyticsQuery,
+    AnalyticsReport,
+    AnalyticsReportMeta,
+    AnalyticsSchema,
+    AnalyticsSource,
+    AnalyticsSourceClient,
+    AnalyticsSourceQueryContext,
     AnalyticsStateClient,
     AnalyticsStateMetricDefinition,
     AnalyticsStateMetricDefinitions,
     AnalyticsStateMetricName,
     AnalyticsStateSnapshot,
-    CreateAnalyticsOptions,
-} from './types.ts'
+} from './types'
 
 export function defineAnalyticsConfig<
     const TEvents extends AnalyticsEventDefinitions = {},
     const TState extends AnalyticsStateMetricDefinitions = {},
->(config: AnalyticsConfig<TEvents, TState>): AnalyticsConfig<TEvents, TState> {
+    const TProviders extends readonly AnalyticsProvider[] = readonly AnalyticsProvider[],
+>(
+    config: AnalyticsConfig<TEvents, TState, TProviders>,
+): AnalyticsConfig<TEvents, TState, TProviders> {
     return config
-}
-
-function isBundle(input: AnalyticsAdapterInput): input is AnalyticsAdapterBundle {
-    return 'adapters' in input
 }
 
 function validStateValue(definition: AnalyticsStateMetricDefinition, value: unknown): boolean {
@@ -63,21 +68,21 @@ function normalizeStateMetricValue(
     )
 }
 
-function configuredStateNames<TConfig extends AnalyticsConfig>(
-    config: TConfig | undefined,
+function configuredStateNames<TConfig extends AnalyticsSchema>(
+    config: TConfig,
 ): AnalyticsStateMetricName<TConfig>[] {
     // Object.keys preserves these keys; the assertion restores the configured literal union.
     // oxlint-disable-next-line typescript/no-unsafe-type-assertion
-    return Object.keys(config?.state?.metrics ?? {}) as AnalyticsStateMetricName<TConfig>[]
+    return Object.keys(config.state?.metrics ?? {}) as AnalyticsStateMetricName<TConfig>[]
 }
 
-function createStateClient<TConfig extends AnalyticsConfig>(
-    config: TConfig | undefined,
+function createStateClient<TConfig extends AnalyticsSchema>(
+    config: TConfig,
     archive: AnalyticsArchive | undefined,
 ): AnalyticsStateClient<TConfig> {
     return {
         async current(requested) {
-            const state = config?.state
+            const state = config.state
             if (!state) {
                 throw new AnalyticsError(
                     'CAPABILITY_UNAVAILABLE',
@@ -114,7 +119,7 @@ function createStateClient<TConfig extends AnalyticsConfig>(
             >
         },
         async series(metric, query) {
-            const state = config?.state
+            const state = config.state
             if (!state || !Object.hasOwn(state.metrics, metric)) {
                 throw new AnalyticsError('UNSUPPORTED_METRIC', `Unknown state metric: ${metric}`)
             }
@@ -136,17 +141,11 @@ function validateEvent(
 ): Readonly<Record<string, unknown>> {
     if (!definition) throw new AnalyticsError('INVALID_QUERY', `Unknown analytics event: ${name}`)
     if (!definition.properties) {
-        if (properties !== undefined) {
-            if (
-                !properties ||
-                typeof properties !== 'object' ||
-                Object.keys(properties).length > 0
-            ) {
-                throw new AnalyticsError(
-                    'INVALID_QUERY',
-                    `Event "${name}" does not accept properties`,
-                )
-            }
+        if (
+            properties !== undefined &&
+            (!properties || typeof properties !== 'object' || Object.keys(properties).length > 0)
+        ) {
+            throw new AnalyticsError('INVALID_QUERY', `Event "${name}" does not accept properties`)
         }
         return {}
     }
@@ -185,96 +184,190 @@ function validateEvent(
     return Object.fromEntries(Object.entries(properties))
 }
 
-export function createAnalytics<const TConfig extends AnalyticsConfig = AnalyticsConfig>(
-    options: CreateAnalyticsOptions<TConfig>,
+function normalizeSource(source: AnalyticsSource): AnalyticsNormalizedSourceDescriptor {
+    return {
+        ...(source.archive ? { archive: source.archive } : {}),
+        dimensions: Object.entries(source.dimensions).map(([id, descriptor]) => ({
+            id,
+            ...descriptor,
+        })),
+        domain: source.domain,
+        id: source.id,
+        metrics: Object.entries(source.metrics).map(([id, descriptor]) => ({
+            id,
+            ...descriptor,
+        })),
+    }
+}
+
+function reportContext(
+    query: Parameters<AnalyticsSource['query']>[0],
+    queriedAt: Date,
+): AnalyticsSourceQueryContext {
+    const meta = (
+        quality: AnalyticsReportMeta['quality'] | undefined,
+        freshness: AnalyticsReportMeta['freshness'] | undefined,
+        temporal: Omit<AnalyticsReportMeta['temporal'], 'grain'> | undefined,
+    ): AnalyticsReportMeta => ({
+        ...(freshness ? { freshness } : {}),
+        quality: quality ?? {},
+        queriedAt: queriedAt.toISOString(),
+        source: query.source,
+        temporal: {
+            bucketTimezone: query.timezone,
+            grain: query.grain,
+            ...temporal,
+        },
+    })
+    return {
+        breakdown: ({ freshness, quality, rows, temporal }) => ({
+            kind: 'table',
+            meta: meta(quality, freshness, temporal),
+            rows,
+        }),
+        series: ({ freshness, points, quality, temporal }) => ({
+            kind: 'series',
+            meta: meta(quality, freshness, temporal),
+            points,
+        }),
+        summary: ({ freshness, quality, temporal, values }) => ({
+            kind: 'scalar',
+            meta: meta(quality, freshness, temporal),
+            values,
+        }),
+    }
+}
+
+function internalSources(
+    providers: readonly AnalyticsProvider[],
+    now: () => Date,
+): AnalyticsInternalSource[] {
+    return providers.flatMap((provider) =>
+        provider.sources.map((definition) => ({
+            provider: provider.id,
+            async query(query) {
+                return definition.query(query, reportContext(query, now()))
+            },
+            source: normalizeSource(definition),
+            ...(definition.validate ? { validate: definition.validate } : {}),
+        })),
+    )
+}
+
+type ReportKind = AnalyticsReport['kind']
+
+export function createAnalytics<const TConfig extends AnalyticsConfig>(
+    options: TConfig,
 ): AnalyticsClient<TConfig> {
     if (!options.name) {
         throw new AnalyticsError('INVALID_QUERY', 'Analytics project name is required')
     }
-    const bundles = options.adapters.filter(isBundle)
-    const adapters: AnalyticsAdapter[] = options.adapters.flatMap((input) =>
-        isBundle(input) ? input.adapters : [input],
-    )
-    const eventSinks = bundles.flatMap(({ eventSink }) => (eventSink ? [eventSink] : []))
-    const ids = adapters.map(({ dataset }) => dataset.id)
-    if (new Set(ids).size !== ids.length) {
-        throw new AnalyticsError('INVALID_QUERY', 'Analytics dataset ids must be unique')
+    const providerIds = options.providers.map(({ id }) => id)
+    if (new Set(providerIds).size !== providerIds.length) {
+        throw new AnalyticsError('INVALID_QUERY', 'Analytics provider ids must be unique')
     }
-
     const now = options.now ?? (() => new Date())
+    const sources = internalSources(options.providers, now)
+    const sourceIds = sources.map(({ source }) => source.id)
+    if (new Set(sourceIds).size !== sourceIds.length) {
+        throw new AnalyticsError('INVALID_QUERY', 'Analytics source ids must be unique')
+    }
+    const eventDestinations = options.providers.flatMap(({ eventDestination }) =>
+        eventDestination ? [eventDestination] : [],
+    )
     const archive = options.archive
         ? new AnalyticsArchive(options.name, options.environment ?? 'default', options.archive, now)
         : undefined
 
-    const execute = async (query: AnalyticsQuery, domain?: AnalyticsDomain, series = false) => {
-        const executionNow = now()
-        validateQuery(query, executionNow)
-        const candidates = domain
-            ? adapters.filter(({ dataset }) => dataset.domain === domain)
-            : adapters
-        const adapter = resolveAdapter(candidates, query, options.defaultSources ?? {})
-        const effectiveQuery = series
-            ? {
-                  ...query,
-                  dimensions:
-                      query.dimensions ??
-                      adapter.dataset.dimensions
-                          .filter(
-                              ({ valueType }) => valueType === 'date' || valueType === 'datetime',
-                          )
-                          .slice(0, 1)
-                          .map(({ id }) => id),
-              }
-            : query
-        if (series) {
-            const dimension = effectiveQuery.dimensions?.[0]
-            const descriptor = adapter.dataset.dimensions.find(({ id }) => id === dimension)
-            if (
-                effectiveQuery.dimensions?.length !== 1 ||
-                (descriptor?.valueType !== 'date' && descriptor?.valueType !== 'datetime')
-            ) {
-                throw new AnalyticsError(
-                    'UNSUPPORTED_DIMENSION',
-                    `Dataset "${adapter.dataset.id}" has no usable temporal dimension`,
-                )
-            }
+    const execute = async (
+        query: AnalyticsQuery,
+        selection: { domain?: AnalyticsDomain; source?: string } = {},
+        expectedKind?: ReportKind,
+    ): Promise<AnalyticsReport> => {
+        validateQuery(query)
+        const candidates = selection.domain
+            ? sources.filter(({ source }) => source.domain === selection.domain)
+            : sources
+        const requestedQuery = selection.source ? { ...query, source: selection.source } : query
+        const selected = resolveSource(candidates, requestedQuery, options.defaults ?? {})
+        const dimensions =
+            expectedKind === 'series'
+                ? selected.source.dimensions
+                      .filter(({ valueType }) => valueType === 'date' || valueType === 'datetime')
+                      .slice(0, 1)
+                      .map(({ id }) => id)
+                : requestedQuery.dimensions
+        const effectiveQuery =
+            dimensions === undefined ? requestedQuery : { ...requestedQuery, dimensions }
+        if (expectedKind === 'series' && dimensions?.length !== 1) {
+            throw new AnalyticsError(
+                'UNSUPPORTED_DIMENSION',
+                `Source "${selected.source.id}" has no usable temporal dimension`,
+            )
         }
-        const resolved = resolveQuery(effectiveQuery, adapter.dataset.id, executionNow)
-        if (!archive) adapter.validate?.(resolved)
+        const resolved = resolveQuery(effectiveQuery, selected.source.id)
+        if (!archive) selected.validate?.(resolved)
         const report = archive
-            ? await archive.query(adapter, resolved)
-            : await adapter.query(resolved)
+            ? await archive.query(selected, resolved)
+            : await selected.query(resolved)
+        if (expectedKind && report.kind !== expectedKind) {
+            throw new AnalyticsError(
+                'INVALID_QUERY',
+                `Source "${selected.source.id}" returned ${report.kind}; expected ${expectedKind}`,
+            )
+        }
         return report
     }
 
-    const domainClient = (domain: AnalyticsDomain) => ({
-        async series(query: AnalyticsDomainSeriesQuery) {
-            const report = await execute(query, domain, true)
-            if (report.kind !== 'series') {
+    const scopedClient = (selection: {
+        domain?: AnalyticsDomain
+        source?: string
+    }): AnalyticsDomainClient | AnalyticsSourceClient => ({
+        async breakdown(query: AnalyticsBreakdownQuery) {
+            if (query.dimensions.length === 0) {
                 throw new AnalyticsError(
                     'INVALID_QUERY',
-                    'The selected adapter did not return a series',
+                    'Breakdown queries require at least one dimension',
                 )
             }
-            return report
+            // The runtime kind check in execute narrows this public method contract.
+            // oxlint-disable-next-line typescript/no-unsafe-type-assertion
+            return (await execute(query, selection, 'table')) as Awaited<
+                ReturnType<AnalyticsDomainClient['breakdown']>
+            >
+        },
+        async series(query) {
+            // The runtime kind check in execute narrows this public method contract.
+            // oxlint-disable-next-line typescript/no-unsafe-type-assertion
+            return (await execute(query, selection, 'series')) as Awaited<
+                ReturnType<AnalyticsDomainClient['series']>
+            >
+        },
+        async summary(query) {
+            // The runtime kind check in execute narrows this public method contract.
+            // oxlint-disable-next-line typescript/no-unsafe-type-assertion
+            return (await execute({ ...query, dimensions: [] }, selection, 'scalar')) as Awaited<
+                ReturnType<AnalyticsDomainClient['summary']>
+            >
         },
     })
-    const state = createStateClient(options.config, archive)
+    const state = createStateClient(options, archive)
 
     return {
-        experience: domainClient('experience'),
+        domain: (domain) => scopedClient({ domain }),
+        experience: scopedClient({ domain: 'experience' }),
         maintenance: {
             async run() {
                 if (!archive) return { pruned: 0, refreshed: 0 }
-                const providerResult = await archive.maintain(adapters)
-                const names = configuredStateNames(options.config)
+                const providerResult = await archive.maintain(sources)
+                const names = configuredStateNames(options)
                 if (names.length === 0) return providerResult
                 const snapshot = await state.current(names)
                 const values = Object.fromEntries(
                     names.map((name) => [
                         name,
                         normalizeStateMetricValue(
-                            options.config?.state?.metrics[name] ?? {},
+                            options.state?.metrics[name] ?? {},
                             snapshot[name],
                         ),
                     ]),
@@ -291,14 +384,24 @@ export function createAnalytics<const TConfig extends AnalyticsConfig = Analytic
                 }
             },
         },
+        product: scopedClient({ domain: 'product' }),
         query: (query) => execute(query),
-        search: domainClient('search'),
+        search: scopedClient({ domain: 'search' }),
+        source: (source) => scopedClient({ source }),
+        sources: () =>
+            sources.map(({ provider, source }) => ({
+                dimensions: source.dimensions.map(({ id }) => id),
+                domain: source.domain,
+                id: source.id,
+                metrics: source.metrics.map(({ id }) => id),
+                provider,
+            })),
         state,
         async track(name, ...arguments_) {
-            const events = options.config?.events
+            const events: AnalyticsEventDefinitions | undefined = options.events
             const definition = events && Object.hasOwn(events, name) ? events[name] : undefined
             const properties = validateEvent(name, definition, arguments_[0])
-            if (eventSinks.length === 0) {
+            if (eventDestinations.length === 0) {
                 throw new AnalyticsError(
                     'CAPABILITY_UNAVAILABLE',
                     'No analytics event destination is configured',
@@ -311,8 +414,10 @@ export function createAnalytics<const TConfig extends AnalyticsConfig = Analytic
                 properties,
                 timestamp: now().toISOString(),
             }
-            await Promise.all(eventSinks.map(async (sink) => sink.track(event)))
+            await Promise.all(
+                eventDestinations.map(async (destination) => destination.track(event)),
+            )
         },
-        traffic: domainClient('traffic'),
+        traffic: scopedClient({ domain: 'traffic' }),
     }
 }
