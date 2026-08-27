@@ -13,6 +13,7 @@
     "dependencies": {
         "@liria24/analytics": "workspace:*",
         "@nuxt/ui": "^4.11.0",
+        "@vueuse/nuxt": "14.4.0",
         "docus": "^5.12.3",
         "nuxt": "^4.5.2",
         "tailwindcss": "^4.3.3",
