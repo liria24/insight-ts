@@ -47,14 +47,12 @@
       },
       "peerDependencies": {
         "h3": "^1.15",
-        "jspdf": "*",
         "nuxt": "^4.5.1",
         "vue": "^3.5.41",
         "vue-data-ui": "^3.23.9",
       },
       "optionalPeers": [
         "h3",
-        "jspdf",
         "nuxt",
         "vue",
         "vue-data-ui",

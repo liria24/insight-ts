@@ -1,7 +1,5 @@
 import { AnalyticsError } from '@liria24/analytics'
 
-import { createDemoFixture } from '../utils/demo-fixture'
-
 export default defineCachedEventHandler(
     async (event) => {
         try {

@@ -1,7 +1,11 @@
+import { withoutProtocol } from 'ufo'
+
 const publicUrl = 'https://analytics.liria.me'
 const cloudflareSiteTag = process.env.CLOUDFLARE_SITE_TAG
 
 export default defineNuxtConfig({
+    future: { compatibilityVersion: 5 },
+
     extends: ['docus'],
 
     modules: ['@liria24/analytics/nuxt'],
@@ -13,7 +17,7 @@ export default defineNuxtConfig({
                   providers: {
                       cloudflare: {
                           webAnalytics: {
-                              host: 'analytics.liria.me',
+                              host: withoutProtocol(publicUrl),
                               siteTag: cloudflareSiteTag,
                           },
                       },
@@ -29,19 +33,10 @@ export default defineNuxtConfig({
 
     routeRules: {
         '/api': { redirect: '/reference/api' },
-        '/guide': { redirect: '/getting-started/introduction' },
-    },
-
-    vite: {
-        vue: {
-            features: {
-                optionsAPI: false,
-            },
-        },
     },
 
     llms: {
-        domain: 'https://analytics.liria.me',
+        domain: publicUrl,
     },
 
     mcp: {

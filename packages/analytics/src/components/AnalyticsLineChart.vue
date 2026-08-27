@@ -160,6 +160,7 @@ const config = computed<VueUiXyConfig>(() => ({
         title: { show: false },
         tooltip: { show: true, showTimeLabel: false },
         userOptions: { show: false },
+        zoom: { show: false },
     },
     line: { smooth: props.smooth, useGradient: false },
     responsive: true,
@@ -237,14 +238,14 @@ function tooltipPointAt(index: number): AnalyticsSeriesPoint {
         :class="[ui.root, props.class]"
         :data-slot="String($attrs['data-slot'] ?? 'root')"
     >
-        <slot v-if="!seriesReport" name="empty" reason="kind" :ui="ui">
+        <slot v-if="!seriesReport" name="empty" reason="kind" :ui>
             <div aria-live="polite" :class="ui.empty" data-slot="empty" role="status">
                 <strong>{{ label }}</strong>
                 <span>No time series data</span>
             </div>
         </slot>
 
-        <slot v-else-if="isEmpty" name="empty" reason="empty" :ui="ui">
+        <slot v-else-if="isEmpty" name="empty" reason="empty" :ui>
             <div aria-live="polite" :class="ui.empty" data-slot="empty" role="status">
                 <strong>{{ label }}</strong>
                 <span>No data</span>
@@ -253,11 +254,11 @@ function tooltipPointAt(index: number): AnalyticsSeriesPoint {
 
         <template v-else>
             <header :class="ui.header" data-slot="header">
-                <slot v-if="props.title" name="title" :title="props.title" :ui="ui">
+                <slot v-if="props.title" name="title" :title="props.title" :ui>
                     <h3 :class="ui.title" data-slot="title">{{ props.title }}</h3>
                 </slot>
 
-                <slot name="legend" :series="chartSeries" :ui="ui">
+                <slot name="legend" :series="chartSeries" :ui>
                     <ul :class="ui.legend" data-slot="legend">
                         <li
                             v-for="series in chartSeries"
@@ -288,27 +289,23 @@ function tooltipPointAt(index: number): AnalyticsSeriesPoint {
             >
                 <slot
                     name="chart"
-                    :labels="labels"
+                    :labels
                     :metrics="selectedMetrics"
                     :points="seriesReport.points"
                     :series="chartSeries"
-                    :times="times"
-                    :timezone="timezone"
-                    :ui="ui"
+                    :times
+                    :timezone
+                    :ui
                     :y-domain="yDomain"
                 >
-                    <ClientVueUiXy
-                        v-if="mounted && ClientVueUiXy"
-                        :config="config"
-                        :dataset="dataset"
-                    >
+                    <ClientVueUiXy v-if="mounted && ClientVueUiXy" :config :dataset>
                         <template #tooltip="{ absoluteIndex }">
                             <slot
                                 v-if="tooltipAt(absoluteIndex)"
                                 name="tooltip"
                                 :label="tooltipAt(absoluteIndex)?.label ?? ''"
                                 :point="tooltipPointAt(absoluteIndex)"
-                                :ui="ui"
+                                :ui
                                 :values="tooltipAt(absoluteIndex)?.values ?? []"
                             >
                                 <div :class="ui.tooltip" data-slot="tooltip">
@@ -349,9 +346,9 @@ function tooltipPointAt(index: number): AnalyticsSeriesPoint {
             <slot
                 v-if="messages.length > 0"
                 name="quality"
-                :messages="messages"
+                :messages
                 :quality="props.report.meta.quality"
-                :ui="ui"
+                :ui
             >
                 <p aria-live="polite" :class="ui.quality" data-slot="quality" role="status">
                     {{ messages.join(' \u00b7 ') }}
