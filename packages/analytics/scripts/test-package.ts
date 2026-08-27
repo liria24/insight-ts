@@ -55,7 +55,7 @@ if (
 `,
     },
     {
-        dependencies: ['nuxt@4.5.2'],
+        dependencies: ['nuxt@4.5.2', 'vue-tsc@3.3.11'],
         forbiddenPackages: ['vue-data-ui'],
         name: 'consumer-nuxt',
         nuxtBuild: true,
@@ -230,6 +230,59 @@ try {
                 join(directory, 'app.vue'),
                 '<template><main>Packed Nuxt</main></template>',
             )
+            const serverDirectory = join(directory, 'server', 'api')
+            await mkdir(serverDirectory, { recursive: true })
+            await Bun.write(
+                join(serverDirectory, 'typed.get.ts'),
+                `import type { AnalyticsClient } from '@liria24/analytics'
+import type { NuxtAnalyticsServerEvent } from '@liria24/analytics/nuxt/runtime'
+
+export default defineEventHandler(async (event) => {
+  const pending: Promise<AnalyticsClient> = useServerAnalytics()
+  const analytics: AnalyticsClient = await useServerAnalytics(event)
+  await pending
+  await analytics.query({ metrics: ['pageViews'], range: '1d' })
+  await analytics.track('pageViewed')
+  await analytics.state.current('activeUsers')
+  await analytics.maintenance.run()
+
+  const events: readonly NuxtAnalyticsServerEvent[] = [{
+    id: 'event-1',
+    name: 'pageViewed',
+    origin: 'client',
+    properties: {},
+    timestamp: '2026-08-27T00:00:00.000Z',
+  }]
+  await deliverEvents(events, event)
+
+  // @ts-expect-error unknown methods must not be accepted through an any auto-import
+  analytics.unknownMethod()
+  // @ts-expect-error deliverEvents requires the H3 event
+  await deliverEvents(events)
+  return { ok: true }
+})
+`,
+            )
+            await run([process.execPath, 'x', 'nuxt', 'prepare'], {
+                cwd: directory,
+                env: environment,
+            })
+            await Bun.write(
+                join(directory, 'tsconfig.json'),
+                JSON.stringify({
+                    files: [],
+                    references: [
+                        { path: './.nuxt/tsconfig.app.json' },
+                        { path: './.nuxt/tsconfig.server.json' },
+                        { path: './.nuxt/tsconfig.shared.json' },
+                        { path: './.nuxt/tsconfig.node.json' },
+                    ],
+                }),
+            )
+            await run([process.execPath, 'x', 'nuxt', 'typecheck'], {
+                cwd: directory,
+                env: environment,
+            })
             await run([process.execPath, 'x', 'nuxt', 'build'], {
                 cwd: directory,
                 env: environment,
@@ -239,6 +292,7 @@ try {
             ).text()
             if (
                 !(await exists(join(directory, '.output', 'server', 'index.mjs'))) ||
+                !(await exists(join(directory, '.nuxt', 'analytics', 'server-runtime.d.ts'))) ||
                 !generatedRuntime.includes("from '@liria24/analytics'")
             ) {
                 throw new Error('The packed Nuxt application did not build its runtime templates')

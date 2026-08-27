@@ -95,6 +95,91 @@ describe('Cloudflare Web Analytics', () => {
         })
     })
 
+    it('scopes every query and the default dataset identity by host', async () => {
+        const fetcher = vi.fn<TestFetch>(async (_input, init) => {
+            const body = JSON.parse(bodyText(init))
+            expect(body.variables.filter).toEqual({
+                AND: [
+                    {
+                        datetime_geq: '2026-08-01T00:00:00.000Z',
+                        datetime_lt: '2026-08-03T00:00:00.000Z',
+                        siteTag: 'site',
+                    },
+                    { requestHost: 'analytics.liria.me' },
+                ],
+            })
+            return Response.json({
+                data: {
+                    viewer: {
+                        accounts: [
+                            {
+                                rows: [
+                                    {
+                                        avg: { sampleInterval: 1 },
+                                        count: 3,
+                                        sum: { visits: 2 },
+                                    },
+                                ],
+                            },
+                        ],
+                    },
+                },
+            })
+        })
+        const adapter = cloudflareWebAnalytics({
+            accountId: 'account',
+            apiToken: 'token',
+            fetch: fetcher,
+            host: 'analytics.liria.me',
+            siteTag: 'site',
+        })
+
+        expect(adapter.dataset.id).toBe('cloudflare.web-analytics:analytics.liria.me')
+        await adapter.query(query({ source: adapter.dataset.id }))
+    })
+
+    it('keeps the configured host and user filters in the same AND filter', async () => {
+        const fetcher = vi.fn<TestFetch>(async (_input, init) => {
+            const body = JSON.parse(bodyText(init))
+            expect(body.variables.filter.AND).toEqual([
+                {
+                    datetime_geq: '2026-08-01T00:00:00.000Z',
+                    datetime_lt: '2026-08-03T00:00:00.000Z',
+                    siteTag: 'site',
+                },
+                { requestHost: 'analytics.liria.me' },
+                { requestPath: '/docs' },
+            ])
+            return Response.json({ data: { viewer: { accounts: [{ rows: [] }] } } })
+        })
+        const adapter = cloudflareWebAnalytics({
+            accountId: 'account',
+            apiToken: 'token',
+            fetch: fetcher,
+            host: 'analytics.liria.me',
+            siteTag: 'site',
+        })
+
+        await adapter.query(
+            query({
+                filters: { dimension: 'path', operator: 'eq', value: '/docs' },
+                source: adapter.dataset.id,
+            }),
+        )
+    })
+
+    it('prefers an explicit dataset identity over the host default', () => {
+        const adapter = cloudflareWebAnalytics({
+            accountId: 'account',
+            apiToken: 'token',
+            datasetId: 'traffic.production',
+            host: 'analytics.liria.me',
+            siteTag: 'site',
+        })
+
+        expect(adapter.dataset.id).toBe('traffic.production')
+    })
+
     it('keeps rows while surfacing GraphQL partial errors', async () => {
         const adapter = cloudflareWebAnalytics({
             accountId: 'account',

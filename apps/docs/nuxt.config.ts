@@ -9,7 +9,16 @@ export default defineNuxtConfig({
     analytics: {
         name: 'docs',
         ...(cloudflareSiteTag
-            ? { providers: { cloudflare: { webAnalytics: cloudflareSiteTag } } }
+            ? {
+                  providers: {
+                      cloudflare: {
+                          webAnalytics: {
+                              host: 'analytics.liria.me',
+                              siteTag: cloudflareSiteTag,
+                          },
+                      },
+                  },
+              }
             : {}),
     },
 

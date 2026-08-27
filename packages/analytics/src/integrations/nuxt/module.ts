@@ -8,6 +8,7 @@ import {
     addServerImports,
     addServerTemplate,
     addTemplate,
+    addTypeTemplate,
     defineNuxtModule,
     updateTemplates,
 } from 'nuxt/kit'
@@ -63,9 +64,24 @@ const module: NuxtModule<NuxtAnalyticsModuleOptions> = defineNuxtModule<NuxtAnal
                 write: true,
             })
             addServerTemplate({ filename: '#analytics/server', getContents: getServerRuntime })
+            const serverRuntimeTypes = addTypeTemplate(
+                {
+                    filename: 'analytics/server-runtime.d.ts',
+                    getContents: createServerRuntimeTypeTemplate,
+                },
+                { nitro: true },
+            )
             addServerImports([
-                { from: '#analytics/server', name: 'deliverEvents' },
-                { from: '#analytics/server', name: 'useServerAnalytics' },
+                {
+                    from: '#analytics/server',
+                    name: 'deliverEvents',
+                    typeFrom: serverRuntimeTypes.dst,
+                },
+                {
+                    from: '#analytics/server',
+                    name: 'useServerAnalytics',
+                    typeFrom: serverRuntimeTypes.dst,
+                },
             ])
 
             const styleMode = options.ui?.styles ?? 'auto'
@@ -184,6 +200,14 @@ export function resolveArchiveBase(options: NuxtAnalyticsModuleOptions): string 
         : 'analytics:archive'
 }
 
+function createServerRuntimeTypeTemplate(): string {
+    return `import type { NuxtAnalyticsServerRuntime } from '@liria24/analytics/nuxt/runtime'
+
+export declare const deliverEvents: NuxtAnalyticsServerRuntime['deliverEvents']
+export declare const useServerAnalytics: NuxtAnalyticsServerRuntime['useServerAnalytics']
+`
+}
+
 export function createServerRuntimeTemplate(options: NuxtAnalyticsModuleOptions): string {
     const archive = typeof options.archive === 'object' ? options.archive : {}
     const r2 = options.providers?.cloudflare?.r2
@@ -198,6 +222,7 @@ export function createServerRuntimeTemplate(options: NuxtAnalyticsModuleOptions)
 
     const webAnalytics = options.providers?.cloudflare?.webAnalytics
     const siteTag = typeof webAnalytics === 'string' ? webAnalytics : webAnalytics?.siteTag
+    const host = typeof webAnalytics === 'string' ? undefined : webAnalytics?.host
     const searchConsole = options.providers?.searchConsole
     const searchProperty =
         typeof searchConsole === 'string' ? searchConsole : searchConsole?.property
@@ -221,7 +246,7 @@ function createServerAnalytics(event) {
             ? `const accountId = config.cloudflare?.accountId || runtimeConfig.cloudflare?.accountId || process.env.CLOUDFLARE_ACCOUNT_ID
     const apiToken = config.cloudflare?.apiToken || runtimeConfig.cloudflare?.apiToken || process.env.CLOUDFLARE_API_TOKEN
     if (!accountId || !apiToken) throw new Error('Cloudflare Web Analytics credentials are missing')
-    adapters.push(cloudflareWebAnalytics({ accountId, apiToken, siteTag: ${JSON.stringify(siteTag)} }))`
+    adapters.push(cloudflareWebAnalytics({ accountId, apiToken, siteTag: ${JSON.stringify(siteTag)}${host === undefined ? '' : `, host: ${JSON.stringify(host)}`} }))`
             : ''
     }
     ${

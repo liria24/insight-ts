@@ -80,6 +80,27 @@ describe('Nuxt capability fixtures', () => {
                     hasArchive,
                 )
 
+                if (scenario === 'nuxt-minimal') {
+                    const runtimeTypes = await readFile(
+                        join(buildDirectory, 'analytics/server-runtime.d.ts'),
+                        'utf8',
+                    )
+                    const nitroImports = await readFile(
+                        join(buildDirectory, 'types/nitro-imports.d.ts'),
+                        'utf8',
+                    )
+                    expect(runtimeTypes).toContain(
+                        "NuxtAnalyticsServerRuntime['useServerAnalytics']",
+                    )
+                    expect(runtimeTypes).toContain("NuxtAnalyticsServerRuntime['deliverEvents']")
+                    expect(nitroImports).toContain(
+                        "typeof import('../analytics/server-runtime.d').useServerAnalytics",
+                    )
+                    expect(nitroImports).toContain(
+                        "typeof import('../analytics/server-runtime.d').deliverEvents",
+                    )
+                }
+
                 const vueStylesPath = join(buildDirectory, 'analytics/vue.css')
                 if (scenario === 'nuxt-read-only') {
                     expect(await exists(vueStylesPath)).toBe(false)

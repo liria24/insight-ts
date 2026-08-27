@@ -61,6 +61,7 @@ export interface CloudflareWebAnalyticsOptions {
     apiToken: string
     datasetId?: string
     fetch?: Fetch
+    host?: string
     siteTag: string
 }
 
@@ -95,7 +96,9 @@ export type CloudflareProvider = AnalyticsAdapterBundle
 
 export function cloudflareWebAnalytics(options: CloudflareWebAnalyticsOptions): AnalyticsAdapter {
     const fetcher = options.fetch ?? globalThis.fetch
-    const datasetId = options.datasetId ?? 'cloudflare.web-analytics'
+    const datasetId =
+        options.datasetId ??
+        (options.host ? `cloudflare.web-analytics:${options.host}` : 'cloudflare.web-analytics')
 
     return withArchiveProviderMetadata(
         {
@@ -149,6 +152,7 @@ export function cloudflareWebAnalytics(options: CloudflareWebAnalyticsOptions): 
                             datetime_lt: query.range.to,
                             siteTag: options.siteTag,
                         },
+                        ...(options.host ? [{ requestHost: options.host }] : []),
                         ...(providerFilter === undefined ? [] : [providerFilter]),
                     ],
                 }

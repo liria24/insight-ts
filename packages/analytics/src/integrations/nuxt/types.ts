@@ -28,7 +28,7 @@ export interface NuxtAnalyticsModuleOptions {
         cloudflare?: {
             analyticsEngine?: string | { binding: string }
             r2?: string | { binding: string }
-            webAnalytics?: string | { siteTag: string }
+            webAnalytics?: string | { host?: string; siteTag: string }
         }
         searchConsole?: string | { property: string }
     }

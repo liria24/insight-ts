@@ -41,6 +41,22 @@ describe('Nuxt module templates', () => {
         expect(template).not.toContain('config.getAccessToken')
     })
 
+    it('passes a configured Web Analytics host to the runtime adapter', () => {
+        const template = createServerRuntimeTemplate({
+            name: 'website',
+            providers: {
+                cloudflare: {
+                    webAnalytics: {
+                        host: 'analytics.liria.me',
+                        siteTag: 'site-tag',
+                    },
+                },
+            },
+        })
+
+        expect(template).toContain('siteTag: "site-tag", host: "analytics.liria.me"')
+    })
+
     it('resolves the archive mount before applying an R2 binding', () => {
         expect(resolveArchiveBase({ name: 'r2', providers: { cloudflare: { r2: 'R2' } } })).toBe(
             'analytics:archive',
