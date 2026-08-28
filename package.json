@@ -1,5 +1,5 @@
 {
-    "name": "@liria24/analytics-workspace",
+    "name": "insight-ts-workspace",
     "private": true,
     "workspaces": [
         "apps/*",
@@ -8,19 +8,19 @@
     "type": "module",
     "scripts": {
         "build": "bun run build:sdk && bun run build:docs",
-        "build:docs": "bun --filter @liria24/analytics-docs build",
-        "build:sdk": "bun --filter @liria24/analytics build",
+        "build:docs": "bun --filter insight-ts-docs build",
+        "build:sdk": "bun --filter insight-ts build",
         "check": "bun run format:check && bun run lint && bun run typecheck && bun run test && bun run build && bun run test:package",
         "deps:update": "taze",
-        "docs:build": "bun --filter @liria24/analytics-docs build",
-        "docs:dev": "bun --filter @liria24/analytics-docs dev",
+        "docs:build": "bun --filter insight-ts-docs build",
+        "docs:dev": "bun --filter insight-ts-docs dev",
         "format": "oxfmt . --write",
         "format:check": "oxfmt . --check",
         "lint": "oxlint .",
-        "preview:package": "pkg-pr-new publish ./packages/analytics --bun --compact --previewVersion",
-        "test": "bun --filter @liria24/analytics test && bun --filter @liria24/analytics-docs test",
-        "test:package": "bun packages/analytics/scripts/test-package.ts",
-        "typecheck": "bun --filter @liria24/analytics typecheck"
+        "preview:package": "pkg-pr-new publish ./packages/insight-ts --bun --compact --previewVersion",
+        "test": "bun --filter insight-ts test && bun --filter insight-ts-docs test",
+        "test:package": "bun packages/insight-ts/scripts/test-package.ts",
+        "typecheck": "bun --filter insight-ts typecheck"
     },
     "devDependencies": {
         "oxfmt": "^0.65.0",

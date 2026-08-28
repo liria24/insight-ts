@@ -1,5 +1,3 @@
-import { withoutProtocol } from 'ufo'
-
 const publicUrl = 'https://analytics.liria.me'
 
 export default defineNuxtConfig({
@@ -7,17 +5,24 @@ export default defineNuxtConfig({
 
     extends: ['docus'],
 
-    modules: ['@liria24/analytics/nuxt', '@vueuse/nuxt'],
+    modules: ['insight-ts/nuxt', '@vueuse/nuxt'],
 
-    analytics: {
-        name: 'docs',
+    experimental: {
+        nitroAutoImports: true,
+    },
+
+    insight: {
         providers: {
-            cloudflare: {
-                webAnalytics: {
-                    host: withoutProtocol(publicUrl),
-                    siteTag: process.env.CLOUDFLARE_SITE_TAG,
-                },
-            },
+            cloudflare: { webAnalytics: true },
+        },
+    },
+
+    runtimeConfig: {
+        cloudflare: {
+            accountId: '',
+            apiToken: '',
+            host: 'analytics.liria.me',
+            siteTag: '',
         },
     },
 

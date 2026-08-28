@@ -1,12 +1,12 @@
 <script setup lang="ts">
 const { copied, copy } = useClipboard()
 
-const installCommand = 'npm i @liria24/analytics'
+const installCommand = 'npm i insight-ts'
 
 const cards = ref([
     {
         title: 'Cloudflare',
-        description: 'Web Analytics, Analytics Engine, R2',
+        description: 'Web Analytics and Analytics Engine',
         icon: 'simple-icons:cloudflare',
         to: '/providers/cloudflare',
     },
@@ -16,13 +16,15 @@ const cards = ref([
         to: '/providers/google-search-console',
     },
 ])
+
+useHead({ titleTemplate: '%s' })
 </script>
 
 <template>
     <UContainer>
         <UPageHero
-            title="Analytics SDK"
-            description="One typed query API for analytics providers, archives, and application metrics. Use it in any server-side TypeScript application; add Nuxt or Vue only when they fit your stack."
+            title="Insight.ts"
+            description="Typed Provider capabilities, History, and optional runtime/UI integrations for server-side TypeScript applications."
         >
             <template #links>
                 <UButton
