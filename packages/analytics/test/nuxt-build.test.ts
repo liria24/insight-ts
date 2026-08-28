@@ -1,6 +1,6 @@
 /* eslint-disable no-await-in-loop, vitest/no-conditional-expect -- fixtures build sequentially */
 
-import { access, readFile, rm } from 'node:fs/promises'
+import { access, readFile, readdir, rm } from 'node:fs/promises'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -101,17 +101,7 @@ describe('Nuxt capability fixtures', () => {
                     )
                 }
 
-                const vueStylesPath = join(buildDirectory, 'analytics/vue.css')
-                if (scenario === 'nuxt-read-only') {
-                    expect(await exists(vueStylesPath)).toBe(false)
-                } else {
-                    const vueStyles = await readFile(vueStylesPath, 'utf8')
-                    const shouldImportStyles =
-                        scenario === 'nuxt-minimal' || scenario === 'nuxt-compat5'
-                    expect(vueStyles.includes('@liria24/analytics/vue/style.css')).toBe(
-                        shouldImportStyles,
-                    )
-                }
+                expect(await exists(join(buildDirectory, 'analytics/vue.css'))).toBe(false)
 
                 if (scenario === 'nuxt-read-only') {
                     const server = await readFile(
@@ -152,6 +142,16 @@ describe('Nuxt capability fixtures', () => {
                     expect(JSON.stringify(nitroConfig)).not.toContain('aws4fetch')
                 }
 
+                if (scenario === 'nuxt-no-ui' || scenario === 'nuxt-read-only') {
+                    const output = await readBuildText([buildDirectory, outputDirectory])
+                    expect(output).not.toContain('@tanstack/charts')
+                    expect(output).not.toContain('@liria24/analytics/vue/ui')
+                    expect(output).not.toContain('AnalyticsAreaChart')
+                    expect(output).not.toContain('AnalyticsLineChart')
+                    expect(output).not.toContain('ts-chart-surface')
+                    expect(output).not.toContain('--analytics-chart-1')
+                }
+
                 if (scenario === 'nuxt-no-ui') {
                     const components = await readFile(
                         join(buildDirectory, 'components.d.ts'),
@@ -159,7 +159,14 @@ describe('Nuxt capability fixtures', () => {
                     )
                     expect(components).not.toContain('AnalyticsStat')
                     expect(components).not.toContain('AnalyticsLineChart')
-                    expect(components).not.toContain('vue-data-ui')
+                    expect(components).not.toContain('@tanstack')
+                }
+
+                if (scenario === 'nuxt-minimal') {
+                    const output = await readBuildText([buildDirectory, outputDirectory])
+                    expect(output).toContain('analytics-area-chart')
+                    expect(output).toContain('ts-chart-surface')
+                    expect(output).toContain('--analytics-chart-1')
                 }
             } finally {
                 await nuxt.close()
@@ -215,6 +222,18 @@ async function cleanup(directories: readonly string[]): Promise<void> {
 function readRecord(value: unknown): Record<string, unknown> {
     if (!isRecord(value)) throw new TypeError('Expected an object')
     return value
+}
+
+async function readBuildText(directories: readonly string[]): Promise<string> {
+    const chunks: string[] = []
+    for (const directory of directories) {
+        if (!(await exists(directory))) continue
+        for (const entry of await readdir(directory, { recursive: true, withFileTypes: true })) {
+            if (!entry.isFile() || !/\.(?:css|js|json|mjs|ts)$/.test(entry.name)) continue
+            chunks.push(await readFile(join(entry.parentPath, entry.name), 'utf8'))
+        }
+    }
+    return chunks.join('\n')
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

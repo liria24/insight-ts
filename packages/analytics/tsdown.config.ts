@@ -3,14 +3,17 @@ import Vue from 'unplugin-vue/rolldown'
 
 export default defineConfig({
     attw: {
-        excludeEntrypoints: ['./vue/style.css'],
+        excludeEntrypoints: ['./vue/ui/style.css'],
         level: 'error',
         profile: 'esm-only',
     },
     clean: true,
-    copy: [{ from: 'src/style.css', to: 'dist/vue' }],
+    copy: [{ from: 'src/style.css', to: 'dist/vue/ui' }],
+    css: { inject: true },
     deps: {
         onlyImport: [
+            '@tanstack/charts',
+            'd3-shape',
             'h3',
             'node:fs',
             'node:path',
@@ -18,8 +21,6 @@ export default defineConfig({
             'nuxt',
             'unstorage',
             'vue',
-            'vue-data-ui',
-            'vue-data-ui/vue-ui-xy',
         ],
     },
     dts: {
@@ -32,8 +33,10 @@ export default defineConfig({
         index: 'src/index.ts',
         nuxt: 'src/nuxt.ts',
         'nuxt-runtime': 'src/nuxt-runtime.ts',
+        presentation: 'src/presentation.ts',
         provider: 'src/provider.ts',
         vue: 'src/vue.ts',
+        'vue-ui': 'src/vue-ui-entry.ts',
     },
     exports: false,
     format: ['esm'],

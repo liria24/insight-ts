@@ -45,11 +45,19 @@
             "types": "./dist/provider.d.ts",
             "import": "./dist/provider.js"
         },
+        "./presentation": {
+            "types": "./dist/presentation.d.ts",
+            "import": "./dist/presentation.js"
+        },
         "./vue": {
             "types": "./dist/vue.d.ts",
             "import": "./dist/vue.js"
         },
-        "./vue/style.css": "./dist/vue/style.css",
+        "./vue/ui": {
+            "types": "./dist/vue-ui.d.ts",
+            "import": "./dist/vue-ui.js"
+        },
+        "./vue/ui/style.css": "./dist/vue/ui/style.css",
         "./package.json": "./package.json"
     },
     "publishConfig": {
@@ -62,11 +70,15 @@
         "typecheck": "vue-tsc --noEmit"
     },
     "dependencies": {
+        "@tanstack/charts": "0.16.0",
+        "d3-shape": "3.2.0",
         "unstorage": "^1.17.5"
     },
     "devDependencies": {
         "@arethetypeswrong/cli": "^0.18.5",
+        "@tsdown/css": "^0.22.14",
         "@types/bun": "^1.4.0",
+        "happy-dom": "^20.11.12",
         "publint": "^0.3.24",
         "tsdown": "^0.22.14",
         "typescript": "6.0.3",
@@ -77,8 +89,7 @@
     "peerDependencies": {
         "h3": "^1.15",
         "nuxt": "^4.5.1",
-        "vue": "^3.5.41",
-        "vue-data-ui": "^3.23.9"
+        "vue": "^3.5.41"
     },
     "peerDependenciesMeta": {
         "h3": {
@@ -88,9 +99,6 @@
             "optional": true
         },
         "vue": {
-            "optional": true
-        },
-        "vue-data-ui": {
             "optional": true
         }
     }

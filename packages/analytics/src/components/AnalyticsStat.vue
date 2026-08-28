@@ -1,18 +1,9 @@
 <script setup lang="ts">
 import { computed } from 'vue'
 
-import type { AnalyticsReportQuality, AnalyticsSeriesPoint } from '../core/types'
-import {
-    createAnalyticsTimeFormatContext,
-    formatAnalyticsTime,
-    formatMetricName,
-    formatNumber,
-    qualityMessages,
-    resolveAnalyticsUIClass,
-    selectStatValue,
-    type AnalyticsStatProps,
-    type AnalyticsStatUI,
-} from '../vue-ui'
+import type { AnalyticsReportQuality } from '../core/types'
+import { formatMetricName, formatNumber, qualityMessages, selectStatValue } from '../presentation'
+import { resolveAnalyticsUIClass, type AnalyticsStatProps, type AnalyticsStatUI } from '../vue-ui'
 
 defineOptions({ inheritAttrs: false })
 
@@ -22,28 +13,14 @@ const props = withDefaults(defineProps<AnalyticsStatProps>(), {
     maximumFractionDigits: 2,
 })
 
-type ResolvedUI = Readonly<Required<AnalyticsStatUI>>
-
 defineSlots<{
-    caption(properties: { point: AnalyticsSeriesPoint; ui: ResolvedUI }): unknown
-    empty(properties: { metric: string; ui: ResolvedUI }): unknown
-    label(properties: { label: string; metric: string; ui: ResolvedUI }): unknown
-    quality(properties: {
-        messages: readonly string[]
-        quality: AnalyticsReportQuality
-        ui: ResolvedUI
-    }): unknown
-    value(properties: {
-        formatted: string
-        metric: string
-        point: AnalyticsSeriesPoint | undefined
-        ui: ResolvedUI
-        value: number
-    }): unknown
+    empty(properties: { metric: string }): unknown
+    label(properties: { label: string; metric: string }): unknown
+    quality(properties: { messages: readonly string[]; quality: AnalyticsReportQuality }): unknown
+    value(properties: { formatted: string; metric: string; value: number }): unknown
 }>()
 
-const ui = computed<ResolvedUI>(() => ({
-    caption: resolveAnalyticsUIClass('analytics-stat__caption', props.ui?.caption),
+const ui = computed<Required<AnalyticsStatUI>>(() => ({
     empty: resolveAnalyticsUIClass('analytics-empty-state', props.ui?.empty),
     label: resolveAnalyticsUIClass('analytics-stat__label', props.ui?.label),
     quality: resolveAnalyticsUIClass('analytics-quality', props.ui?.quality),
@@ -52,24 +29,12 @@ const ui = computed<ResolvedUI>(() => ({
 }))
 const selection = computed(() => selectStatValue(props.report, props.metric))
 const label = computed(() => props.label ?? formatMetricName(props.metric))
-const value = computed(() => {
-    const selected = selection.value?.value
-    return typeof selected === 'number' && Number.isFinite(selected) ? selected : undefined
-})
-const hasValue = computed(() => value.value !== undefined)
+const value = computed(() => selection.value?.value ?? undefined)
 const formatted = computed(() =>
     value.value === undefined
         ? ''
         : formatNumber(value.value, props.locale, props.maximumFractionDigits),
 )
-const caption = computed(() => {
-    const point = selection.value?.point
-    if (!point) return ''
-    return formatAnalyticsTime(
-        new Date(point.time),
-        createAnalyticsTimeFormatContext(props.report, 0, props.locale, props.timezone),
-    )
-})
 const messages = computed(() => qualityMessages(props.report.meta.quality))
 </script>
 
@@ -80,32 +45,20 @@ const messages = computed(() => qualityMessages(props.report.meta.quality))
         :class="[ui.root, props.class]"
         :data-slot="String($attrs['data-slot'] ?? 'root')"
     >
-        <template v-if="hasValue && selection">
-            <slot name="label" :label="label" :metric="props.metric" :ui="ui">
+        <template v-if="value !== undefined">
+            <slot name="label" :label :metric="props.metric">
                 <p :class="ui.label" data-slot="label">{{ label }}</p>
             </slot>
 
-            <slot
-                name="value"
-                :formatted="formatted"
-                :metric="props.metric"
-                :point="selection.point"
-                :ui="ui"
-                :value="value ?? 0"
-            >
+            <slot name="value" :formatted :metric="props.metric" :value>
                 <p :class="ui.value" data-slot="value">{{ formatted }}</p>
-            </slot>
-
-            <slot v-if="selection.point" name="caption" :point="selection.point" :ui="ui">
-                <p :class="ui.caption" data-slot="caption">As of {{ caption }}</p>
             </slot>
 
             <slot
                 v-if="messages.length > 0"
                 name="quality"
-                :messages="messages"
+                :messages
                 :quality="props.report.meta.quality"
-                :ui="ui"
             >
                 <p aria-live="polite" :class="ui.quality" data-slot="quality" role="status">
                     {{ messages.join(' \u00b7 ') }}
@@ -113,7 +66,7 @@ const messages = computed(() => qualityMessages(props.report.meta.quality))
             </slot>
         </template>
 
-        <slot v-else name="empty" :metric="props.metric" :ui="ui">
+        <slot v-else name="empty" :metric="props.metric">
             <div aria-live="polite" :class="ui.empty" data-slot="empty" role="status">
                 <strong>{{ label }}</strong>
                 <span>{{ props.emptyText }}</span>

@@ -57,22 +57,24 @@ See [analytics.liria.me](https://analytics.liria.me) for Nuxt, provider, archive
 
 ## Vue UI
 
-The optional `@liria24/analytics/vue` entry provides small report-only primitives. It never
+The optional `@liria24/analytics/vue/ui` entry provides small report-only primitives. It never
 queries providers, caches results, or chooses a dashboard layout:
 
 ```sh
-bun add vue vue-data-ui
+bun add vue
 ```
 
 ```ts
-import '@liria24/analytics/vue/style.css'
-import { AnalyticsLineChart, AnalyticsStat } from '@liria24/analytics/vue'
+import { AnalyticsAreaChart, AnalyticsLineChart, AnalyticsStat } from '@liria24/analytics/vue/ui'
 
 // <AnalyticsStat :report="report" metric="pageViews" />
 // <AnalyticsLineChart :report="report" :metrics="['pageViews', 'visits']" />
+// <AnalyticsAreaChart :report="report" :metrics="['pageViews', 'visits']" />
 ```
 
-The Nuxt module does not register UI components. Import primitives explicitly from the Vue entry.
+The UI entry imports its base stylesheet. TanStack Charts is an internal exact-version dependency;
+its API is not public. The Nuxt module does not register or scan for UI components, and does not
+include UI code when the UI entry is unused.
 
 ## License
 

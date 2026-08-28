@@ -27,6 +27,17 @@ describe('architecture import boundaries', () => {
 
         expect(violations).toEqual([])
     })
+
+    it('keeps Presentation dependent only on Core report contracts', async () => {
+        const file = join(sourceRoot, 'presentation.ts')
+        const source = await readFile(file, 'utf8')
+        const violations = importSpecifiers(source).filter((specifier) => {
+            const target = localTarget(specifier, file)
+            return target === undefined || !target.includes('/core/')
+        })
+
+        expect(violations).toEqual([])
+    })
 })
 
 async function importViolations(

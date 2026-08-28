@@ -22,6 +22,7 @@ export interface DemoReportQuery {
 }
 
 export interface DemoReportResponse {
+    online: number
     series: AnalyticsSeriesReport
     summary: AnalyticsScalarReport
 }

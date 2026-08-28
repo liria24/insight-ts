@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { CalendarDate, today } from '@internationalized/date'
-import { AnalyticsLineChart, AnalyticsStat, resolveAnalyticsTimezone } from '@liria24/analytics/vue'
+import { resolveAnalyticsTimezone } from '@liria24/analytics/presentation'
+import { AnalyticsAreaChart, AnalyticsStat } from '@liria24/analytics/vue/ui'
 import { withHttps } from 'ufo'
 
 import { demoRangeOptions, type DemoRangePreset, type DemoReportResponse } from '#shared/demo-range'
@@ -27,19 +28,14 @@ const rangeItems = computed(() =>
         : [...demoRangeOptions],
 )
 
-const { data, status } = useLazyFetch<DemoReportResponse>('/api/demo', {
+const { data, status } = await useFetch<DemoReportResponse>('/api/demo', {
     query: reportQuery,
-    server: false,
-})
-const { data: onlineData } = useLazyFetch<{ online: number }>('/api/demo/online', {
-    default: () => ({ online: 0 }),
-    server: false,
 })
 
 const locale = 'en-US'
 const isLoading = computed(() => status.value === 'idle' || status.value === 'pending')
 const timezone = computed(() => (data.value ? resolveAnalyticsTimezone(data.value.series) : 'UTC'))
-const online = computed(() => Math.max(0, Math.round(onlineData.value?.online ?? 0)))
+const online = computed(() => Math.max(0, Math.round(data.value?.online ?? 0)))
 const customRangeLabel = computed(() => {
     const formatter = new Intl.DateTimeFormat(locale, {
         day: 'numeric',
@@ -149,7 +145,6 @@ watch(calendarRange, ({ end, start }) => {
                         :report="data.summary"
                         metric="pageViews"
                         :ui="{
-                            caption: 'mt-1 text-xs text-muted',
                             label: 'text-xs font-medium uppercase tracking-wide text-muted',
                             value: 'mt-2 text-3xl font-semibold tabular-nums tracking-tight text-highlighted',
                         }"
@@ -159,7 +154,6 @@ watch(calendarRange, ({ end, start }) => {
                         :report="data.summary"
                         metric="visits"
                         :ui="{
-                            caption: 'mt-1 text-xs text-muted',
                             label: 'text-xs font-medium uppercase tracking-wide text-muted',
                             value: 'mt-2 text-3xl font-semibold tabular-nums tracking-tight text-highlighted',
                         }"
@@ -167,7 +161,7 @@ watch(calendarRange, ({ end, start }) => {
                     />
                 </div>
                 <div class="border-t border-default p-5 sm:p-6">
-                    <AnalyticsLineChart
+                    <AnalyticsAreaChart
                         title="Traffic over time"
                         :metrics="['pageViews', 'visits']"
                         :report="data.series"
@@ -175,7 +169,7 @@ watch(calendarRange, ({ end, start }) => {
                         :locale
                         :height="320"
                         :ui="{
-                            chart: 'mt-4 overflow-hidden rounded-md',
+                            plot: 'mt-4 overflow-hidden rounded-md',
                             legend: 'flex gap-3 text-xs text-muted',
                             title: 'text-sm font-semibold text-highlighted',
                         }"

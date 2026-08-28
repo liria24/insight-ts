@@ -11,6 +11,8 @@ interface SpawnOptions {
 
 interface Consumer {
     dependencies: readonly string[]
+    expectsCss?: boolean
+    forbiddenBundleText?: readonly string[]
     forbiddenPackages?: readonly string[]
     name: string
     nuxtBuild?: boolean
@@ -38,7 +40,8 @@ async function run(command: readonly string[], options: SpawnOptions): Promise<s
 const consumers: readonly Consumer[] = [
     {
         dependencies: [],
-        forbiddenPackages: ['vue-data-ui', 'nuxt'],
+        forbiddenBundleText: ['@tanstack/charts', 'AnalyticsAreaChart', '--analytics-chart-1'],
+        forbiddenPackages: ['@unovis/ts', '@unovis/vue', 'vue-data-ui', 'nuxt'],
         name: 'consumer-core',
         source: `import { createAnalytics } from '@liria24/analytics'
 import { createBrowserAnalytics } from '@liria24/analytics/browser'
@@ -68,7 +71,8 @@ if (
     },
     {
         dependencies: ['nuxt@4.5.2', 'vue-tsc@3.3.11'],
-        forbiddenPackages: ['vue-data-ui'],
+        forbiddenBundleText: ['@tanstack/charts', 'AnalyticsAreaChart', '--analytics-chart-1'],
+        forbiddenPackages: ['@unovis/ts', '@unovis/vue', 'vue-data-ui'],
         name: 'consumer-nuxt',
         nuxtBuild: true,
         source: `import analyticsModule, {
@@ -82,16 +86,47 @@ if (!options.name || typeof analyticsModule !== 'function') {
 `,
     },
     {
-        dependencies: ['vue@3.5.41', 'vue-data-ui@3.23.14'],
-        name: 'consumer-vue',
-        source: `import type { AnalyticsScalarReport } from '@liria24/analytics'
+        dependencies: ['vue@3.5.41'],
+        forbiddenBundleText: ['@tanstack/charts', 'AnalyticsAreaChart', '--analytics-chart-1'],
+        forbiddenPackages: ['@unovis/ts', '@unovis/vue', 'vue-data-ui'],
+        name: 'consumer-vue-integration',
+        source: `import { createBrowserAnalytics } from '@liria24/analytics/browser'
+import { provideAnalytics, useAnalytics } from '@liria24/analytics/vue'
+import { createSSRApp, defineComponent, h } from 'vue'
+import { renderToString } from 'vue/server-renderer'
+
+const analytics = createBrowserAnalytics({ fetch: globalThis.fetch })
+let injected
+const Child = defineComponent(() => {
+    injected = useAnalytics()
+    return () => h('span', 'integration')
+})
+const html = await renderToString(createSSRApp(defineComponent(() => {
+    provideAnalytics(analytics)
+    return () => h(Child)
+})))
+if (!html.includes('integration') || injected !== analytics) {
+    throw new Error('The packed Vue integration entry is invalid')
+}
+`,
+    },
+    {
+        dependencies: ['vue@3.5.41'],
+        expectsCss: true,
+        name: 'consumer-vue-ui',
+        source: `import type {
+    AnalyticsScalarReport,
+    AnalyticsSeriesReport,
+    AnalyticsTableReport,
+} from '@liria24/analytics'
 import {
+    AnalyticsAreaChart,
     AnalyticsBreakdownTable,
     AnalyticsLineChart,
     AnalyticsStat,
     type AnalyticsLineChartProps,
     type AnalyticsUIClass,
-} from '@liria24/analytics/vue'
+} from '@liria24/analytics/vue/ui'
 import { createSSRApp, h } from 'vue'
 import { renderToString } from 'vue/server-renderer'
 
@@ -105,14 +140,34 @@ const report: AnalyticsScalarReport = {
     },
     values: { visits: 12 },
 }
-const rootClass: AnalyticsUIClass = ['rounded', { highlighted: true }]
-const chartProps: AnalyticsLineChartProps = { class: rootClass, report }
-const style = await Bun.file(new URL(import.meta.resolve('@liria24/analytics/vue/style.css'))).text()
-const html = await renderToString(createSSRApp(() => h(AnalyticsStat, { metric: 'visits', report })))
+const series: AnalyticsSeriesReport = {
+    kind: 'series',
+    meta: report.meta,
+    points: [
+        { time: '2026-08-19T00:00:00.000Z', values: { visits: 9 } },
+        { time: '2026-08-20T00:00:00.000Z', values: { visits: 12 } },
+    ],
+}
+const table: AnalyticsTableReport = {
+    kind: 'table',
+    meta: report.meta,
+    rows: [{ dimensions: { country: 'JP' }, metrics: { visits: 12 } }],
+}
+const rootClass: AnalyticsUIClass = ['rounded', 'highlighted']
+const chartProps: AnalyticsLineChartProps = { class: rootClass, report: series }
+const style = await Bun.file(new URL(import.meta.resolve('@liria24/analytics/vue/ui/style.css'))).text()
+const html = await renderToString(createSSRApp(() => h('main', [
+    h(AnalyticsStat, { metric: 'visits', report }),
+    h(AnalyticsLineChart, chartProps),
+    h(AnalyticsAreaChart, { report: series }),
+    h(AnalyticsBreakdownTable, { report: table }),
+])))
 if (
     !html.includes('12') ||
-    chartProps.report !== report ||
+    !html.includes('<svg') ||
+    chartProps.report !== series ||
     !style.includes('--analytics-chart-axis') ||
+    typeof AnalyticsAreaChart !== 'object' ||
     typeof AnalyticsLineChart !== 'object' ||
     typeof AnalyticsBreakdownTable !== 'object'
 ) throw new Error('A packed Vue primitive is missing')
@@ -120,7 +175,8 @@ if (
     },
     {
         dependencies: ['nuxt@4.5.2'],
-        forbiddenPackages: ['aws4fetch', 'vue-data-ui'],
+        forbiddenBundleText: ['@tanstack/charts', 'AnalyticsAreaChart', '--analytics-chart-1'],
+        forbiddenPackages: ['@unovis/ts', '@unovis/vue', 'aws4fetch', 'vue-data-ui'],
         name: 'consumer-r2',
         source: `import analyticsModule, {
     type NuxtAnalyticsModuleOptions,
@@ -154,12 +210,55 @@ try {
     if (!filename.endsWith('.tgz')) throw new Error('bun pm pack did not report a tarball')
     const tarball = join(packRoot, filename)
     const packedFiles = await run(['tar', '-tf', tarball], { cwd: packRoot })
-    if (!packedFiles.split(/\r?\n/).includes('package/dist/vue/style.css')) {
+    if (!packedFiles.split(/\r?\n/).includes('package/dist/vue/ui/style.css')) {
         throw new Error('Packed Vue stylesheet is missing')
     }
-    const vueDeclaration = await Bun.file(join(packageDirectory, 'dist', 'vue.d.ts')).text()
-    if (vueDeclaration.includes('VueUiXy')) {
-        throw new Error('Vue Data UI renderer types leaked into the public Vue declaration')
+    const packageManifest = await Bun.file(join(packageDirectory, 'package.json')).json()
+    if (
+        packageManifest.license !== 'MIT' ||
+        packageManifest.dependencies?.['@tanstack/charts'] !== '0.16.0' ||
+        packageManifest.dependencies?.['d3-shape'] !== '3.2.0' ||
+        packageManifest.peerDependenciesMeta?.['@unovis/ts'] ||
+        packageManifest.peerDependenciesMeta?.['@unovis/vue']
+    ) {
+        throw new Error('Package license or exact TanStack renderer dependencies are invalid')
+    }
+    const publicEntries = ['index.js', 'browser.js', 'nuxt.js', 'nuxt-runtime.js', 'vue.js']
+    const nonUiDist = (
+        await Promise.all(
+            publicEntries.map((file) => Bun.file(join(packageDirectory, 'dist', file)).text()),
+        )
+    ).join('\n')
+    if (
+        nonUiDist.includes('@tanstack/charts') ||
+        nonUiDist.includes('d3-shape') ||
+        nonUiDist.includes('AnalyticsAreaChart') ||
+        nonUiDist.includes('--analytics-chart-1')
+    ) {
+        throw new Error('A non-UI package entry depends on the UI renderer')
+    }
+    const distFiles = await Array.fromAsync(
+        new Bun.Glob('**/*.{js,d.ts,css}').scan({ cwd: join(packageDirectory, 'dist') }),
+    )
+    const distText = (
+        await Promise.all(
+            distFiles.map((file) => Bun.file(join(packageDirectory, 'dist', file)).text()),
+        )
+    ).join('\n')
+    if (distText.includes('vue-data-ui') || distText.includes('@unovis/')) {
+        throw new Error('A removed chart renderer remains in dist')
+    }
+    const uiDeclaration = await Bun.file(join(packageDirectory, 'dist', 'vue-ui.d.ts')).text()
+    const presentationDeclaration = await Bun.file(
+        join(packageDirectory, 'dist', 'presentation.d.ts'),
+    ).text()
+    if (
+        uiDeclaration.includes('@tanstack/charts') ||
+        uiDeclaration.includes('ChartPoint') ||
+        presentationDeclaration.includes('@tanstack/charts') ||
+        presentationDeclaration.includes('vue')
+    ) {
+        throw new Error('Renderer or framework types leaked into a public declaration')
     }
 
     for (const consumer of consumers) {
@@ -227,6 +326,22 @@ try {
             cwd: directory,
             env: environment,
         })
+        const bundle = await Bun.file(join(directory, 'dist', 'verify.js')).text()
+        for (const forbidden of consumer.forbiddenBundleText ?? []) {
+            if (bundle.includes(forbidden)) {
+                throw new Error(`${consumer.name} unexpectedly bundled ${forbidden}`)
+            }
+        }
+        const cssPath = join(directory, 'dist', 'verify.css')
+        if ((await exists(cssPath)) !== Boolean(consumer.expectsCss)) {
+            throw new Error(`${consumer.name} emitted an unexpected CSS bundle state`)
+        }
+        if (consumer.expectsCss) {
+            const css = await Bun.file(cssPath).text()
+            if (!css.includes('--analytics-chart-1')) {
+                throw new Error('The Vue UI entry did not include its base stylesheet')
+            }
+        }
         await run([process.execPath, 'run', 'verify.ts'], { cwd: directory, env: environment })
 
         if (consumer.nuxtBuild) {

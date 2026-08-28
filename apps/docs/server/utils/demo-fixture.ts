@@ -35,6 +35,7 @@ export function createDemoFixture(query: DemoReportQuery, now = new Date()): Dem
         points,
     }
     return {
+        online: 0,
         series,
         summary: {
             kind: 'scalar',

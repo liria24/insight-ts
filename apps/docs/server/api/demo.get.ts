@@ -15,21 +15,37 @@ export default defineCachedEventHandler(
         }
         try {
             const analytics = await useServerAnalytics(event)
-            const [summary, series] = await Promise.all([
+            const now = new Date()
+            const [summary, series, online] = await Promise.all([
                 analytics.traffic.summary({ metrics: ['pageViews', 'visits'], range: query.range }),
                 analytics.traffic.series({
                     grain: query.grain,
                     metrics: ['pageViews', 'visits'],
                     range: query.range,
                 }),
+                analytics.traffic
+                    .summary({
+                        metrics: ['activeUsers'],
+                        range: {
+                            from: new Date(now.valueOf() - 5 * 60 * 1000).toISOString(),
+                            to: now.toISOString(),
+                        },
+                    })
+                    .then(({ values }) =>
+                        typeof values.activeUsers === 'number' ? values.activeUsers : 0,
+                    )
+                    .catch((error) => {
+                        if (isUnavailableDemoProvider(error)) return 0
+                        throw error
+                    }),
             ])
-            return { series, summary }
+            return { online, series, summary }
         } catch (error) {
             if (isUnavailableDemoProvider(error)) return createDemoFixture(query)
             throw error
         }
     },
-    { maxAge: 60 * 60 },
+    { maxAge: 4 * 60 * 60 },
 )
 
 function isUnavailableDemoProvider(error: unknown): boolean {

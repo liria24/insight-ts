@@ -70,7 +70,11 @@ export default defineNuxtConfig({
     },
 
     routeRules: {
+        '/**': { headers: { 'Cache-Control': 'no-store' } },
         '/api': { redirect: '/reference/api' },
+        '/api/demo': {
+            headers: { 'Cloudflare-CDN-Cache-Control': 'public, max-age=14400' },
+        },
     },
 
     llms: {

@@ -19,7 +19,13 @@ The public package surface mirrors these boundaries:
 - `@liria24/analytics/provider` contains the custom Provider extension helper.
 - `@liria24/analytics/nuxt` contains the build-time Nuxt module.
 - `@liria24/analytics/nuxt/runtime` contains H3/Nitro runtime helpers.
-- `@liria24/analytics/vue` contains optional report-only presentation primitives.
+- `@liria24/analytics/presentation` contains framework-independent report presentation models.
+- `@liria24/analytics/vue` contains optional Vue browser-client integration.
+- `@liria24/analytics/vue/ui` contains optional report-only presentation primitives.
+
+Presentation depends only on Core report contracts. Vue UI depends on Presentation and treats
+TanStack Charts as a private renderer. Core, browser, Nuxt, and the Vue integration entry do not
+reach the renderer or UI stylesheet.
 
 Configuration is split by evaluation time. `nuxt.config.ts` owns declarative resource
 identifiers, event definitions, relay options, and archive policy. `server/analytics.config.ts`

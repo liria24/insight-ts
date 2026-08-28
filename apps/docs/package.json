@@ -17,8 +17,7 @@
         "@vueuse/nuxt": "14.4.0",
         "docus": "^5.12.3",
         "nuxt": "^4.5.2",
-        "tailwindcss": "^4.3.3",
-        "vue-data-ui": "^3.23.14"
+        "tailwindcss": "^4.3.3"
     },
     "devDependencies": {
         "typescript": "^6.0.3",
