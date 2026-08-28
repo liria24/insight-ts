@@ -1,6 +1,4 @@
-import type { AnalyticsSeriesReport } from '@liria24/analytics'
-
-import type { DemoReportQuery, DemoReportResponse } from '../../shared/demo-range'
+import type { SeriesReport } from 'insight-ts'
 
 const fixtureValues = [
     { pageViews: 1058, visits: 692 },
@@ -12,7 +10,10 @@ const fixtureValues = [
     { pageViews: 1421, visits: 936 },
 ]
 
-export function createDemoFixture(query: DemoReportQuery, now = new Date()): DemoReportResponse {
+export const createDemoFixture = (
+    query: ReturnType<typeof resolveDemoReportQuery>,
+    now = new Date(),
+) => {
     const from = new Date(query.range.from)
     const to = new Date(query.range.to)
     const points = []
@@ -24,7 +25,7 @@ export function createDemoFixture(query: DemoReportQuery, now = new Date()): Dem
         const base = fixtureValues[index % fixtureValues.length] ?? fixtureValues[0]
         if (base) points.push({ time: time.toISOString(), values: base })
     }
-    const series: AnalyticsSeriesReport = {
+    const series: SeriesReport = {
         kind: 'series',
         meta: {
             quality: {},
@@ -48,7 +49,7 @@ export function createDemoFixture(query: DemoReportQuery, now = new Date()): Dem
     }
 }
 
-function next(value: Date, grain: DemoReportQuery['grain']): Date {
+const next = (value: Date, grain: ReturnType<typeof resolveDemoReportQuery>['grain']): Date => {
     const date = new Date(value)
     if (grain === 'hour') date.setUTCHours(date.getUTCHours() + 1)
     else if (grain === 'day') date.setUTCDate(date.getUTCDate() + 1)

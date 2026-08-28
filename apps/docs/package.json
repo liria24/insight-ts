@@ -1,5 +1,5 @@
 {
-    "name": "@liria24/analytics-docs",
+    "name": "insight-ts-docs",
     "private": true,
     "type": "module",
     "scripts": {
@@ -12,10 +12,10 @@
     },
     "dependencies": {
         "@internationalized/date": "^3.12.3",
-        "@liria24/analytics": "workspace:*",
         "@nuxt/ui": "^4.11.0",
         "@vueuse/nuxt": "14.4.0",
         "docus": "^5.12.3",
+        "insight-ts": "workspace:*",
         "nuxt": "^4.5.2",
         "tailwindcss": "^4.3.3"
     },

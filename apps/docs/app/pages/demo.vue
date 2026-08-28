@@ -1,10 +1,8 @@
 <script setup lang="ts">
 import { CalendarDate, today } from '@internationalized/date'
-import { resolveAnalyticsTimezone } from '@liria24/analytics/presentation'
-import { AnalyticsAreaChart, AnalyticsStat } from '@liria24/analytics/vue/ui'
+import { resolveTimezone } from 'insight-ts/ui-core'
+import { InsightAreaChart, InsightStat } from 'insight-ts/vue/ui'
 import { withHttps } from 'ufo'
-
-import { demoRangeOptions, type DemoRangePreset, type DemoReportResponse } from '#shared/demo-range'
 
 const { app } = useAppConfig()
 
@@ -34,7 +32,7 @@ const { data, status } = await useFetch<DemoReportResponse>('/api/demo', {
 
 const locale = 'en-US'
 const isLoading = computed(() => status.value === 'idle' || status.value === 'pending')
-const timezone = computed(() => (data.value ? resolveAnalyticsTimezone(data.value.series) : 'UTC'))
+const timezone = computed(() => (data.value ? resolveTimezone(data.value.series) : 'UTC'))
 const online = computed(() => Math.max(0, Math.round(data.value?.online ?? 0)))
 const customRangeLabel = computed(() => {
     const formatter = new Intl.DateTimeFormat(locale, {
@@ -141,7 +139,7 @@ watch(calendarRange, ({ end, start }) => {
 
             <div v-else>
                 <div class="grid divide-y divide-default sm:grid-cols-2 sm:divide-x sm:divide-y-0">
-                    <AnalyticsStat
+                    <InsightStat
                         :report="data.summary"
                         metric="pageViews"
                         :ui="{
@@ -150,7 +148,7 @@ watch(calendarRange, ({ end, start }) => {
                         }"
                         class="p-5 sm:p-6"
                     />
-                    <AnalyticsStat
+                    <InsightStat
                         :report="data.summary"
                         metric="visits"
                         :ui="{
@@ -161,7 +159,7 @@ watch(calendarRange, ({ end, start }) => {
                     />
                 </div>
                 <div class="border-t border-default p-5 sm:p-6">
-                    <AnalyticsAreaChart
+                    <InsightAreaChart
                         title="Traffic over time"
                         :metrics="['pageViews', 'visits']"
                         :report="data.series"

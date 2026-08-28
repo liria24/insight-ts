@@ -8,12 +8,12 @@ and ADR 0012. Their report-only and provider-independent principles remain accep
 ## Decision
 
 Framework-independent metric selection, series transformation, timezone and number formatting,
-axis domains, quality messages, and table formatting live in `@liria24/analytics/presentation`.
+axis domains, quality messages, and table formatting live in `insight-ts/presentation`.
 This layer imports Core report contracts and no framework or renderer.
 
-`@liria24/analytics/vue` contains only `provideAnalytics()`, `useAnalytics()`, and Vue integration
-types. Report components live in `@liria24/analytics/vue/ui`. That UI entry imports its base CSS
-as a side effect; the explicit `@liria24/analytics/vue/ui/style.css` export is only an escape
+`insight-ts/vue` contains only `provideAnalytics()`, `useAnalytics()`, and Vue integration
+types. Report components live in `insight-ts/vue/ui`. That UI entry imports its base CSS
+as a side effect; the explicit `insight-ts/vue/ui/style.css` export is only an escape
 hatch. The Nuxt module does not scan for UI usage, generate UI CSS, expose an `analytics.ui`
 option, or import UI code.
 

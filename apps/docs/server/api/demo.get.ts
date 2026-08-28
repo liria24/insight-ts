@@ -1,6 +1,4 @@
-import { AnalyticsError } from '@liria24/analytics'
-
-import { resolveDemoReportQuery } from '../../shared/demo-range'
+import { InsightError } from 'insight-ts'
 
 export default defineCachedEventHandler(
     async (event) => {
@@ -14,16 +12,17 @@ export default defineCachedEventHandler(
             })
         }
         try {
-            const analytics = await useServerAnalytics(event)
+            const insight = useInsight()
+            const traffic = insight.reports('cloudflare.webAnalytics')
             const now = new Date()
             const [summary, series, online] = await Promise.all([
-                analytics.traffic.summary({ metrics: ['pageViews', 'visits'], range: query.range }),
-                analytics.traffic.series({
+                traffic.summary({ metrics: ['pageViews', 'visits'], range: query.range }),
+                traffic.series({
                     grain: query.grain,
                     metrics: ['pageViews', 'visits'],
                     range: query.range,
                 }),
-                analytics.traffic
+                traffic
                     .summary({
                         metrics: ['activeUsers'],
                         range: {
@@ -31,10 +30,10 @@ export default defineCachedEventHandler(
                             to: now.toISOString(),
                         },
                     })
-                    .then(({ values }) =>
+                    .then(({ values }: { values: Readonly<Record<string, number | null>> }) =>
                         typeof values.activeUsers === 'number' ? values.activeUsers : 0,
                     )
-                    .catch((error) => {
+                    .catch((error: unknown) => {
                         if (isUnavailableDemoProvider(error)) return 0
                         throw error
                     }),
@@ -48,9 +47,6 @@ export default defineCachedEventHandler(
     { maxAge: 4 * 60 * 60 },
 )
 
-function isUnavailableDemoProvider(error: unknown): boolean {
-    return (
-        error instanceof AnalyticsError &&
-        (error.code === 'SOURCE_NOT_FOUND' || error.code === 'CONFIGURATION_MISSING')
-    )
-}
+const isUnavailableDemoProvider = (error: unknown): boolean =>
+    error instanceof InsightError &&
+    (error.code === 'SOURCE_NOT_FOUND' || error.code === 'CONFIGURATION_MISSING')

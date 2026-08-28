@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'bun:test'
 
 import { createDemoFixture } from '../server/utils/demo-fixture'
-import { resolveDemoReportQuery } from '../shared/demo-range'
+import { resolveDemoReportQuery } from '../shared/utils/demo-range'
 
 const now = new Date('2026-08-21T12:00:00.000Z')
 
@@ -19,11 +19,11 @@ describe('Demo analytics range', () => {
                 const content = await Bun.file(
                     new URL(`../content/5.ui/${file}`, import.meta.url),
                 ).text()
-                expect(content).toContain(`analytics-ui-docs-example{kind="${kind}"}`)
+                expect(content).toContain(`insight-ui-docs-example{kind="${kind}"}`)
             }),
         )
         const example = await Bun.file(
-            new URL('../app/components/AnalyticsUiDocsExample.vue', import.meta.url),
+            new URL('../app/components/InsightUiDocsExample.vue', import.meta.url),
         ).text()
         expect(example).toContain('Live example')
         expect(example).toContain('Reproduction code')
@@ -32,10 +32,10 @@ describe('Demo analytics range', () => {
     it('renders the main report through the SSR area chart path', async () => {
         const source = await Bun.file(new URL('../app/pages/demo.vue', import.meta.url)).text()
 
-        expect(source).toContain('AnalyticsAreaChart')
-        expect(source).toContain("from '@liria24/analytics/vue/ui'")
+        expect(source).toContain('InsightAreaChart')
+        expect(source).toContain("from 'insight-ts/vue/ui'")
         expect(source).toContain('await useFetch<DemoReportResponse>')
-        expect(source).not.toContain('AnalyticsLineChart')
+        expect(source).not.toContain('InsightLineChart')
         expect(source).not.toContain('useLazyFetch')
         expect(source).not.toContain('server: false')
     })

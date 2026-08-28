@@ -1,37 +1,44 @@
 # Architecture overview
 
-The SDK follows one dependency direction:
+Core is the dependency root for reports and History. The current modules form independent branches
+rather than one linear Integration/Adapter stack:
 
 ```text
-Integration -> Adapter -> Core
+Providers ───────────────┐
+History ─────────────────┼──> Core
+UI Core ─────────────────┘
+Nitro ──> History
+Nuxt ──> Nitro + Core/Provider runtime wiring
+Vue ──> Browser Integration
+Vue UI ──> UI Core + Core + private renderer
 ```
 
-Core defines provider-independent queries, reports, source selection, rollup safety, event
-schemas, Application State, and archive semantics. Adapters validate provider capability before
-I/O and translate one shared query into provider-native requests and metadata-rich reports.
-Integrations resolve host configuration and connect runtime primitives such as H3, Nitro Storage,
-and Nitro Tasks.
+Core defines capability contracts, typed Report Sources, report metadata, rollup safety, and
+History extension semantics. Provider implementations validate native capability before I/O and
+translate Source queries into provider-native requests. Integrations connect only the host
+primitives they own without promoting those primitives into Core.
 
 The public package surface mirrors these boundaries:
 
-- `@liria24/analytics` contains core contracts and execution.
-- Provider subpaths contain Provider factories; Adapters remain internal execution primitives.
-- `@liria24/analytics/provider` contains the custom Provider extension helper.
-- `@liria24/analytics/nuxt` contains the build-time Nuxt module.
-- `@liria24/analytics/nuxt/runtime` contains H3/Nitro runtime helpers.
-- `@liria24/analytics/presentation` contains framework-independent report presentation models.
-- `@liria24/analytics/vue` contains optional Vue browser-client integration.
-- `@liria24/analytics/vue/ui` contains optional report-only presentation primitives.
+- `insight-ts` contains Core contracts and execution.
+- Provider subpaths contain Provider factories and their native request translation.
+- `insight-ts/provider` contains the custom `defineProvider()` extension helper.
+- `insight-ts/history` contains the History Engine, reductions, and small Repository contract.
+- `insight-ts/nitro` connects Nitro Storage and opt-in Nitro Tasks without importing H3.
+- `insight-ts/nuxt` composes the Nitro Integration and adds only Nuxt configuration and DX.
+- `insight-ts/ui-core` contains framework- and renderer-independent UI models.
+- `insight-ts/vue` contains optional Vue browser-client integration.
+- `insight-ts/vue/ui` contains optional report-only Vue components.
 
-Presentation depends only on Core report contracts. Vue UI depends on Presentation and treats
-TanStack Charts as a private renderer. Core, browser, Nuxt, and the Vue integration entry do not
-reach the renderer or UI stylesheet.
+UI Core depends only on Core report contracts. Vue UI depends on UI Core and treats TanStack
+Charts as a private renderer. Core, browser, History, Nitro, Nuxt, UI Core, and the Vue integration
+entry do not reach the renderer or UI stylesheet.
 
-Configuration is split by evaluation time. `nuxt.config.ts` owns declarative resource
-identifiers, event definitions, relay options, and archive policy. `server/analytics.config.ts`
-owns runtime State collection, provider authorization callbacks, optional custom Providers, and
-the custom event-delivery escape hatch.
+Providers are optional capability collections. Implemented Report Sources expose only the
+operations they support: `summary`, `series`, `breakdown`, or `snapshot`. Source IDs derive from
+the Provider ID and Source key. Provider-native query languages remain explicit escape hatches.
 
-Archive storage is normalized JSON in unstorage. It is historical materialization, not a result
-cache. Provider coverage is backfilled on first maintenance when the Source declares its lookback;
-later maintenance is incremental and safe to repeat.
+History consumes Source-owned schema, query, rollup, freshness, and History declarations. The
+Engine owns planning, gaps, composition, reduction, fidelity, and idempotency; a Repository only
+reports coverage and reads or writes segments. Nitro supplies the well-known `storage.insight`
+mount. History is historical materialization, not a result cache.

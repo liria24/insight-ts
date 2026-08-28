@@ -11,16 +11,16 @@ not parse or merge utility classes and does not depend on Tailwind CSS, Tailwind
 UI.
 
 Vue Data UI remains an internal renderer for plotting, lines, axes, grids, and pointer
-calculation. Analytics SDK owns title, legend, tooltip, quality, empty states, time formatting,
+calculation. Insight.ts owns title, legend, tooltip, quality, empty states, time formatting,
 axis options, and transformed slot data. Renderer-specific config, dataset, theme, and slots are
 not public API.
 
 SVG styling uses semantic `--analytics-*` variables with optional fallbacks to matching Nuxt UI
-semantic variables. Plain Vue consumers import `@liria24/analytics/vue/style.css` manually. The
+semantic variables. Plain Vue consumers import `insight-ts/vue/style.css` manually. The
 Nuxt module defaults to build-time component detection and generates a watched stylesheet
 template; it can also always inject or disable styles explicitly.
 
-Vue UI documentation is organized around the Analytics SDK public API: overview, usage, styling,
+Vue UI documentation is organized around the Insight.ts public API: overview, usage, styling,
 slots, and API. Renderer configuration is not documented as an application customization path.
 
 ## Consequences

@@ -22,5 +22,5 @@ jobs:
               with:
                   bun-version: 1.4.0
             - run: bun ci
-            - run: bun --filter @liria24/analytics build
+            - run: bun --filter insight-ts build
             - run: bun run preview:package

@@ -1,24 +1,24 @@
 export default defineAppConfig({
     app: {
-        domain: 'analytics.liria.me',
+        domain: 'insight.liria.me',
     },
     docus: {
         locale: 'en',
     },
     github: {
         branch: 'main',
-        name: 'analytics',
+        name: 'insight-ts',
         owner: 'liria24',
         rootDir: 'apps/docs',
-        url: 'https://github.com/liria24/analytics',
+        url: 'https://github.com/liria24/insight-ts',
     },
     header: {
-        title: 'Analytics SDK',
+        title: 'Insight.ts',
     },
     seo: {
-        description: 'Provider-independent analytics for TypeScript applications.',
-        title: 'Analytics SDK',
-        titleTemplate: '%s',
+        description: 'Typed insights across analytics, observability, and application data.',
+        title: 'Insight.ts',
+        titleTemplate: '%s | Insight.ts',
     },
     ui: {
         colors: {
