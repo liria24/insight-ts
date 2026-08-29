@@ -12,6 +12,7 @@ describe('OpenTelemetry instrumentation adapter', () => {
             (name: string, options: unknown, operation: (span: Span) => unknown) => unknown
         >((_name, _options, operation) => operation(span))
         const instrumentation = createOpenTelemetryInstrumentation({
+            // oxlint-disable-next-line typescript/no-unnecessary-type-assertion
             tracer: { startActiveSpan } as unknown as Tracer,
         })
 
@@ -52,6 +53,7 @@ describe('OpenTelemetry instrumentation adapter', () => {
 })
 
 function fakeSpan(): Span {
+    // oxlint-disable-next-line typescript/no-unnecessary-type-assertion
     return {
         end: vi.fn<Span['end']>(),
         recordException: vi.fn<Span['recordException']>(),
