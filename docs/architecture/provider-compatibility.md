@@ -27,4 +27,10 @@ rows check that shared contracts do not assume one provider's shape.
   identity, consent, autocapture, retry, and batching are not normalized.
 - History materializations are Source-declared and metric-rollup-aware. Funnel, retention,
   unique, percentile, and provider-defined results are not silently added across partitions.
-- Quality metadata is part of the report contract, not an internal Provider implementation detail.
+- Cross-cutting Quality metadata is part of the QueryResult envelope, not an internal Provider
+  implementation detail. Provider-specific freshness, pagination, temporal, and fidelity metadata
+  remains Source-owned.
+- Logs, traces, funnels, billing entities, and analytics metrics may all use `insight.query()`
+  without a Core Source-kind union or common result ontology.
+- OTel semantic conventions guide observability names and UCUM units, but do not constrain
+  analytics, product, or billing Source contracts.

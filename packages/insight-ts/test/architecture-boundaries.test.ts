@@ -28,15 +28,27 @@ describe('architecture import boundaries', () => {
         expect(violations).toEqual([])
     })
 
-    it('keeps UI Core dependent only on Core report contracts', async () => {
+    it('keeps UI Core dependent only on Core and Metric contracts', async () => {
         const file = join(sourceRoot, 'ui-core', 'index.ts')
         const source = await readFile(file, 'utf8')
         const violations = importSpecifiers(source).filter((specifier) => {
             const target = localTarget(specifier, file)
-            return target === undefined || !target.includes('/core/')
+            return (
+                target === undefined ||
+                (!target.includes('/core/') && !target.includes('/metrics/'))
+            )
         })
 
         expect(violations).toEqual([])
+    })
+
+    it('keeps OpenTelemetry imports outside Core and the default entry', async () => {
+        const files = [
+            ...(await sourceFiles(join(sourceRoot, 'core'))),
+            join(sourceRoot, 'ui-core', 'index.ts'),
+        ]
+        const sources = await Promise.all(files.map((file) => readFile(file, 'utf8')))
+        expect(sources.some((source) => source.includes('@opentelemetry/'))).toBe(false)
     })
 })
 

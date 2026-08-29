@@ -29,20 +29,40 @@ describe('Demo analytics range', () => {
         expect(example).toContain('Reproduction code')
     })
 
-    it('renders the main report through the SSR area chart path', async () => {
-        const source = await Bun.file(new URL('../app/pages/demo.vue', import.meta.url)).text()
+    it('renders Metric results through data-only public UI', async () => {
+        const [source, dashboard] = await Promise.all([
+            Bun.file(new URL('../app/pages/demo.vue', import.meta.url)).text(),
+            Bun.file(new URL('../app/components/InsightDemoDashboard.vue', import.meta.url)).text(),
+        ])
 
-        expect(source).toContain('InsightAreaChart')
-        expect(source).toContain("from 'insight-ts/vue/ui'")
         expect(source).toContain('await useFetch<DemoReportResponse>')
-        expect(source).not.toContain('InsightLineChart')
+        expect(source).toContain('InsightDemoDashboard')
+        expect(dashboard).toContain('InsightAreaChart')
+        expect(dashboard).toContain('InsightBarChart')
+        expect(dashboard).toContain('InsightSparkline')
+        expect(dashboard).toContain('InsightQualityNotice')
+        expect(dashboard).toContain("from 'insight-ts/vue/ui'")
+        expect(dashboard).toContain(':data=')
+        expect(dashboard).not.toContain(':report=')
+        expect(dashboard).not.toContain(':metrics=')
         expect(source).not.toContain('useLazyFetch')
         expect(source).not.toContain('server: false')
     })
 
-    it('resolves application presets to absolute ranges and sums the visible series', () => {
+    it('reuses the report dashboard on the landing page with a fixed seven-day range', async () => {
+        const source = await Bun.file(
+            new URL('../app/components/landing/LandingDemo.vue', import.meta.url),
+        ).text()
+
+        expect(source).toContain("query: { range: '7d' }")
+        expect(source).toContain('InsightDemoDashboard compact')
+        expect(source).toContain('Explore the live demo')
+    })
+
+    it('resolves presets and executes deterministic demo Sources through insight.query', async () => {
         const query = resolveDemoReportQuery({ range: '7d' }, now)
-        const report = createDemoFixture(query, now)
+        const result = await createDemoFixture(query, now)
+        const pageViews = result.analytics.trafficSeries.data.pageViews.points ?? []
 
         expect(query).toEqual({
             grain: 'day',
@@ -51,11 +71,39 @@ describe('Demo analytics range', () => {
                 to: '2026-08-21T12:00:00.000Z',
             },
         })
-        expect(report.series.points).toHaveLength(7)
-        expect(report.online).toBe(0)
-        expect(report.summary.values.pageViews).toBe(
-            report.series.points.reduce((sum, point) => sum + (point.values.pageViews ?? 0), 0),
-        )
+        expect(pageViews).toHaveLength(7)
+        expect(result.online).toBeGreaterThan(0)
+        expect(result.analytics.trafficSummary.data.pageViews.value).toBe(1421)
+        expect(result.execution.sources).toContain('demo.logs')
+        expect(result.logs.data.entries).toHaveLength(3)
+        expect(result.trace.data.spans).toHaveLength(4)
+    })
+
+    it('keeps Source-owned renderers demo-local and shows all five sections', async () => {
+        const [dashboard, owned, fixture, endpoint] = await Promise.all([
+            Bun.file(new URL('../app/components/InsightDemoDashboard.vue', import.meta.url)).text(),
+            Bun.file(
+                new URL('../app/components/DemoOwnedSourceResults.vue', import.meta.url),
+            ).text(),
+            Bun.file(new URL('../server/utils/demo-fixture.ts', import.meta.url)).text(),
+            Bun.file(new URL('../server/api/demo.get.ts', import.meta.url)).text(),
+        ])
+        for (const section of [
+            'Overview',
+            'Analytics',
+            'Product &amp; Revenue',
+            'Observability',
+            'Data &amp; Execution',
+        ]) {
+            expect(dashboard).toContain(section)
+        }
+        expect(owned).toContain('Paginated logs')
+        expect(owned).toContain('Trace graph')
+        expect(fixture).toContain('defineMetricSource')
+        expect(fixture).toContain('defineSource')
+        expect(fixture).toContain('insight.query')
+        expect(endpoint).toContain('createDemoFixture')
+        expect(endpoint).not.toContain('Provider fallback')
     })
 
     it('uses the selected calendar interval and rejects invalid ranges', () => {

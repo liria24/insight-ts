@@ -1,4 +1,5 @@
-import type { Grain, TimeRange, ScalarReport, SeriesReport } from 'insight-ts'
+import type { QueryResult } from 'insight-ts'
+import type { Grain, MetricData, MetricMeta, TimeRange } from 'insight-ts/metrics'
 
 export const demoRangeOptions = [
     { label: 'Last 24 Hours', value: '24h' },
@@ -17,9 +18,63 @@ export interface DemoReportQuery {
 }
 
 export interface DemoReportResponse {
+    analytics: {
+        countries: DemoMetricResult<'pageViews', 'country'>
+        devices: DemoMetricResult<'visits', 'device'>
+        referrers: DemoMetricResult<'visits', 'referer'>
+        searchPages: DemoMetricResult<'clicks' | 'impressions', 'page'>
+        searchQueries: DemoMetricResult<'clicks' | 'impressions', 'query'>
+        searchSeries: DemoMetricResult<'clicks' | 'impressions' | 'ctr'>
+        searchSummary: DemoMetricResult<'clicks' | 'impressions' | 'ctr' | 'averagePosition'>
+        topPages: DemoMetricResult<'pageViews', 'path'>
+        trafficSeries: DemoMetricResult<'pageViews' | 'visits'>
+        trafficSummary: DemoMetricResult<'pageViews' | 'visits'>
+    }
+    billing: QueryResult<DemoBillingData>
+    execution: { queriedAt: string; sources: readonly string[] }
+    funnel: QueryResult<DemoFunnelData>
+    logs: QueryResult<DemoLogsData, DemoLogsMeta>
+    observability: {
+        series: DemoMetricResult<'requestRate' | 'errorRate' | 'latencyP95'>
+        summary: DemoMetricResult<'requestRate' | 'errorRate' | 'latencyP95'>
+    }
     online: number
-    series: SeriesReport
-    summary: ScalarReport
+    product: {
+        revenue: DemoMetricResult<'mrr', 'plan'>
+        series: DemoMetricResult<'signups' | 'activeTeams'>
+        summary: DemoMetricResult<'signups' | 'activeTeams'>
+    }
+    trace: QueryResult<DemoTraceData>
+}
+
+export type DemoMetricResult<
+    TMetric extends string,
+    TDimension extends string = never,
+> = QueryResult<MetricData<TMetric, TDimension>, MetricMeta>
+
+export interface DemoFunnelData {
+    steps: readonly { converted: number; name: string; rate: number }[]
+}
+
+export interface DemoLogsData {
+    entries: readonly { level: 'error' | 'info' | 'warn'; message: string; timestamp: string }[]
+}
+
+export interface DemoLogsMeta {
+    nextCursor?: string
+}
+
+export interface DemoTraceData {
+    edges: readonly { from: string; to: string }[]
+    spans: readonly { durationMs: number; id: string; name: string; parentId?: string }[]
+    traceId: string
+}
+
+export interface DemoBillingData {
+    currency: 'USD'
+    invoices: readonly { amount: number; customer: string; status: 'open' | 'paid' }[]
+    outstanding: number
+    revenue: number
 }
 
 const presetMilliseconds: Record<DemoRangePreset, number> = {

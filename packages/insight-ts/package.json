@@ -2,10 +2,14 @@
     "name": "insight-ts",
     "version": "0.0.0",
     "description": "Typed insights across analytics, observability, and application data",
+    "homepage": "https://insight.liria.me",
+    "bugs": {
+        "url": "https://github.com/liria24/insight-ts/issues"
+    },
     "license": "MIT",
     "repository": {
         "type": "git",
-        "url": "git+https://github.com/liria24/analytics.git",
+        "url": "git+https://github.com/liria24/insight-ts.git",
         "directory": "packages/insight-ts"
     },
     "files": [
@@ -37,6 +41,10 @@
             "types": "./dist/history.d.ts",
             "import": "./dist/history.js"
         },
+        "./metrics": {
+            "types": "./dist/metrics.d.ts",
+            "import": "./dist/metrics.js"
+        },
         "./nitro": {
             "types": "./dist/nitro.d.ts",
             "import": "./dist/nitro.js"
@@ -44,6 +52,10 @@
         "./nuxt": {
             "types": "./dist/nuxt.d.ts",
             "import": "./dist/nuxt.js"
+        },
+        "./opentelemetry": {
+            "types": "./dist/opentelemetry.d.ts",
+            "import": "./dist/opentelemetry.js"
         },
         "./provider": {
             "types": "./dist/provider.d.ts",
@@ -82,21 +94,25 @@
         "@tsdown/css": "^0.22.14",
         "@types/bun": "^1.4.0",
         "@vue/compiler-sfc": "3.5.42",
-        "happy-dom": "^20.11.12",
+        "happy-dom": "^20.11.15",
         "publint": "^0.3.24",
         "tsdown": "^0.22.14",
         "typescript": "6.0.3",
         "unplugin-vue": "^7.2.0",
         "unstorage": "^1.17.5",
         "vitest": "^4.1.11",
-        "vue-compiler-36": "npm:@vue/compiler-sfc@3.6.0-rc.2",
+        "vue-compiler-36": "npm:@vue/compiler-sfc@3.6.0-rc.6",
         "vue-tsc": "^3.3.11"
     },
     "peerDependencies": {
+        "@opentelemetry/api": "^1.9.1",
         "nuxt": "^4.5.1",
         "vue": ">=3.5.0"
     },
     "peerDependenciesMeta": {
+        "@opentelemetry/api": {
+            "optional": true
+        },
         "nuxt": {
             "optional": true
         },

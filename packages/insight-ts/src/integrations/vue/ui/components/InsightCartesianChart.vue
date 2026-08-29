@@ -8,7 +8,6 @@ import { Chart } from '@tanstack/charts/vue'
 import { curveMonotoneX } from 'd3-shape'
 import { computed } from 'vue'
 
-import type { SeriesPoint } from '../../../../core/types.ts'
 import {
     createChartTooltipModel,
     createDataNotices,
@@ -19,6 +18,7 @@ import {
     formatNumber,
     formatDataNotice,
     type ChartTooltipModel,
+    type MetricSeriesPoint,
     type SeriesValue,
 } from '../../../../ui-core/index.ts'
 import {
@@ -83,10 +83,9 @@ const chartColors = [
     'var(--insight-chart-6)',
 ]
 const model = computed(() =>
-    createSeriesModel(props.report, {
+    createSeriesModel(props.data, {
         colors: props.colors ?? chartColors,
         locale: props.locale,
-        ...(props.metrics ? { metrics: props.metrics } : {}),
         ...(props.timezone ? { timezone: props.timezone } : {}),
         ...(props.xAxis ? { xAxis: props.xAxis } : {}),
         ...(props.yAxis ? { yAxis: props.yAxis } : {}),
@@ -103,14 +102,12 @@ const rendererSeries = computed(() =>
         })),
     })),
 )
-const empty = computed(() => props.report.points.length === 0 || model.value.series.length === 0)
+const empty = computed(() => model.value.points.length === 0 || model.value.series.length === 0)
 const label = computed(
     () => props.title ?? `Insight ${props.variant === 'line' ? 'line' : 'area'} chart`,
 )
-const notices = computed(() => createDataNotices(props.report.meta))
-const messages = computed(() =>
-    notices.value.map((notice) => formatDataNotice(notice, props.locale)),
-)
+const notices = computed(() => createDataNotices(props.data.meta.quality))
+const messages = computed(() => notices.value.map(formatDataNotice))
 const areaBaseline = computed(() => {
     const { max, min } = model.value.yDomain
     return min <= 0 && max >= 0 ? 0 : min > 0 ? min : max
@@ -157,7 +154,7 @@ const definition = computed(() => {
                         count: Math.max(1, Math.floor(props.xAxis?.maxTicks ?? 6)),
                         format: (value) =>
                             formatAxisTime(
-                                props.report,
+                                props.data,
                                 value,
                                 props.locale,
                                 props.timezone,
@@ -196,7 +193,7 @@ function tooltipForPoints(points: readonly RendererPoint[]): ChartTooltipModel |
     return index === undefined
         ? undefined
         : createChartTooltipModel(
-              props.report,
+              props.data,
               model.value.series,
               index,
               props.locale,
@@ -206,15 +203,15 @@ function tooltipForPoints(points: readonly RendererPoint[]): ChartTooltipModel |
           )
 }
 
-function pointKey(point: SeriesPoint): string {
+function pointKey(point: MetricSeriesPoint): string {
     return `${point.time}:${JSON.stringify(point.dimensions ?? {})}`
 }
 
 function formatPointTime(index: number): string {
-    return formatSeriesPointTime(props.report, index, props.locale, props.timezone, props.xAxis)
+    return formatSeriesPointTime(props.data, index, props.locale, props.timezone, props.xAxis)
 }
 
-function formatPointValue(point: SeriesPoint, metric: string): string {
+function formatPointValue(point: MetricSeriesPoint, metric: string): string {
     const value = point.values[metric]
     return value === null || value === undefined
         ? 'No data'
@@ -345,7 +342,7 @@ function fidelityBandStyle(from: number, to: number): Record<string, string> {
                 </tr>
             </thead>
             <tbody>
-                <tr v-for="(point, index) in props.report.points" :key="pointKey(point)">
+                <tr v-for="(point, index) in model.points" :key="pointKey(point)">
                     <th scope="row">{{ formatPointTime(index) }}</th>
                     <td v-for="series in model.series" :key="series.metric">
                         {{ formatPointValue(point, series.metric) }}
@@ -359,7 +356,7 @@ function fidelityBandStyle(from: number, to: number): Record<string, string> {
             name="notices"
             :messages
             :notices
-            :quality="props.report.meta.quality"
+            :quality="props.data.meta.quality"
         >
             <p aria-live="polite" :class="ui.notices" data-slot="notices" role="status">
                 {{ messages.join(' \u00b7 ') }}

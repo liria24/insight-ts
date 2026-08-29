@@ -1,16 +1,12 @@
 import { InsightError, ProviderError } from '../../core/errors.ts'
-import type {
-    Filter,
-    MetricValues,
-    Report,
-    ReportMeta,
-    ReportSourceDefinition,
-    BreakdownResult,
-    SeriesResult,
-    SummaryResult,
-} from '../../core/types.ts'
+import {
+    defineMetricSource,
+    type CanonicalWhere,
+    type MetricSourceOutput,
+    type MetricValues,
+} from '../../metrics/index.ts'
 import { fetchWithRetry } from '../shared/fetch-with-retry.ts'
-import { resolvedReportQuery, type ResolvedReportQuery } from '../shared/types.ts'
+import { resolvedMetricQuery, type ResolvedMetricQuery } from '../shared/types.ts'
 
 const SEARCH_ANALYTICS_ENDPOINT = 'https://www.googleapis.com/webmasters/v3/sites'
 const PAGE_SIZE = 25_000
@@ -99,7 +95,7 @@ interface SearchAnalyticsMetadata {
 export function googleSearchConsole(options: GoogleSearchConsoleOptions) {
     return {
         id: 'googleSearchConsole',
-        reports: { searchAnalytics: googleSearchConsoleSource(options) },
+        sources: { searchAnalytics: googleSearchConsoleSource(options) },
     }
 }
 
@@ -107,7 +103,7 @@ function googleSearchConsoleSource(options: GoogleSearchConsoleOptions) {
     const fetcher = options.fetch ?? globalThis.fetch
     const dataState = options.dataState ?? 'final'
 
-    const validate = (query: ResolvedReportQuery): void => {
+    const validate = (query: ResolvedMetricQuery): void => {
         for (const metric of query.metrics) {
             if (!['clicks', 'impressions', 'ctr', 'averagePosition'].includes(metric)) {
                 throw new TypeError(`Unsupported Google Search Console metric: ${metric}`)
@@ -135,10 +131,13 @@ function googleSearchConsoleSource(options: GoogleSearchConsoleOptions) {
         ) {
             throw new TypeError('The date dimension only supports daily Search Console results')
         }
-        compileGoogleFilters(query.filters)
+        compileGoogleFilters(query.where)
     }
 
-    const execute = async (query: ResolvedReportQuery): Promise<Report> => {
+    const execute = async (
+        query: ResolvedMetricQuery,
+        signal?: AbortSignal,
+    ): Promise<MetricSourceOutput> => {
         validate(query)
         if (!options.auth.getAccessToken) {
             throw new InsightError(
@@ -165,7 +164,7 @@ function googleSearchConsoleSource(options: GoogleSearchConsoleOptions) {
                 rowLimit,
                 startDate: calendarDate(query.range.from),
                 startRow,
-                ...compileGoogleFilters(query.filters),
+                ...compileGoogleFilters(query.where),
             }
             // Pagination is sequential because the next offset depends on this page's row count.
             // eslint-disable-next-line no-await-in-loop
@@ -180,6 +179,7 @@ function googleSearchConsoleSource(options: GoogleSearchConsoleOptions) {
                         'content-type': 'application/json',
                     },
                     method: 'POST',
+                    ...(signal ? { signal } : {}),
                 },
             )
             // eslint-disable-next-line no-await-in-loop
@@ -214,77 +214,55 @@ function googleSearchConsoleSource(options: GoogleSearchConsoleOptions) {
         return googleReport(query, rows, metadata)
     }
 
-    return {
-        breakdown: async (query): Promise<BreakdownResult> =>
-            tableResult(
-                await execute(
-                    resolvedReportQuery(
-                        'googleSearchConsole.searchAnalytics',
-                        'breakdown',
-                        query,
-                        'date',
-                    ),
-                ),
-            ),
+    return defineMetricSource({
         dimensions: {
-            country: 'string',
-            date: 'date',
-            device: 'string',
-            hour: 'datetime',
-            page: 'string',
-            query: 'string',
-            searchAppearance: 'string',
+            country: { operators: ['eq'], type: 'string' },
+            date: { operators: [], type: 'date' },
+            device: { operators: ['eq'], type: 'string' },
+            hour: { operators: [], type: 'datetime' },
+            page: { operators: ['eq', 'ne', 'contains'], type: 'string' },
+            query: { operators: ['eq', 'ne', 'contains'], type: 'string' },
+            searchAppearance: { operators: ['eq'], type: 'string' },
         },
         history: {
             grain: 'day',
             metrics: ['clicks', 'impressions', 'ctr'],
-            mode: 'range',
         },
         metrics: {
             averagePosition: {
-                aggregation: 'mean',
+                aggregation: { kind: 'mean' },
                 rollup: 'non-additive',
-                valueType: 'position',
+                unit: '{position}',
             },
-            clicks: { aggregation: 'sum', rollup: 'additive', valueType: 'integer' },
+            clicks: { aggregation: { kind: 'sum' }, rollup: 'additive', unit: '{click}' },
             ctr: {
-                aggregation: 'ratio',
-                derive: {
+                aggregation: {
                     denominator: 'impressions',
+                    kind: 'ratio',
                     numerator: 'clicks',
-                    operation: 'ratio',
                 },
                 rollup: 'derived',
-                valueType: 'ratio',
+                unit: '1',
             },
-            impressions: { aggregation: 'sum', rollup: 'additive', valueType: 'integer' },
+            impressions: {
+                aggregation: { kind: 'sum' },
+                rollup: 'additive',
+                unit: '{impression}',
+            },
         },
-        series: async (query): Promise<SeriesResult> =>
-            seriesResult(
-                await execute(
-                    resolvedReportQuery(
-                        'googleSearchConsole.searchAnalytics',
-                        'series',
-                        query,
-                        query.grain === 'hour' ? 'hour' : 'date',
-                    ),
+        execute: (query, { signal }) =>
+            execute(
+                resolvedMetricQuery(
+                    'googleSearchConsole.searchAnalytics',
+                    query,
+                    query.grain === 'hour' ? 'hour' : 'date',
                 ),
+                signal,
             ),
-        summary: async (query): Promise<SummaryResult> =>
-            summaryResult(
-                await execute(
-                    resolvedReportQuery(
-                        'googleSearchConsole.searchAnalytics',
-                        'summary',
-                        query,
-                        'date',
-                    ),
-                ),
-            ),
-    } satisfies ReportSourceDefinition
+    })
 }
 
-function compileGoogleFilters(filter: Filter | undefined): {
+function compileGoogleFilters(filter: CanonicalWhere | undefined): {
     dimensionFilterGroups?: unknown[]
 } {
     if (filter === undefined) return {}
@@ -299,13 +277,13 @@ function compileGoogleFilters(filter: Filter | undefined): {
                         )
                     }
                     const operator = (
-                        { contains: 'contains', eq: 'equals', neq: 'notEquals' } as Partial<
+                        { contains: 'contains', eq: 'equals', ne: 'notEquals' } as Partial<
                             Record<typeof leaf.operator, string>
                         >
                     )[leaf.operator]
                     if (operator === undefined || typeof leaf.value !== 'string') {
                         throw new TypeError(
-                            'Google Search Console filters support string eq, neq, and contains operators',
+                            'Google Search Console filters support string eq, ne, and contains operators',
                         )
                     }
                     if (leaf.value.length > 4096) {
@@ -334,17 +312,19 @@ function compileGoogleFilters(filter: Filter | undefined): {
     }
 }
 
-function flattenAndFilter(filter: Filter): Extract<Filter, { field: string }>[] {
+function flattenAndFilter(filter: CanonicalWhere): Extract<CanonicalWhere, { field: string }>[] {
     if ('field' in filter) return [filter]
-    if ('and' in filter) return filter.and.flatMap(flattenAndFilter)
+    if ('filters' in filter && filter.operator === 'and') {
+        return filter.filters.flatMap(flattenAndFilter)
+    }
     throw new TypeError('Google Search Console supports only AND filter groups')
 }
 
 function googleReport(
-    query: ResolvedReportQuery,
+    query: ResolvedMetricQuery,
     rows: SearchAnalyticsRow[],
     metadata: SearchAnalyticsMetadata | undefined,
-): Report {
+): MetricSourceOutput {
     const normalizedRows = trimRowsToRange(query, rows)
     const exactRange = canRepresentRangeExactly(query)
     const incompleteFrom =
@@ -385,79 +365,57 @@ function googleReport(
                   },
               ]),
     ]
-    const meta: ReportMeta = {
-        ...(incompleteFrom === undefined ? {} : { freshness: { incompleteFrom } }),
-        quality: { ...(exactRange ? {} : { approximate: true }), partial: true, warnings },
-        queriedAt: new Date().toISOString(),
-        source: query.source,
-        temporal: {
-            bucketTimezone: SEARCH_CONSOLE_TIMEZONE,
-            ...(query.grain === 'auto' ? {} : { grain: query.grain }),
-            sourceTimezone: SEARCH_CONSOLE_TIMEZONE,
+    const meta: Pick<MetricSourceOutput, 'meta' | 'quality'> = {
+        meta: {
+            ...(incompleteFrom === undefined ? {} : { freshness: { incompleteFrom } }),
+            temporal: {
+                bucketTimezone: SEARCH_CONSOLE_TIMEZONE,
+                ...(query.grain === 'auto' ? {} : { grain: query.grain }),
+                sourceTimezone: SEARCH_CONSOLE_TIMEZONE,
+            },
         },
+        quality: { ...(exactRange ? {} : { approximate: true }), partial: true, warnings },
     }
 
     if (query.dimensions.length === 0) {
         return {
-            kind: 'scalar',
-            meta,
+            ...meta,
             values: aggregateGoogleMetrics(query.metrics, normalizedRows),
         }
     }
-    if (query.dimensions.length === 1 && ['date', 'hour'].includes(query.dimensions[0] ?? '')) {
-        const dimension = query.dimensions[0]
-        return {
-            kind: 'series',
-            meta,
-            points: normalizedRows.map((row) => ({
-                time:
-                    dimension === 'date'
-                        ? (searchConsoleDayStart(rowKeys(row)[0] ?? '')?.toISOString() ?? '')
-                        : new Date(rowKeys(row)[0] ?? '').toISOString(),
-                values: googleMetricValues(query.metrics, row),
-            })),
-        }
-    }
+    const timeIndex = query.dimensions.findIndex((dimension) =>
+        ['date', 'hour'].includes(dimension),
+    )
     return {
-        kind: 'table',
-        meta,
-        rows: normalizedRows.map((row) => ({
-            dimensions: Object.fromEntries(
-                query.dimensions.map((dimension, index) => [
-                    dimension,
-                    rowKeys(row)[index] ?? null,
-                ]),
-            ),
-            metrics: googleMetricValues(query.metrics, row),
+        ...meta,
+        points: normalizedRows.map((row) => ({
+            ...(timeIndex === -1
+                ? {}
+                : {
+                      time:
+                          query.dimensions[timeIndex] === 'date'
+                              ? (searchConsoleDayStart(
+                                    rowKeys(row)[timeIndex] ?? '',
+                                )?.toISOString() ?? '')
+                              : new Date(rowKeys(row)[timeIndex] ?? '').toISOString(),
+                  }),
+            ...(query.dimensions.some((_, index) => index !== timeIndex)
+                ? {
+                      dimensions: Object.fromEntries(
+                          query.dimensions.flatMap((dimension, index) =>
+                              index === timeIndex ? [] : [[dimension, rowKeys(row)[index] ?? null]],
+                          ),
+                      ),
+                  }
+                : {}),
+            values: googleMetricValues(query.metrics, row),
         })),
-    }
-}
-
-function summaryResult(report: Report): SummaryResult {
-    if (report.kind !== 'scalar') throw new TypeError('Provider returned a non-scalar report')
-    return { ...resultMetadata(report.meta), values: report.values }
-}
-
-function seriesResult(report: Report): SeriesResult {
-    if (report.kind !== 'series') throw new TypeError('Provider returned a non-series report')
-    return { ...resultMetadata(report.meta), points: report.points }
-}
-
-function tableResult(report: Report): BreakdownResult {
-    if (report.kind !== 'table') throw new TypeError('Provider returned a non-table report')
-    return { ...resultMetadata(report.meta), rows: report.rows }
-}
-
-function resultMetadata(meta: ReportMeta) {
-    return {
-        ...(meta.freshness ? { freshness: meta.freshness } : {}),
-        quality: meta.quality,
-        temporal: meta.temporal,
+        values: aggregateGoogleMetrics(query.metrics, normalizedRows),
     }
 }
 
 function trimRowsToRange(
-    query: ResolvedReportQuery,
+    query: ResolvedMetricQuery,
     rows: SearchAnalyticsRow[],
 ): SearchAnalyticsRow[] {
     const hourIndex = query.dimensions.indexOf('hour')
@@ -483,7 +441,7 @@ function trimRowsToRange(
     })
 }
 
-function canRepresentRangeExactly(query: ResolvedReportQuery): boolean {
+function canRepresentRangeExactly(query: ResolvedMetricQuery): boolean {
     if (query.dimensions.includes('hour')) {
         return isSearchConsoleHour(query.range.from) && isSearchConsoleHour(query.range.to)
     }

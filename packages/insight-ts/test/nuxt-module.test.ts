@@ -25,7 +25,7 @@ describe('Nitro and Nuxt integration', () => {
         expect(source).not.toContain('h3')
     })
 
-    it('configures Cloudflare from Nuxt runtime config with a typed Report Source', () => {
+    it('configures Cloudflare from Nuxt runtime config with a typed Source', () => {
         const source = createServerRuntimeTemplate({
             cloudflareWebAnalytics: true,
             historySources: [],
@@ -54,17 +54,16 @@ describe('Nitro and Nuxt integration', () => {
         expect(() => configureNitroHistory({ storage: {} })).toThrow(
             'nitro.storage.insight or nitro.devStorage.insight',
         )
-        expect(() =>
-            configureNitroHistory(config, { captureHandler: 'capture', syncHandler: 'sync' }),
-        ).toThrow('Nitro Tasks must be explicitly enabled')
+        expect(() => configureNitroHistory(config, { syncHandler: 'sync' })).toThrow(
+            'Nitro Tasks must be explicitly enabled',
+        )
 
         const withTasks: Record<string, unknown> = {
             experimental: { tasks: true },
             devStorage: { insight: { driver: 'fs' } },
         }
-        configureNitroHistory(withTasks, { captureHandler: 'capture', syncHandler: 'sync' })
+        configureNitroHistory(withTasks, { syncHandler: 'sync' })
         expect(withTasks.tasks).toMatchObject({
-            'insight:history:capture': { handler: 'capture' },
             'insight:history:sync': { handler: 'sync' },
         })
         expect(withTasks.experimental).toEqual({ tasks: true })
@@ -78,17 +77,15 @@ describe('Nitro and Nuxt integration', () => {
             id: 'app.usage:one',
             observedAt: '2026-08-28T00:00:00.000Z',
             range: { from: '2026-08-01T00:00:00.000Z', to: '2026-09-01T00:00:00.000Z' },
-            report: {
-                kind: 'series' as const,
-                meta: {
-                    quality: {},
-                    queriedAt: '2026-08-28T00:00:00.000Z',
-                    source: 'app.usage',
-                    temporal: { grain: 'day' as const },
-                },
-                points: [],
+            data: {
+                requests: { points: [], value: 0 },
             },
-            schemaVersion: 1 as const,
+            meta: {
+                queriedAt: '2026-08-28T00:00:00.000Z',
+                source: 'app.usage',
+                temporal: { grain: 'day' as const },
+            },
+            schemaVersion: 2 as const,
             source: 'app.usage',
         }
         await repository.write(segment)

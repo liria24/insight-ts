@@ -1,69 +1,26 @@
+import type { QueryQuality, QueryResult } from '../core/types.ts'
 import type {
-    DimensionValues,
-    Grain,
+    DimensionValue,
     HistoryFidelityBand,
-    HistoryTransformation,
-    MetricValues,
-    Report,
-    ReportMeta,
-    ScalarReport,
-    SeriesPoint,
-    SeriesReport,
-    TableReport,
-    TimeRange,
-} from '../core/types.ts'
+    MetricData,
+    MetricMeta,
+} from '../metrics/index.ts'
 
-export type Timezone = 'local' | (string & Record<never, never>)
+export type MetricQueryResult<
+    TMetric extends string = string,
+    TDimension extends string = string,
+> = QueryResult<MetricData<TMetric, TDimension>, MetricMeta>
 
-export interface TimeFormatContext {
-    grain?: Grain
-    index: number
-    locale: string
-    timezone: Timezone
-}
+export type Timezone = 'local' | 'source' | 'utc' | (string & {})
 
 export interface XAxisOptions {
-    formatter?: (date: Date, context: TimeFormatContext) => string
+    formatter?: (value: Date) => string
     maxTicks?: number
 }
 
 export interface YAxisOptions {
+    domain?: { max?: number; min?: number }
     formatter?: (value: number) => string
-    includeZero?: boolean
-    max?: number
-    min?: number
-    padding?: number
-}
-
-export interface SeriesValue<TMetric extends string = string, TDimension extends string = string> {
-    index: number
-    point: SeriesPoint<TMetric, TDimension>
-    time: number
-    value: number | null
-}
-
-export interface ChartSeries<TMetric extends string = string, TDimension extends string = string> {
-    color: string
-    metric: TMetric
-    name: string
-    values: readonly SeriesValue<TMetric, TDimension>[]
-}
-
-export interface ChartTooltipValue<TMetric extends string = string> {
-    color: string
-    formatted: string
-    metric: TMetric
-    name: string
-    value: number | null
-}
-
-export interface ChartTooltipModel<
-    TMetric extends string = string,
-    TDimension extends string = string,
-> {
-    label: string
-    point: SeriesPoint<TMetric, TDimension>
-    values: readonly ChartTooltipValue<TMetric>[]
 }
 
 export interface YAxisDomain {
@@ -71,295 +28,201 @@ export interface YAxisDomain {
     min: number
 }
 
-export interface FidelityBandModel {
-    from: number
-    range: TimeRange
-    to: number
-    transformations: readonly HistoryTransformation[]
+export interface SeriesValue {
+    index: number
+    time: number
+    value: number
 }
 
-export interface SeriesModel<TMetric extends string = string, TDimension extends string = string> {
-    fidelityBands: readonly FidelityBandModel[]
-    labels: readonly string[]
-    metrics: readonly TMetric[]
-    series: readonly ChartSeries<TMetric, TDimension>[]
-    timeDomain: readonly [number, number]
-    timezone: Timezone
-    yDomain: YAxisDomain
+export interface ChartSeries {
+    color: string
+    metric: string
+    name: string
+    values: readonly SeriesValue[]
 }
 
-export interface SeriesModelOptions<TMetric extends string = string> {
-    colors?: readonly string[]
-    locale?: string
-    metrics?: readonly TMetric[]
-    timezone?: Timezone
-    xAxis?: XAxisOptions
-    yAxis?: YAxisOptions
+export interface MetricSeriesPoint {
+    dimensions?: Readonly<Record<string, DimensionValue | undefined>>
+    time: string
+    values: Readonly<Record<string, number | null>>
 }
 
-export interface StatModel<TMetric extends string = string> {
-    metric: TMetric
+export interface MetricTableRow {
+    dimensions: Readonly<Record<string, DimensionValue | undefined>>
+    metrics: Readonly<Record<string, number | null>>
+}
+
+export interface ChartTooltipValue {
+    color: string
+    formatted: string
+    metric: string
+    name: string
     value: number | null
 }
 
-export interface BreakdownModel<
-    TMetric extends string = string,
-    TDimension extends string = string,
-> {
-    dimensions: readonly TDimension[]
-    metrics: readonly TMetric[]
+export interface ChartTooltipModel {
+    label: string
+    point: MetricSeriesPoint
+    values: readonly ChartTooltipValue[]
 }
 
-export type DataNotice =
-    | {
-          kind: 'approximate' | 'partial' | 'sampled' | 'thresholded'
-          sampleRate?: number
-          source: 'provider'
-      }
-    | { code: string; kind: 'warning'; message: string; source: 'provider' }
-    | {
-          kind: HistoryTransformation['kind']
-          range: TimeRange
-          source: 'history'
-          transformation: HistoryTransformation
-      }
-
-export const defaultChartColors = ['#6376dd', '#43a047', '#fb8c00', '#8e24aa', '#00838f', '#d81b60']
-
-export function createSeriesModel<
-    TMetric extends string,
-    TDimension extends string,
-    TSource extends string,
->(
-    report: SeriesReport<TMetric, TDimension, TSource>,
-    options: SeriesModelOptions<TMetric> = {},
-): SeriesModel<TMetric, TDimension> {
-    const locale = options.locale ?? 'en-US'
-    const metrics = selectSeriesMetrics(report, options.metrics)
-    const colors = options.colors?.length ? options.colors : defaultChartColors
-    const points = report.points
-        .map((point, index) => ({ index, point, time: new Date(point.time).valueOf() }))
-        .filter(({ time }) => Number.isFinite(time))
-        // oxlint-disable-next-line unicorn/no-array-sort -- this is a private copy
-        .sort((left, right) => left.time - right.time || left.index - right.index)
-    const series = metrics.map((metric, index): ChartSeries<TMetric, TDimension> => ({
-        color: colors[index % colors.length]!,
-        metric,
-        name: formatMetricName(metric),
-        values: points.map(({ index: pointIndex, point, time }) => ({
-            index: pointIndex,
-            point,
-            time,
-            value: finiteMetric(point.values[metric]),
-        })),
-    }))
-    return {
-        fidelityBands: fidelityBands(report.meta.fidelity),
-        labels: points.map(({ index }) =>
-            formatSeriesPointTime(report, index, locale, options.timezone, options.xAxis),
-        ),
-        metrics,
-        series,
-        timeDomain: resolveTimeDomain(
-            report,
-            points.map(({ time }) => time),
-        ),
-        timezone: resolveTimezone(report, options.timezone),
-        yDomain: resolveYAxisDomain(series, options.yAxis),
-    }
+export interface DataNotice {
+    code: string
+    message: string
 }
 
-export function createStatModel<TMetric extends string>(
-    report: ScalarReport<TMetric>,
-    metric: TMetric,
-): StatModel<TMetric> | undefined {
-    return Object.hasOwn(report.values, metric)
-        ? { metric, value: finiteMetric(report.values[metric]) }
-        : undefined
+export interface SeriesModel {
+    fidelityBands: readonly (HistoryFidelityBand & { from: number; to: number })[]
+    points: readonly MetricSeriesPoint[]
+    series: readonly ChartSeries[]
+    timeDomain: readonly [number, number]
+    yDomain: YAxisDomain
 }
 
-export function createBreakdownModel<TMetric extends string, TDimension extends string>(
-    report: TableReport<TMetric, TDimension>,
-    options: { dimensions?: readonly TDimension[]; metrics?: readonly TMetric[] } = {},
-): BreakdownModel<TMetric, TDimension> {
-    return {
-        dimensions: selectTableFields(report, options.dimensions, 'dimensions'),
-        metrics: selectTableFields(report, options.metrics, 'metrics'),
-    }
+export interface BreakdownModel {
+    dimensions: readonly string[]
+    metrics: readonly string[]
+    rows: readonly MetricTableRow[]
 }
 
-export function createDataNotices(meta: Pick<ReportMeta, 'fidelity' | 'quality'>): DataNotice[] {
-    const quality = meta.quality
+export const formatMetricName = (value: string): string =>
+    value
+        .replaceAll(/([a-z\d])([A-Z])/g, '$1 $2')
+        .replaceAll(/[-_.]+/g, ' ')
+        .replace(/^\w/, (character) => character.toUpperCase())
+
+export const formatNumber = (value: number, locale = 'en-US', maximumFractionDigits = 2): string =>
+    new Intl.NumberFormat(locale, { maximumFractionDigits }).format(value)
+
+export const formatMetricValue = (value: number, locale = 'en-US'): string =>
+    formatNumber(value, locale, 2)
+
+export const formatTableCell = (
+    value: DimensionValue,
+    locale = 'en-US',
+    maximumFractionDigits = 2,
+): string => {
+    if (value === null) return '—'
+    return typeof value === 'number'
+        ? formatNumber(value, locale, maximumFractionDigits)
+        : String(value)
+}
+
+export const tableCellValue = (
+    column: string,
+    values: Readonly<Record<string, DimensionValue | undefined>>,
+): DimensionValue => values[column] ?? null
+
+export const createStatModel = (
+    result: MetricQueryResult,
+    metric: string,
+): { metric: string; value: number | null } | undefined => {
+    const datum = result.data[metric]
+    return datum ? { metric, value: datum.value } : undefined
+}
+
+export const createDataNotices = (quality: QueryQuality | undefined): DataNotice[] => {
+    if (!quality) return []
     return [
-        ...(quality.partial ? [{ kind: 'partial', source: 'provider' } as const] : []),
-        ...(quality.approximate ? [{ kind: 'approximate', source: 'provider' } as const] : []),
+        ...(quality.approximate
+            ? [{ code: 'approximate', message: 'Results are approximate' }]
+            : []),
+        ...(quality.partial ? [{ code: 'partial', message: 'Results are partial' }] : []),
         ...(quality.sampled
             ? [
                   {
-                      kind: 'sampled',
-                      ...(quality.sampleRate === undefined
-                          ? {}
-                          : { sampleRate: quality.sampleRate }),
-                      source: 'provider',
-                  } as const,
+                      code: 'sampled',
+                      message:
+                          quality.sampleRate === undefined
+                              ? 'Results are sampled'
+                              : `Results use ${formatNumber(quality.sampleRate * 100)}% sampling`,
+                  },
               ]
             : []),
-        ...(quality.thresholded ? [{ kind: 'thresholded', source: 'provider' } as const] : []),
-        ...(quality.warnings ?? []).map(({ code, message }) => ({
-            code,
-            kind: 'warning' as const,
-            message,
-            source: 'provider' as const,
-        })),
-        ...(meta.fidelity ?? []).flatMap(({ range, transformations }) =>
-            transformations.map((transformation) => ({
-                kind: transformation.kind,
-                range,
-                source: 'history' as const,
-                transformation,
-            })),
-        ),
+        ...(quality.thresholded
+            ? [{ code: 'thresholded', message: 'Results are thresholded' }]
+            : []),
+        ...(quality.warnings ?? []),
     ]
 }
 
-export function formatDataNotice(notice: DataNotice, locale = 'en-US'): string {
-    if (notice.source === 'provider') {
-        if (notice.kind === 'warning') return notice.message
-        if (notice.kind === 'sampled' && notice.sampleRate !== undefined) {
-            return `Sampled data (${new Intl.NumberFormat(locale, { style: 'percent' }).format(notice.sampleRate)})`
-        }
-        return `${notice.kind[0]!.toUpperCase()}${notice.kind.slice(1)} data`
+export const formatDataNotice = (notice: DataNotice): string => notice.message
+
+export const createSeriesModel = (
+    result: MetricQueryResult,
+    options: {
+        colors: readonly string[]
+        locale?: string
+        timezone?: Timezone
+        xAxis?: XAxisOptions
+        yAxis?: YAxisOptions
+    },
+): SeriesModel => {
+    const metrics = Object.keys(result.data)
+    const points = seriesPoints(result.data)
+    const series = metrics.map((metric, index) => ({
+        color: options.colors[index % options.colors.length] ?? 'currentColor',
+        metric,
+        name: formatMetricName(metric),
+        values: points.flatMap((point, pointIndex) => {
+            const value = point.values[metric]
+            return value === null || value === undefined
+                ? []
+                : [{ index: pointIndex, time: new Date(point.time).valueOf(), value }]
+        }),
+    }))
+    const times = points.map(({ time }) => new Date(time).valueOf()).filter(Number.isFinite)
+    const values = series.flatMap(({ values: items }) => items.map(({ value }) => value))
+    const minimumTime = times.length === 0 ? 0 : Math.min(...times)
+    const maximumTime = times.length === 0 ? 1 : Math.max(...times)
+    const timeDomain: [number, number] =
+        minimumTime === maximumTime ? [minimumTime, minimumTime + 1] : [minimumTime, maximumTime]
+    const automatic = domain(values)
+    return {
+        fidelityBands: (result.meta.fidelity ?? []).map((band) => ({
+            ...band,
+            from: new Date(band.range.from).valueOf(),
+            to: new Date(band.range.to).valueOf(),
+        })),
+        points,
+        series,
+        timeDomain,
+        yDomain: {
+            min: options.yAxis?.domain?.min ?? automatic.min,
+            max: options.yAxis?.domain?.max ?? automatic.max,
+        },
     }
-    return `History ${notice.kind.replace('-', ' ')} (${notice.range.from} – ${notice.range.to})`
 }
 
-export function selectSeriesMetrics<TMetric extends string>(
-    report: SeriesReport<TMetric>,
-    requested?: readonly TMetric[],
-): TMetric[] {
-    const available = new Set<TMetric>(
-        report.points.flatMap((point) =>
-            recordKeys<TMetric>(point.values).flatMap((metric) =>
-                finiteMetric(point.values[metric]) === null ? [] : [metric],
-            ),
-        ),
-    )
-    return unique(requested?.length ? requested : [...available]).filter((metric) =>
-        available.has(metric),
-    )
+export const createBreakdownModel = (result: MetricQueryResult): BreakdownModel => {
+    const metrics = Object.keys(result.data)
+    const rows = breakdownRows(result.data, metrics)
+    const dimensions = [...new Set(rows.flatMap(({ dimensions: values }) => Object.keys(values)))]
+    return { dimensions, metrics, rows }
 }
 
-export function selectTableFields<TMetric extends string, TDimension extends string>(
-    report: TableReport<TMetric, TDimension>,
-    requested: readonly TDimension[] | undefined,
-    field: 'dimensions',
-): TDimension[]
-export function selectTableFields<TMetric extends string, TDimension extends string>(
-    report: TableReport<TMetric, TDimension>,
-    requested: readonly TMetric[] | undefined,
-    field: 'metrics',
-): TMetric[]
-export function selectTableFields(
-    report: TableReport,
-    requested: readonly string[] | undefined,
-    field: 'dimensions' | 'metrics',
-): string[] {
-    const available = new Set(report.rows.flatMap((row) => Object.keys(row[field])))
-    return unique(requested?.length ? requested : [...available]).filter((name) =>
-        available.has(name),
-    )
-}
-
-export function resolveTimezone(report: Report, timezone?: Timezone): Timezone {
-    return (
-        timezone ??
-        report.meta.temporal.bucketTimezone ??
-        report.meta.temporal.sourceTimezone ??
-        'UTC'
-    )
-}
-
-export function createTimeFormatContext(
-    report: Report,
+export const createChartTooltipModel = (
+    result: MetricQueryResult,
+    series: readonly ChartSeries[],
     index: number,
     locale = 'en-US',
     timezone?: Timezone,
-): TimeFormatContext {
-    const grain = report.meta.temporal.grain
-    return {
-        ...(grain ? { grain } : {}),
-        index,
-        locale,
-        timezone: resolveTimezone(report, timezone),
-    }
-}
-
-export function formatTime(date: Date, context: TimeFormatContext): string {
-    const timeZone = context.timezone === 'local' ? undefined : context.timezone
-    const options: Intl.DateTimeFormatOptions =
-        context.grain === 'minute' || context.grain === 'hour'
-            ? { hour: '2-digit', hourCycle: 'h23', minute: '2-digit' }
-            : context.grain === 'month'
-              ? { month: 'short', year: 'numeric' }
-              : context.grain === 'year'
-                ? { year: 'numeric' }
-                : { day: 'numeric', month: 'short' }
-    return new Intl.DateTimeFormat(context.locale, { ...options, timeZone }).format(date)
-}
-
-export function formatSeriesPointTime(
-    report: SeriesReport,
-    index: number,
-    locale: string,
-    timezone?: Timezone,
-    options: XAxisOptions = {},
-): string {
-    const point = report.points[index]
-    if (!point) return ''
-    const date = new Date(point.time)
-    const context = createTimeFormatContext(report, index, locale, timezone)
-    return options.formatter?.(date, context) ?? formatTime(date, context)
-}
-
-export function formatAxisTime(
-    report: SeriesReport,
-    time: number,
-    locale: string,
-    timezone?: Timezone,
-    options: XAxisOptions = {},
-): string {
-    const context = createTimeFormatContext(
-        report,
-        nearestPointIndex(report, time),
-        locale,
-        timezone,
-    )
-    const date = new Date(time)
-    return options.formatter?.(date, context) ?? formatTime(date, context)
-}
-
-export function createChartTooltipModel<TMetric extends string, TDimension extends string>(
-    report: SeriesReport<TMetric, TDimension>,
-    series: readonly ChartSeries<TMetric, TDimension>[],
-    index: number,
-    locale: string,
-    timezone?: Timezone,
-    xAxis: XAxisOptions = {},
-    yAxis: YAxisOptions = {},
-): ChartTooltipModel<TMetric, TDimension> | undefined {
-    const point = report.points[index]
+    xAxis?: XAxisOptions,
+    yAxis?: YAxisOptions,
+): ChartTooltipModel | undefined => {
+    const point = seriesPoints(result.data)[index]
     if (!point) return undefined
     return {
-        label: formatSeriesPointTime(report, index, locale, timezone, xAxis),
+        label: formatTime(point.time, locale, timezone, xAxis),
         point,
         values: series.map((item) => {
-            const value = finiteMetric(point.values[item.metric])
+            const value = point.values[item.metric] ?? null
             return {
                 color: item.color,
                 formatted:
                     value === null
                         ? 'No data'
-                        : (yAxis.formatter?.(value) ?? formatMetricValue(value, locale)),
+                        : (yAxis?.formatter?.(value) ?? formatMetricValue(value, locale)),
                 metric: item.metric,
                 name: item.name,
                 value,
@@ -368,123 +231,93 @@ export function createChartTooltipModel<TMetric extends string, TDimension exten
     }
 }
 
-export function resolveYAxisDomain(
-    series: readonly ChartSeries[],
-    options: YAxisOptions = {},
-): YAxisDomain {
-    const values = series.flatMap(({ values: items }) =>
-        items.flatMap(({ value }) => (value === null ? [] : [value])),
-    )
-    if (values.length === 0) return { min: options.min ?? 0, max: options.max ?? 1 }
-    const sourceMin = Math.min(...values)
-    const sourceMax = Math.max(...values)
-    const nonNegative = sourceMin >= 0
-    let min = options.includeZero ? Math.min(sourceMin, 0) : sourceMin
-    let max = options.includeZero ? Math.max(sourceMax, 0) : sourceMax
-    const padding = Math.max(options.padding ?? 0.05, 0)
-    if (min === max) {
-        const span = Math.max(Math.abs(min) * 0.05, 1)
-        min -= span
-        max += span
-    } else {
-        const span = (max - min) * padding
-        min -= span
-        max += span
+export const formatAxisTime = (
+    _result: MetricQueryResult,
+    value: number,
+    locale = 'en-US',
+    timezone?: Timezone,
+    options?: XAxisOptions,
+): string => formatTime(new Date(value).toISOString(), locale, timezone, options)
+
+export const formatSeriesPointTime = (
+    result: MetricQueryResult,
+    index: number,
+    locale = 'en-US',
+    timezone?: Timezone,
+    options?: XAxisOptions,
+): string => {
+    const point = seriesPoints(result.data)[index]
+    return point ? formatTime(point.time, locale, timezone, options) : ''
+}
+
+export const seriesPoints = (data: MetricData): MetricSeriesPoint[] => {
+    const byKey = new Map<string, MetricSeriesPoint>()
+    for (const [metric, datum] of Object.entries(data)) {
+        for (const point of datum.points ?? []) {
+            if (!point.time) continue
+            const key = JSON.stringify([point.time, point.dimensions ?? {}])
+            const current = byKey.get(key) ?? {
+                ...(point.dimensions ? { dimensions: point.dimensions } : {}),
+                time: point.time,
+                values: {},
+            }
+            byKey.set(key, {
+                ...current,
+                values: { ...current.values, [metric]: point.value },
+            })
+        }
     }
-    if (nonNegative && min < 0) min = 0
-    min = options.min ?? min
-    max = options.max ?? max
-    if (min === max) max += Math.max(Math.abs(max) * 0.05, 1)
-    return { min, max }
+    return [...byKey.values()].toSorted((left, right) => left.time.localeCompare(right.time))
 }
 
-export function tableCellValue(
-    column: string,
-    values: DimensionValues | MetricValues,
-): boolean | number | string | null {
-    return values[column] ?? null
+const breakdownRows = (data: MetricData, metrics: readonly string[]): MetricTableRow[] => {
+    const rows = new Map<string, MetricTableRow>()
+    for (const metric of metrics) {
+        for (const point of data[metric]?.points ?? []) {
+            if (!point.dimensions) continue
+            const key = JSON.stringify(point.dimensions)
+            const current = rows.get(key) ?? { dimensions: point.dimensions, metrics: {} }
+            rows.set(key, {
+                ...current,
+                metrics: { ...current.metrics, [metric]: point.value },
+            })
+        }
+    }
+    return [...rows.values()]
 }
 
-export function formatTableCell(
-    value: boolean | number | string | null,
+const formatTime = (
+    value: string,
     locale: string,
-    maximumFractionDigits: number,
-): string {
-    return typeof value === 'number' && Number.isFinite(value)
-        ? formatNumber(value, locale, maximumFractionDigits)
-        : value === null
-          ? '\u2014'
-          : String(value)
+    timezone?: Timezone,
+    options?: XAxisOptions,
+): string => {
+    const date = new Date(value)
+    if (options?.formatter) return options.formatter(date)
+    return new Intl.DateTimeFormat(locale, {
+        dateStyle: 'medium',
+        timeStyle: 'short',
+        ...(timezone === 'utc'
+            ? { timeZone: 'UTC' }
+            : timezone && timezone !== 'local' && timezone !== 'source'
+              ? { timeZone: timezone }
+              : {}),
+    }).format(date)
 }
 
-export function finiteMetric(value: number | null | undefined): number | null {
-    return typeof value === 'number' && Number.isFinite(value) ? value : null
-}
-
-export function formatMetricName(metric: string): string {
-    return metric
-        .replace(/([a-z\d])([A-Z])/g, '$1 $2')
-        .replace(/[_-]+/g, ' ')
-        .replace(/^./, (value) => value.toUpperCase())
-}
-
-export function formatMetricValue(value: number | null | undefined, locale = 'en-US'): string {
-    const metric = finiteMetric(value)
-    return metric === null ? 'No data' : formatNumber(metric, locale, 2)
-}
-
-export function formatNumber(value: number, locale: string, maximumFractionDigits: number): string {
-    return new Intl.NumberFormat(locale, { maximumFractionDigits }).format(value)
-}
-
-function fidelityBands(bands: readonly HistoryFidelityBand[] | undefined): FidelityBandModel[] {
-    return (bands ?? []).flatMap(({ preservation, range, transformations }) => {
-        const from = new Date(range.from).valueOf()
-        const to = new Date(range.to).valueOf()
-        return preservation === 'reduced' && Number.isFinite(from) && Number.isFinite(to)
-            ? [{ from, range, to, transformations }]
-            : []
-    })
-}
-
-function resolveTimeDomain(
-    report: SeriesReport,
-    times: readonly number[],
-): readonly [number, number] {
-    if (times.length === 0) return [0, 1]
-    const min = Math.min(...times)
-    const max = Math.max(...times)
-    if (min !== max) return [min, max]
-    const spans: Partial<Record<Grain, number>> = {
-        minute: 60_000,
-        hour: 3_600_000,
-        day: 86_400_000,
-        week: 604_800_000,
-        month: 2_592_000_000,
-        year: 31_536_000_000,
+const domain = (values: readonly number[]): YAxisDomain => {
+    if (values.length === 0) return { max: 1, min: 0 }
+    let min = Math.min(...values)
+    let max = Math.max(...values)
+    if (min === max) {
+        const padding = Math.abs(min) * 0.1 || 1
+        min -= padding
+        max += padding
     }
-    const span = spans[report.meta.temporal.grain ?? 'day'] ?? 86_400_000
-    return [min - span / 2, max + span / 2]
+    return { max, min }
 }
 
-function nearestPointIndex(report: SeriesReport, time: number): number {
-    if (report.points.length === 0) return 0
-    return report.points.reduce(
-        (nearest, point, index) =>
-            Math.abs(new Date(point.time).valueOf() - time) <
-            Math.abs(new Date(report.points[nearest]!.time).valueOf() - time)
-                ? index
-                : nearest,
-        0,
-    )
-}
-
-function unique<T>(values: readonly T[]): T[] {
-    return [...new Set(values)]
-}
-
-const recordKeys = <TKey extends string>(value: Readonly<Record<TKey, unknown>>): TKey[] => {
-    // Object.keys cannot preserve a generic Record key in TypeScript.
-    // oxlint-disable-next-line typescript/no-unsafe-type-assertion
-    return Object.keys(value) as TKey[]
+export type TimeFormatContext = {
+    locale: string
+    timezone?: Timezone
 }

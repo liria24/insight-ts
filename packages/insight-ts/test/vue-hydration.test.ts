@@ -4,22 +4,21 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { createSSRApp, h, nextTick } from 'vue'
 import { renderToString } from 'vue/server-renderer'
 
-import type { SeriesReport } from '../src/core/index.ts'
 import { InsightAreaChart, InsightLineChart } from '../src/integrations/vue/ui/index.ts'
+import type { MetricQueryResult } from '../src/ui-core/index.ts'
 
 describe('Vue chart hydration', () => {
     afterEach(() => vi.restoreAllMocks())
 
     it('hydrates server-rendered line and area SVGs without warnings', async () => {
-        const report = createReport()
+        const data = createData()
         const Root = () =>
             h('main', [
-                h(InsightLineChart, { report, title: 'Line' }),
-                h(InsightAreaChart, { report, title: 'Area' }),
+                h(InsightLineChart, { data, title: 'Line' }),
+                h(InsightAreaChart, { data, title: 'Area' }),
             ])
-        const html = await renderToString(createSSRApp(Root))
         const container = document.createElement('div')
-        container.innerHTML = html
+        container.innerHTML = await renderToString(createSSRApp(Root))
         document.body.append(container)
         const warnings: unknown[][] = []
         vi.spyOn(console, 'warn').mockImplementation((...args) => warnings.push(args))
@@ -36,18 +35,17 @@ describe('Vue chart hydration', () => {
     })
 })
 
-function createReport(): SeriesReport {
+function createData(): MetricQueryResult<'visits'> {
     return {
-        kind: 'series',
-        meta: {
-            quality: {},
-            queriedAt: '2026-08-31T00:00:00.000Z',
-            source: 'hydration-test',
-            temporal: { bucketTimezone: 'UTC', grain: 'day' },
+        data: {
+            visits: {
+                points: [
+                    { time: '2026-08-26T00:00:00.000Z', value: 10 },
+                    { time: '2026-08-27T00:00:00.000Z', value: 15 },
+                ],
+                value: 25,
+            },
         },
-        points: [
-            { time: '2026-08-26T00:00:00.000Z', values: { visits: 10 } },
-            { time: '2026-08-31T00:00:00.000Z', values: { visits: 15 } },
-        ],
+        meta: { queriedAt: '2026-08-29T00:00:00.000Z', source: 'test.metrics' },
     }
 }

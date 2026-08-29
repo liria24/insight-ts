@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import type { ScalarReport, SeriesReport, TableReport } from 'insight-ts'
+import type { MetricQueryResult } from 'insight-ts/ui-core'
 import {
     InsightAreaChart,
     InsightBreakdownTable,
@@ -10,69 +10,81 @@ import {
 type ExampleKind = 'area' | 'breakdown' | 'line' | 'stat' | 'styling'
 
 const props = defineProps<{ kind: ExampleKind }>()
-
-const scalarReport: ScalarReport = {
-    kind: 'scalar',
-    meta: {
-        quality: {},
-        queriedAt: '2026-08-28T09:00:00.000Z',
-        source: 'docs.example',
-        temporal: {},
-    },
-    values: { pageViews: 18420, visits: 9320 },
-}
-
-const seriesReport: SeriesReport = {
-    kind: 'series',
-    meta: {
-        quality: {},
-        queriedAt: '2026-08-28T09:00:00.000Z',
-        source: 'docs.example',
-        temporal: { bucketTimezone: 'UTC', grain: 'day' },
-    },
-    points: [
-        { time: '2026-08-22T00:00:00.000Z', values: { pageViews: 1240, visits: 710 } },
-        { time: '2026-08-23T00:00:00.000Z', values: { pageViews: 1510, visits: 820 } },
-        { time: '2026-08-24T00:00:00.000Z', values: { pageViews: 1390, visits: 780 } },
-        { time: '2026-08-25T00:00:00.000Z', values: { pageViews: 1760, visits: 960 } },
-        { time: '2026-08-26T00:00:00.000Z', values: { pageViews: 2110, visits: 1080 } },
-        { time: '2026-08-27T00:00:00.000Z', values: { pageViews: 1980, visits: 1030 } },
-        { time: '2026-08-28T00:00:00.000Z', values: { pageViews: 2380, visits: 1210 } },
-    ],
-}
-
-const tableReport: TableReport = {
-    kind: 'table',
-    meta: {
-        quality: {},
-        queriedAt: '2026-08-28T09:00:00.000Z',
-        source: 'docs.example',
-        temporal: {},
-    },
-    rows: [
-        { dimensions: { country: 'Japan' }, metrics: { pageViews: 8240, visits: 4210 } },
-        { dimensions: { country: 'United States' }, metrics: { pageViews: 6190, visits: 3180 } },
-        { dimensions: { country: 'Germany' }, metrics: { pageViews: 3990, visits: 1930 } },
-    ],
-}
-
-const seriesSource = `const report: SeriesReport = {
-  kind: 'series',
-  meta: {
-    quality: {},
+const meta = {
     queriedAt: '2026-08-28T09:00:00.000Z',
-    source: 'example',
-    temporal: { bucketTimezone: 'UTC', grain: 'day' },
+    source: 'docs.example',
+    temporal: { bucketTimezone: 'UTC', grain: 'day' as const },
+}
+const summaryData: MetricQueryResult<'pageViews' | 'visits'> = {
+    data: { pageViews: { value: 18_420 }, visits: { value: 9_320 } },
+    meta,
+}
+const times = [
+    '2026-08-22T00:00:00.000Z',
+    '2026-08-23T00:00:00.000Z',
+    '2026-08-24T00:00:00.000Z',
+    '2026-08-25T00:00:00.000Z',
+    '2026-08-26T00:00:00.000Z',
+    '2026-08-27T00:00:00.000Z',
+    '2026-08-28T00:00:00.000Z',
+]
+const pageViews = [1240, 1510, 1390, 1760, 2110, 1980, 2380]
+const visits = [710, 820, 780, 960, 1080, 1030, 1210]
+const seriesData: MetricQueryResult<'pageViews' | 'visits'> = {
+    data: {
+        pageViews: {
+            points: times.map((time, index) => ({ time, value: pageViews[index]! })),
+            value: 12_370,
+        },
+        visits: {
+            points: times.map((time, index) => ({ time, value: visits[index]! })),
+            value: 6_590,
+        },
+    },
+    meta,
+}
+const breakdownData: MetricQueryResult<'pageViews' | 'visits', 'country'> = {
+    data: {
+        pageViews: {
+            points: [
+                { dimensions: { country: 'Japan' }, value: 8240 },
+                { dimensions: { country: 'United States' }, value: 6190 },
+                { dimensions: { country: 'Germany' }, value: 3990 },
+            ],
+            value: 18_420,
+        },
+        visits: {
+            points: [
+                { dimensions: { country: 'Japan' }, value: 4210 },
+                { dimensions: { country: 'United States' }, value: 3180 },
+                { dimensions: { country: 'Germany' }, value: 1930 },
+            ],
+            value: 9_320,
+        },
+    },
+    meta,
+}
+
+const metricDataSource = `import type { MetricQueryResult } from 'insight-ts/ui-core'
+
+const data: MetricQueryResult<'pageViews' | 'visits'> = {
+  data: {
+    pageViews: {
+      value: 2750,
+      points: [
+        { time: '2026-08-27T00:00:00.000Z', value: 1240 },
+        { time: '2026-08-28T00:00:00.000Z', value: 1510 },
+      ],
+    },
+    visits: {
+      value: 1530,
+      points: [
+        { time: '2026-08-27T00:00:00.000Z', value: 710 },
+        { time: '2026-08-28T00:00:00.000Z', value: 820 },
+      ],
+    },
   },
-  points: [
-    { time: '2026-08-22T00:00:00.000Z', values: { pageViews: 1240, visits: 710 } },
-    { time: '2026-08-23T00:00:00.000Z', values: { pageViews: 1510, visits: 820 } },
-    { time: '2026-08-24T00:00:00.000Z', values: { pageViews: 1390, visits: 780 } },
-    { time: '2026-08-25T00:00:00.000Z', values: { pageViews: 1760, visits: 960 } },
-    { time: '2026-08-26T00:00:00.000Z', values: { pageViews: 2110, visits: 1080 } },
-    { time: '2026-08-27T00:00:00.000Z', values: { pageViews: 1980, visits: 1030 } },
-    { time: '2026-08-28T00:00:00.000Z', values: { pageViews: 2380, visits: 1210 } },
-  ],
+  meta: { queriedAt: '2026-08-28T09:00:00.000Z', source: 'example' },
 }`
 
 function sfc(script: string, template: string, style = ''): string {
@@ -82,99 +94,42 @@ function sfc(script: string, template: string, style = ''): string {
 
 const examples: Record<ExampleKind, { code: string; title: string }> = {
     stat: {
-        title: 'Scalar report',
+        title: 'Metric value',
         code: sfc(
-            `import type { ScalarReport } from 'insight-ts'
-import { InsightStat } from 'insight-ts/vue/ui'
-
-const report: ScalarReport = {
-  kind: 'scalar',
-  meta: { quality: {}, queriedAt: '2026-08-28T09:00:00.000Z', source: 'example', temporal: {} },
-  values: { pageViews: 18420 },
-}`,
-            `  <InsightStat :report="report" metric="pageViews" />`,
+            `import { InsightStat } from 'insight-ts/vue/ui'\n\n${metricDataSource}`,
+            `  <InsightStat :data="data" metric="pageViews" />`,
         ),
     },
     line: {
-        title: 'Seven-day traffic',
+        title: 'Selected metrics in Source order',
         code: sfc(
-            `import type { SeriesReport } from 'insight-ts'
-import { InsightLineChart } from 'insight-ts/vue/ui'
-
-${seriesSource}`,
-            `  <InsightLineChart
-    :report="report"
-    :metrics="['pageViews', 'visits']"
-    title="Traffic"
-    :height="280"
-  />`,
+            `import { InsightLineChart } from 'insight-ts/vue/ui'\n\n${metricDataSource}`,
+            `  <InsightLineChart :data="data" title="Traffic" :height="280" />`,
         ),
     },
     area: {
         title: 'Overlaid area series',
         code: sfc(
-            `import type { SeriesReport } from 'insight-ts'
-import { InsightAreaChart } from 'insight-ts/vue/ui'
-
-${seriesSource}`,
-            `  <InsightAreaChart
-    :report="report"
-    :metrics="['pageViews', 'visits']"
-    title="Traffic"
-    smooth
-    :height="280"
-  />`,
+            `import { InsightAreaChart } from 'insight-ts/vue/ui'\n\n${metricDataSource}`,
+            `  <InsightAreaChart :data="data" title="Traffic" smooth :height="280" />`,
         ),
     },
     breakdown: {
-        title: 'Traffic by country',
+        title: 'Selected dimensions and metrics',
         code: sfc(
-            `import type { TableReport } from 'insight-ts'
-import { InsightBreakdownTable } from 'insight-ts/vue/ui'
-
-const report: TableReport = {
-  kind: 'table',
-  meta: { quality: {}, queriedAt: '2026-08-28T09:00:00.000Z', source: 'example', temporal: {} },
-  rows: [
-    { dimensions: { country: 'Japan' }, metrics: { pageViews: 8240, visits: 4210 } },
-    { dimensions: { country: 'United States' }, metrics: { pageViews: 6190, visits: 3180 } },
-    { dimensions: { country: 'Germany' }, metrics: { pageViews: 3990, visits: 1930 } },
-  ],
-}`,
-            `  <InsightBreakdownTable
-    :report="report"
-    :dimensions="['country']"
-    :metrics="['pageViews', 'visits']"
-  />`,
+            `import { InsightBreakdownTable } from 'insight-ts/vue/ui'\n\n${metricDataSource}`,
+            `  <InsightBreakdownTable :data="data" />`,
         ),
     },
     styling: {
         title: 'Semantic colors and UI classes',
         code: sfc(
-            `import type { SeriesReport } from 'insight-ts'
-import { InsightAreaChart } from 'insight-ts/vue/ui'
-
-${seriesSource}`,
-            `  <InsightAreaChart
-    class="custom-chart"
-    :report="report"
-    :metrics="['pageViews', 'visits']"
-    title="Traffic"
-    :ui="{ title: 'custom-title', legend: 'custom-legend' }"
-    :height="280"
-  />`,
-            `.custom-chart {
-  --insight-chart-1: #0ea5e9;
-  --insight-chart-2: #8b5cf6;
-  --insight-chart-grid: color-mix(in srgb, currentColor 12%, transparent);
-}
-
-.custom-title { font-weight: 600; }
-.custom-legend { font-size: 0.75rem; }`,
+            `import { InsightAreaChart } from 'insight-ts/vue/ui'\n\n${metricDataSource}`,
+            `  <InsightAreaChart class="custom-chart" :data="data" title="Traffic" :ui="{ title: 'custom-title' }" />`,
+            `.custom-chart { --insight-chart-1: #0ea5e9; --insight-chart-2: #8b5cf6; }`,
         ),
     },
 }
-
 const example = computed(() => examples[props.kind])
 </script>
 
@@ -184,53 +139,36 @@ const example = computed(() => examples[props.kind])
             <span class="text-sm font-medium text-highlighted">{{ example.title }}</span>
             <UBadge color="neutral" label="Live example" size="sm" variant="subtle" />
         </div>
-
         <div class="p-4 sm:p-6">
             <InsightStat
                 v-if="props.kind === 'stat'"
                 class="max-w-sm rounded-lg border border-default p-5"
+                :data="summaryData"
                 metric="pageViews"
-                :report="scalarReport"
-                :ui="{
-                    label: 'text-xs font-medium uppercase tracking-wide text-muted',
-                    value: 'mt-2 text-3xl font-semibold tabular-nums text-highlighted',
-                }"
             />
             <InsightLineChart
                 v-else-if="props.kind === 'line'"
+                :data="seriesData"
                 :height="280"
-                :metrics="['pageViews', 'visits']"
-                :report="seriesReport"
                 title="Traffic"
             />
             <InsightAreaChart
                 v-else-if="props.kind === 'area'"
-                smooth
+                :data="seriesData"
                 :height="280"
-                :metrics="['pageViews', 'visits']"
-                :report="seriesReport"
+                smooth
                 title="Traffic"
             />
-            <InsightBreakdownTable
-                v-else-if="props.kind === 'breakdown'"
-                :dimensions="['country']"
-                :metrics="['pageViews', 'visits']"
-                :report="tableReport"
-            />
+            <InsightBreakdownTable v-else-if="props.kind === 'breakdown'" :data="breakdownData" />
             <InsightAreaChart
                 v-else
                 class="docs-custom-chart"
+                :data="seriesData"
                 :height="280"
-                :metrics="['pageViews', 'visits']"
-                :report="seriesReport"
                 title="Traffic"
-                :ui="{
-                    legend: 'text-xs',
-                    title: 'font-semibold',
-                }"
+                :ui="{ legend: 'text-xs', title: 'font-semibold' }"
             />
         </div>
-
         <details open class="border-t border-default bg-muted/30">
             <summary class="cursor-pointer px-4 py-3 text-sm font-medium text-highlighted">
                 Reproduction code
@@ -246,6 +184,5 @@ const example = computed(() => examples[props.kind])
 .docs-custom-chart {
     --insight-chart-1: #0ea5e9;
     --insight-chart-2: #8b5cf6;
-    --insight-chart-grid: color-mix(in srgb, currentColor 12%, transparent);
 }
 </style>

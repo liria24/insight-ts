@@ -2,207 +2,250 @@ import { describe, expect, expectTypeOf, it, vi } from 'vitest'
 
 import {
     createInsight,
-    type EventProperties,
+    type DataOf,
     type EventDestination,
-    InsightError,
-    type ReportSourceDefinition,
-    type ScalarReport,
-    type SeriesQuery,
-    type SeriesReport,
-    type TableReport,
+    type EventProperties,
+    type Instrumentation,
+    type ProviderExecutionRequest,
+    type QueryResult,
+    type QueryOf,
+    type SourceExecutionResult,
 } from '../src/core/index.ts'
-import { defineProvider } from '../src/core/provider.ts'
+import { defineProvider, defineSource } from '../src/core/provider.ts'
+import { defineMetricSource, type MetricData } from '../src/metrics/index.ts'
 
 const range = {
     from: '2026-08-01T00:00:00.000Z',
-    to: '2026-08-08T00:00:00.000Z',
+    to: '2026-08-02T00:00:00.000Z',
 } as const
 
-function commerceProvider() {
-    const summary = vi.fn<NonNullable<ReportSourceDefinition['summary']>>(async ({ metrics }) => ({
-        quality: { partial: true },
-        values: Object.fromEntries(metrics.map((metric) => [metric, metric === 'orders' ? 7 : 42])),
-    }))
-    const series = vi.fn<NonNullable<ReportSourceDefinition['series']>>(
-        async ({ metrics, range: selectedRange }: SeriesQuery) => ({
-            points: [
-                {
-                    time: selectedRange.from,
-                    values: Object.fromEntries(
-                        metrics.map((metric) => [metric, metric === 'orders' ? 4 : 24]),
-                    ),
-                },
-            ],
-        }),
-    )
-    const breakdown = vi.fn<NonNullable<ReportSourceDefinition['breakdown']>>(
-        async ({ metrics }) => ({
-            rows: [
-                {
-                    dimensions: { country: 'JP' },
-                    metrics: Object.fromEntries(
-                        metrics.map((metric) => [metric, metric === 'orders' ? 4 : 24]),
-                    ),
-                },
-            ],
-        }),
-    )
-    return {
-        provider: defineProvider({
-            id: 'commerce',
-            reports: {
-                orders: {
-                    breakdown,
-                    dimensions: { country: 'string', time: 'datetime' },
-                    metrics: {
-                        orders: {
-                            aggregation: 'sum',
-                            rollup: 'additive',
-                            valueType: 'integer',
-                        },
-                        revenue: 'currency',
+const metricSource = defineMetricSource({
+    dimensions: {
+        country: { operators: ['eq', 'in'] as const, type: 'string' },
+        latency: { operators: ['gt', 'lte'] as const, type: 'number' },
+    },
+    execute: async (query) => ({
+        quality: { sampled: true, sampleRate: 0.5 },
+        values: Object.fromEntries(query.metrics.map((metric) => [metric, 7])),
+    }),
+    metrics: {
+        requests: { aggregation: { kind: 'sum' }, rollup: 'additive', unit: '{request}' },
+    },
+})
+
+const logsSource = defineSource({
+    execute: async (query: { cursor: string }) => ({
+        data: { entries: [{ message: 'ready' }], nextCursor: query.cursor || 'page-2' },
+    }),
+    key: (query) => query.cursor,
+    normalize: (query: { cursor?: string }) => ({ cursor: query.cursor ?? '' }),
+})
+
+const traceSource = defineSource({
+    execute: async (query: { traceId: string }) => ({
+        data: { edges: [['root', 'db']] as const, traceId: query.traceId },
+    }),
+    key: ({ traceId }) => traceId,
+    normalize: (query: { traceId: string }) => ({ traceId: query.traceId.trim() }),
+})
+
+const funnelSource = defineSource({
+    execute: async () => ({ data: { steps: [{ converted: 10, name: 'Visit' }] } }),
+    key: () => 'current',
+    normalize: (_query: { window: '7d' | '30d' }) => ({ window: '7d' as const }),
+})
+
+const billingSource = defineSource({
+    execute: async ({ customer }: { customer: string }) => ({
+        data: { balance: 1250, currency: 'JPY' as const, customer },
+    }),
+    key: ({ customer }) => customer,
+    normalize: (query: { customer: string }) => ({ customer: query.customer.trim() }),
+})
+
+expectTypeOf<DataOf<typeof logsSource>>().toEqualTypeOf<{
+    entries: { message: string }[]
+    nextCursor: string
+}>()
+expectTypeOf<QueryOf<typeof logsSource>>().toEqualTypeOf<{ cursor?: string }>()
+
+describe('generic Source query execution', () => {
+    it('infers heterogeneous Source results without a Core ontology', async () => {
+        const insight = createInsight({
+            now: () => new Date('2026-08-29T00:00:00.000Z'),
+            providers: [
+                defineProvider({
+                    id: 'demo',
+                    sources: {
+                        billing: billingSource,
+                        funnel: funnelSource,
+                        logs: logsSource,
+                        metrics: metricSource,
+                        trace: traceSource,
                     },
-                    series,
-                    summary,
-                },
-            },
-        }),
-        operations: { breakdown, series, summary },
-    }
-}
-
-describe('Provider capability and Report Source API', () => {
-    it('derives Source IDs and preserves selected metric/dimension result types', async () => {
-        const { provider } = commerceProvider()
-        const insight = createInsight({ providers: [provider] as const })
-        const reports = insight.reports('commerce.orders')
-
-        const summary = await reports.summary({ metrics: ['orders'], range })
-        const series = await reports.series({ grain: 'day', metrics: ['orders', 'revenue'], range })
-        const breakdown = await reports.breakdown({
-            dimensions: ['country'],
-            metrics: ['revenue'],
-            range,
+                }),
+            ] as const,
         })
+        const dashboard = await insight.query((q) => ({
+            billing: q.source('demo.billing', { customer: ' acme ' }),
+            funnel: q.source('demo.funnel', { window: '7d' }),
+            logs: q.source('demo.logs', {}),
+            metrics: q.source('demo.metrics', { metrics: ['requests'], time: range }),
+            trace: q.source('demo.trace', { traceId: ' trace-1 ' }),
+        }))
 
-        expectTypeOf(summary).toEqualTypeOf<ScalarReport<'orders', 'commerce.orders'>>()
-        expectTypeOf(series).toEqualTypeOf<
-            SeriesReport<'orders' | 'revenue', 'country' | 'time', 'commerce.orders'>
-        >()
-        expectTypeOf(breakdown).toEqualTypeOf<
-            TableReport<'revenue', 'country', 'commerce.orders'>
-        >()
-        expect(summary).toMatchObject({
-            kind: 'scalar',
-            meta: { quality: { partial: true }, source: 'commerce.orders' },
-            values: { orders: 7 },
-        })
-        expect(series.points[0]?.values).toEqual({ orders: 4, revenue: 24 })
-        expect(breakdown.rows[0]).toEqual({
-            dimensions: { country: 'JP' },
-            metrics: { revenue: 24 },
+        expectTypeOf(dashboard.logs.data.entries[0]!.message).toEqualTypeOf<string>()
+        expectTypeOf(dashboard.trace.data.edges).toEqualTypeOf<readonly [readonly ['root', 'db']]>()
+        expectTypeOf(dashboard.billing.data.currency).toEqualTypeOf<'JPY'>()
+        expectTypeOf(dashboard.metrics.data).toEqualTypeOf<MetricData<'requests', never>>()
+        expect(dashboard).toMatchObject({
+            billing: { data: { customer: 'acme' }, meta: { source: 'demo.billing' } },
+            logs: { data: { nextCursor: 'page-2' }, meta: { source: 'demo.logs' } },
+            metrics: { meta: { quality: { sampleRate: 0.5, sampled: true } } },
         })
         expect(insight.sources()).toEqual([
-            expect.objectContaining({
-                id: 'commerce.orders',
-                operations: ['summary', 'series', 'breakdown'],
-                provider: 'commerce',
-            }),
+            { id: 'demo.billing', provider: 'demo' },
+            { id: 'demo.funnel', provider: 'demo' },
+            { id: 'demo.logs', provider: 'demo' },
+            { id: 'demo.metrics', provider: 'demo' },
+            { id: 'demo.trace', provider: 'demo' },
         ])
     })
 
-    it('exposes only implemented operations', async () => {
-        const provider = defineProvider({
-            id: 'status',
-            reports: {
-                current: {
-                    history: { mode: 'snapshot' },
-                    metrics: { online: { aggregation: 'last', valueType: 'integer' } },
-                    snapshot: async () => ({ values: { online: 3 } }),
-                },
-            },
+    it('normalizes before exact dedupe and batches once per Provider', async () => {
+        const execute = vi.fn<
+            (
+                requests: readonly ProviderExecutionRequest[],
+            ) => Promise<readonly SourceExecutionResult<unknown, object>[]>
+        >(
+            async (
+                requests: readonly ProviderExecutionRequest[],
+            ): Promise<readonly SourceExecutionResult<unknown, object>[]> =>
+                Promise.all(requests.map((request) => request.execute())),
+        )
+        const sourceExecute = vi.fn<typeof logsSource.execute>((query, context) =>
+            logsSource.execute(query, context),
+        )
+        const source = { ...logsSource, execute: sourceExecute }
+        const insight = createInsight({
+            providers: [defineProvider({ execute, id: 'batched', sources: { logs: source } })],
         })
-        const insight = createInsight({ providers: [provider] as const })
-        const reports = insight.reports('status.current')
 
-        await expect(reports.snapshot({ metrics: ['online'] })).resolves.toMatchObject({
-            kind: 'scalar',
-            values: { online: 3 },
-        })
-        // @ts-expect-error summary is not implemented by this Source
-        void reports.summary
-        expect(Object.keys(reports)).toEqual(['snapshot', 'series'])
+        const result = await insight.query((q) => ({
+            first: q.source('batched.logs', {}),
+            second: q.source('batched.logs', { cursor: '' }),
+        }))
+
+        expect(execute).toHaveBeenCalledOnce()
+        expect(execute.mock.calls[0]?.[0]).toHaveLength(1)
+        expect(sourceExecute).toHaveBeenCalledOnce()
+        expect(result.first).toBe(result.second)
     })
 
-    it('validates absolute half-open ranges and schema before Provider I/O', async () => {
-        const { operations, provider } = commerceProvider()
-        const insight = createInsight({ providers: [provider] as const })
-        const reports = insight.reports('commerce.orders')
+    it('keeps AbortSignal at execution scope', async () => {
+        const execute = vi.fn<typeof logsSource.execute>((query, context) =>
+            logsSource.execute(query, context),
+        )
+        const insight = createInsight({
+            providers: [
+                defineProvider({ id: 'abort', sources: { logs: { ...logsSource, execute } } }),
+            ],
+        })
+        const controller = new AbortController()
+        controller.abort(new Error('stop'))
 
         await expect(
-            reports.summary({
-                metrics: ['orders'],
-                range: { from: range.from, to: range.from },
+            insight.query((q) => ({ logs: q.source('abort.logs', {}) }), {
+                signal: controller.signal,
             }),
-        ).rejects.toMatchObject({ code: 'INVALID_QUERY' })
-        expect(operations.summary).not.toHaveBeenCalled()
-
-        await reports.summary({
-            filters: { field: 'country', operator: 'eq', value: 'JP' },
-            metrics: ['orders'],
-            range: {
-                from: '2026-08-01T03:12:45.123Z',
-                to: '2026-08-01T04:56:07.890Z',
-            },
-        })
-        expect(operations.summary).toHaveBeenCalledWith(
-            expect.objectContaining({
-                range: {
-                    from: '2026-08-01T03:12:45.123Z',
-                    to: '2026-08-01T04:56:07.890Z',
-                },
-            }),
-        )
-    })
-
-    it('rejects duplicate and manually dotted Provider/Source identifiers', () => {
-        expect(() =>
-            createInsight({
-                providers: [
-                    { id: 'duplicate', reports: {} },
-                    { id: 'duplicate', reports: {} },
-                ] as const,
-            }),
-        ).toThrow(InsightError)
-        expect(() =>
-            createInsight({
-                providers: [{ id: 'manual.id', reports: {} }] as const,
-            }),
-        ).toThrow(/cannot contain a dot/)
+        ).rejects.toThrow('stop')
+        expect(execute).not.toHaveBeenCalled()
     })
 })
 
-describe('events', () => {
-    it('preserves typed event properties and Provider-owned delivery', async () => {
+describe('Metric where DSL', () => {
+    it('canonicalizes equivalent shorthand and operator forms to the same key', () => {
+        const shorthand = metricSource.normalize({
+            metrics: ['requests'],
+            time: range,
+            where: { country: 'JP' },
+        })
+        const explicit = metricSource.normalize({
+            metrics: ['requests'],
+            time: range,
+            where: { country: { eq: 'JP' } },
+        })
+        expect(metricSource.key(shorthand)).toBe(metricSource.key(explicit))
+        expect(shorthand.where).toEqual({ field: 'country', operator: 'eq', value: 'JP' })
+    })
+
+    it('derives operator values from each dimension schema', () => {
+        expect(() =>
+            metricSource.normalize({
+                metrics: ['requests'],
+                time: range,
+                where: { AND: [{ country: { in: ['JP', 'US'] } }, { latency: { gt: 10 } }] },
+            }),
+        ).not.toThrow()
+        const invalidQueries = () => {
+            metricSource.normalize({
+                metrics: ['requests'],
+                time: range,
+                // @ts-expect-error country does not expose numeric comparison operators
+                where: { country: { gt: 10 } },
+            })
+            metricSource.normalize({
+                metrics: ['requests'],
+                time: range,
+                // @ts-expect-error latency comparisons require numbers
+                where: { latency: { gt: 'slow' } },
+            })
+        }
+        void invalidQueries
+    })
+})
+
+describe('events and instrumentation', () => {
+    it('adds active trace context without exposing query values as attributes', async () => {
         const track = vi.fn<EventDestination['track']>()
-        const options = {
-            events: {
-                search: {
-                    properties: { resultCount: 'number', type: ['keyword', 'semantic'] },
-                },
+        const calls: {
+            attributes: Readonly<Record<string, boolean | number | string>>
+            name: string
+        }[] = []
+        const instrumentation: Instrumentation = {
+            activeTraceContext: () => ({ spanId: 'span', traceId: 'trace' }),
+            async run(name, attributes, operation) {
+                calls.push({ attributes, name })
+                return operation({ recordException() {}, setAttribute() {} })
             },
-            providers: [{ events: { track }, id: 'events' }] as const,
+        }
+        const options = {
+            events: { search: { properties: { resultCount: 'number' } } },
+            instrumentation,
+            providers: [
+                { events: { track }, id: 'events', sources: { logs: logsSource } },
+            ] as const,
         } as const
         type SearchProperties = EventProperties<typeof options, 'search'>
-        expectTypeOf<SearchProperties>().toEqualTypeOf<{
-            readonly resultCount: number
-            readonly type: 'keyword' | 'semantic'
-        }>()
-
+        expectTypeOf<SearchProperties>().toEqualTypeOf<{ readonly resultCount: number }>()
         const insight = createInsight(options)
-        await insight.track('search', { resultCount: 4, type: 'semantic' })
+
+        await insight.query((q) => ({ secret: q.source('events.logs', { cursor: 'private' }) }))
+        await insight.track('search', { resultCount: 4 })
+
         expect(track).toHaveBeenCalledWith(
-            expect.objectContaining({ name: 'search', origin: 'server' }),
+            expect.objectContaining({
+                context: { spanId: 'span', traceId: 'trace' },
+                name: 'search',
+            }),
         )
+        expect(JSON.stringify(calls)).not.toContain('private')
+        expect(calls.map(({ name }) => name)).toEqual([
+            'insight.query',
+            'insight.provider.execute',
+            'insight.event.track',
+        ])
     })
 })
+
+expectTypeOf<QueryResult<{ value: number }>>().toMatchTypeOf<QueryResult<unknown>>()

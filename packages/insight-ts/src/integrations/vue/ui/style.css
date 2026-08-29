@@ -1,4 +1,12 @@
-:where(.insight-stat, .insight-line-chart, .insight-area-chart, .insight-breakdown-table) {
+:where(
+    .insight-stat,
+    .insight-line-chart,
+    .insight-area-chart,
+    .insight-breakdown-table,
+    .insight-bar-chart,
+    .insight-sparkline,
+    .insight-quality-notice
+) {
     --insight-text: #3f3f46;
     --insight-text-muted: #71717a;
     --insight-text-highlighted: #18181b;
@@ -27,7 +35,15 @@
 }
 
 @media (prefers-color-scheme: dark) {
-    :where(.insight-stat, .insight-line-chart, .insight-area-chart, .insight-breakdown-table) {
+    :where(
+        .insight-stat,
+        .insight-line-chart,
+        .insight-area-chart,
+        .insight-breakdown-table,
+        .insight-bar-chart,
+        .insight-sparkline,
+        .insight-quality-notice
+    ) {
         --insight-text: #d4d4d8;
         --insight-text-muted: #a1a1aa;
         --insight-text-highlighted: #fafafa;
@@ -39,7 +55,15 @@
 }
 
 :where(.dark, [data-theme='dark'])
-    :where(.insight-stat, .insight-line-chart, .insight-area-chart, .insight-breakdown-table) {
+    :where(
+        .insight-stat,
+        .insight-line-chart,
+        .insight-area-chart,
+        .insight-breakdown-table,
+        .insight-bar-chart,
+        .insight-sparkline,
+        .insight-quality-notice
+    ) {
     --insight-text: #d4d4d8;
     --insight-text-muted: #a1a1aa;
     --insight-text-highlighted: #fafafa;
@@ -56,6 +80,49 @@
 .insight-stat__label,
 .insight-notices {
     color: var(--insight-text-muted);
+}
+
+.insight-sparkline path {
+    stroke: var(--insight-chart-1);
+    stroke-width: 2;
+}
+
+.insight-bar-chart__list {
+    display: grid;
+    gap: 0.625rem;
+    padding: 0;
+    margin: 0;
+    list-style: none;
+}
+
+.insight-bar-chart__item {
+    display: grid;
+    grid-template-columns: minmax(6rem, 1fr) minmax(8rem, 3fr) auto;
+    align-items: center;
+    gap: 0.75rem;
+}
+
+.insight-bar-chart__track {
+    height: 0.625rem;
+    overflow: hidden;
+    border-radius: 999px;
+    background: var(--insight-chart-grid);
+}
+
+.insight-bar-chart__bar {
+    display: block;
+    height: 100%;
+    border-radius: inherit;
+    background: var(--insight-chart-1);
+}
+
+.insight-bar-chart__value {
+    font-variant-numeric: tabular-nums;
+}
+
+.insight-quality-notice ul {
+    margin: 0;
+    padding-inline-start: 1.25rem;
 }
 
 .insight-stat__value {

@@ -1,14 +1,10 @@
-import type {
-    ReportQuality,
-    ScalarReport,
-    SeriesPoint,
-    SeriesReport,
-    TableReport,
-} from '../../../core/types.ts'
+import type { QueryQuality } from '../../../core/types.ts'
 import type {
     ChartSeries,
     ChartTooltipValue,
     DataNotice,
+    MetricQueryResult,
+    MetricSeriesPoint,
     Timezone,
     XAxisOptions,
     YAxisOptions,
@@ -54,24 +50,24 @@ export interface InsightBreakdownTableUI {
     empty?: InsightUIClass
 }
 
-export interface InsightStatProps {
+export interface InsightStatProps<TData extends MetricQueryResult = MetricQueryResult> {
     class?: InsightUIClass
+    data: TData
     emptyText?: string
+    formatter?: (value: number) => string
     label?: string
     locale?: string
     maximumFractionDigits?: number
-    metric: string
-    report: ScalarReport
+    metric: Extract<keyof TData['data'], string>
     ui?: InsightStatUI
 }
 
 export interface InsightSeriesChartProps {
     class?: InsightUIClass | undefined
     colors?: readonly string[] | undefined
+    data: MetricQueryResult
     height?: number | undefined
     locale?: string | undefined
-    metrics?: readonly string[] | undefined
-    report: SeriesReport
     smooth?: boolean | undefined
     timezone?: Timezone | undefined
     title?: string | undefined
@@ -85,13 +81,36 @@ export type InsightAreaChartProps = InsightSeriesChartProps
 
 export interface InsightBreakdownTableProps {
     class?: InsightUIClass
-    dimensions?: readonly string[]
+    data: MetricQueryResult
     emptyText?: string
     locale?: string
     maximumFractionDigits?: number
-    metrics?: readonly string[]
-    report: TableReport
     ui?: InsightBreakdownTableUI
+}
+
+export interface InsightBarChartProps<TData extends MetricQueryResult = MetricQueryResult> {
+    class?: InsightUIClass
+    data: TData
+    dimension: TData extends MetricQueryResult<string, infer TDimension> ? TDimension : string
+    emptyText?: string
+    formatter?: (value: number) => string
+    height?: number
+    locale?: string
+    metric: Extract<keyof TData['data'], string>
+}
+
+export interface InsightSparklineProps<TData extends MetricQueryResult = MetricQueryResult> {
+    class?: InsightUIClass
+    data: TData
+    height?: number
+    metric: Extract<keyof TData['data'], string>
+    width?: number
+}
+
+export interface InsightQualityNoticeProps {
+    class?: InsightUIClass
+    data?: QueryQuality
+    locale?: string
 }
 
 export interface InsightSeriesChartSlots {
@@ -100,12 +119,12 @@ export interface InsightSeriesChartSlots {
     notices(properties: {
         messages: readonly string[]
         notices: readonly DataNotice[]
-        quality: ReportQuality
+        quality: QueryQuality | undefined
     }): unknown
     title(properties: { title: string }): unknown
     tooltip(properties: {
         label: string
-        point: SeriesPoint
+        point: MetricSeriesPoint
         values: readonly ChartTooltipValue[]
     }): unknown
 }

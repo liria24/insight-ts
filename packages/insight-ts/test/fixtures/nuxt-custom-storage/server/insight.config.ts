@@ -1,20 +1,19 @@
 import { defineProvider } from '../../../../src/core/provider.ts'
 import { defineNuxtInsightConfig } from '../../../../src/integrations/nuxt/index.ts'
+import { defineMetricSource } from '../../../../src/metrics/index.ts'
 
 export default defineNuxtInsightConfig({
     providers: [
         defineProvider({
             id: 'app',
-            reports: {
-                usage: {
-                    history: { grain: 'day', mode: 'range' },
+            sources: {
+                usage: defineMetricSource({
+                    execute: () => ({ points: [], values: { views: 0 } }),
+                    history: { grain: 'day' },
                     metrics: {
-                        views: { aggregation: 'sum', rollup: 'additive', valueType: 'integer' },
+                        views: { aggregation: { kind: 'sum' }, rollup: 'additive' },
                     },
-                    async series() {
-                        return { points: [] }
-                    },
-                },
+                }),
             },
         }),
     ],

@@ -1,20 +1,35 @@
 import { InsightError } from './errors.ts'
-import { normalizeTimeRange, validateSelection } from './query.ts'
 import type {
     CreateInsightOptions,
     EventDefinition,
     EventDefinitions,
-    Filter,
-    FilterValue,
     HistoryRuntime,
-    Grain,
     InsightClient,
-    Report,
-    ReportMeta,
-    ReportOperation,
-    ReportSourceDefinition,
-    RuntimeReportSource,
+    InstrumentationSpan,
+    ProviderDefinition,
+    QueryExecutionOptions,
+    QueryResult,
+    RuntimeSource,
+    SourceExecutionResult,
+    SourceRequest,
 } from './types.ts'
+
+const descriptor = Symbol('insight.query')
+const concurrency = 8
+const noopSpan: InstrumentationSpan = {
+    recordException() {},
+    setAttribute() {},
+}
+
+interface Descriptor {
+    [descriptor]: true
+    query: unknown
+    source: RuntimeSource
+}
+
+interface PreparedRequest extends SourceRequest {
+    dedupeKey: string
+}
 
 export const createInsight = <const TOptions extends CreateInsightOptions>(
     options: TOptions,
@@ -23,125 +38,206 @@ export const createInsight = <const TOptions extends CreateInsightOptions>(
     const sources = runtimeSources(options.providers)
     const byId = new Map(sources.map((source) => [source.id, source]))
 
-    const invoke = async (
-        source: RuntimeReportSource,
-        operation: ReportOperation,
-        input: unknown,
-    ): Promise<Report> => {
-        const query = requireRecord(input, `${operation} query`)
-        const metrics = stringArray(query.metrics, 'metrics')
-        const range = operation === 'snapshot' ? undefined : normalizeTimeRangeValue(query.range)
-        const dimensions =
-            operation === 'breakdown' ? stringArray(query.dimensions, 'dimensions') : []
-        const filters = parseFilter(query.filters)
-        validateSelection(source.id, source.definition, {
-            dimensions,
-            ...(filters ? { filters } : {}),
-            ...(typeof query.limit === 'number' ? { limit: query.limit } : {}),
-            metrics,
-            ...(range ? { range } : {}),
-        })
-        const implementation = source.definition[operation]
-        if (typeof implementation !== 'function') {
-            throw new InsightError(
-                'UNSUPPORTED_OPERATION',
-                `Report Source "${source.id}" does not implement ${operation}()`,
-            )
+    const instrument = <T>(
+        name: string,
+        attributes: Readonly<Record<string, boolean | number | string>>,
+        operation: (span: InstrumentationSpan) => Promise<T>,
+    ): Promise<T> =>
+        options.instrumentation
+            ? Promise.resolve(options.instrumentation.run(name, attributes, operation))
+            : operation(noopSpan)
+
+    const prepare = (requests: readonly SourceRequest[]) => {
+        const keys: string[] = []
+        const unique = new Map<string, PreparedRequest>()
+        for (const request of requests) {
+            const query = request.source.definition.normalize(request.query)
+            const sourceKey = request.source.definition.key(query)
+            if (typeof sourceKey !== 'string') {
+                throw new InsightError(
+                    'INVALID_QUERY',
+                    `Source "${request.source.id}" returned a non-string query key`,
+                )
+            }
+            const dedupeKey = `${request.source.id}\0${sourceKey}`
+            keys.push(dedupeKey)
+            unique.set(dedupeKey, { dedupeKey, query, source: request.source })
         }
-        const normalized = {
-            ...query,
-            metrics,
-            ...(range ? { range } : {}),
-            ...(operation === 'series'
-                ? {
-                      grain:
-                          query.grain ??
-                          (source.definition.history?.mode === 'range'
-                              ? source.definition.history.grain
-                              : 'day'),
-                  }
-                : {}),
+        return { keys, unique: [...unique.values()] }
+    }
+
+    const executePrepared = async (
+        requests: readonly PreparedRequest[],
+        execution: QueryExecutionOptions = {},
+    ): Promise<readonly QueryResult<unknown, object>[]> => {
+        execution.signal?.throwIfAborted()
+        const groups = new Map<ProviderDefinition, PreparedRequest[]>()
+        for (const request of requests) {
+            const group = groups.get(request.source.provider) ?? []
+            group.push(request)
+            groups.set(request.source.provider, group)
         }
-        // The operation check above narrows the runtime call; result validation happens below.
-        const result = await Reflect.apply(implementation, source.definition, [normalized])
-        if (!isRecord(result)) {
-            throw new InsightError(
-                'INVALID_QUERY',
-                `Report Source "${source.id}" returned an invalid ${operation} result`,
-            )
-        }
-        return createReport(source.id, operation, normalized, result, metrics, now())
+        const results = new Map<string, QueryResult<unknown, object>>()
+        await Promise.all(
+            [...groups].map(async ([provider, group]) => {
+                const executed = await instrument(
+                    'insight.provider.execute',
+                    {
+                        'insight.provider': provider.id,
+                        'insight.request.count': group.length,
+                    },
+                    async () => executeProvider(provider, group, execution),
+                )
+                if (executed.length !== group.length) {
+                    throw new InsightError(
+                        'INVALID_QUERY',
+                        `Provider "${provider.id}" returned ${executed.length} results for ${group.length} requests`,
+                    )
+                }
+                for (const [index, result] of executed.entries()) {
+                    const request = group[index]!
+                    results.set(request.dedupeKey, queryResult(request.source.id, result, now()))
+                }
+            }),
+        )
+        return requests.map(({ dedupeKey }) => results.get(dedupeKey)!)
+    }
+
+    const executeRaw = async (
+        requests: readonly SourceRequest[],
+        execution?: QueryExecutionOptions,
+    ): Promise<readonly QueryResult<unknown, object>[]> => {
+        const prepared = prepare(requests)
+        const values = await executePrepared(prepared.unique, execution)
+        const results = new Map(
+            prepared.unique.map(({ dedupeKey }, index) => [dedupeKey, values[index]!] as const),
+        )
+        return prepared.keys.map((key) => results.get(key)!)
     }
 
     let history: HistoryRuntime | undefined
-    if (options.history) history = options.history.attach({ invoke, now, sources })
+    if (options.history) {
+        history = options.history.attach({
+            execute: executeRaw,
+            ...(options.instrumentation ? { instrumentation: options.instrumentation } : {}),
+            now,
+            sources,
+        })
+    }
 
-    const execute = async (
-        source: RuntimeReportSource,
-        operation: ReportOperation,
-        query: unknown,
-    ): Promise<Report> => {
-        if (history)
-            return history.query(source, operation, query, () => invoke(source, operation, query))
-        return invoke(source, operation, query)
+    const executeSelection = async (
+        requests: readonly SourceRequest[],
+        execution: QueryExecutionOptions = {},
+    ): Promise<readonly QueryResult<unknown, object>[]> => {
+        const prepared = prepare(requests)
+        const direct = prepared.unique.filter(
+            (request) => !history?.handles(request.source, request.query),
+        )
+        const managed = prepared.unique.filter((request) =>
+            history?.handles(request.source, request.query),
+        )
+        const directResults = await executePrepared(direct, execution)
+        const resultByKey = new Map(
+            direct.map(({ dedupeKey }, index) => [dedupeKey, directResults[index]!] as const),
+        )
+        await Promise.all(
+            managed.map(async (request) => {
+                const value = await history!.query(request.source, request.query, async () => {
+                    const [result] = await executePrepared([request], execution)
+                    return result!
+                })
+                resultByKey.set(request.dedupeKey, value)
+            }),
+        )
+        return prepared.keys.map((key) => resultByKey.get(key)!)
     }
 
     const client = {
         ...(history ? { history } : {}),
-        reports(sourceId: string) {
-            const source = byId.get(sourceId)
-            if (!source) {
-                throw new InsightError('SOURCE_NOT_FOUND', `Unknown Report Source: ${sourceId}`)
-            }
-            const operations = operationNames(source.definition)
-            if (source.definition.history?.mode === 'snapshot' && !operations.includes('series')) {
-                operations.push('series')
-            }
-            return Object.fromEntries(
-                operations.map((operation) => [
-                    operation,
-                    (query: unknown) => execute(source, operation, query),
-                ]),
-            )
-        },
-        sources: () =>
-            sources.map(({ definition, id, provider }) => ({
-                dimensions: Object.keys(definition.dimensions ?? {}),
-                ...(definition.history ? { history: definition.history } : {}),
-                id,
-                metrics: Object.keys(definition.metrics),
-                operations: operationNames(definition),
-                provider,
-            })),
-        async track(name: string, properties?: Readonly<Record<string, unknown>>) {
-            const events: EventDefinitions | undefined = options.events
-            const definition = events && Object.hasOwn(events, name) ? events[name] : undefined
-            const normalized = validateEvent(name, definition, properties)
-            const destinations = options.providers.flatMap(({ events: destination }) =>
-                destination ? [destination] : [],
-            )
-            if (destinations.length === 0) {
-                throw new InsightError(
-                    'CAPABILITY_UNAVAILABLE',
-                    'No Provider event destination is configured',
+        async query(
+            select: (builder: { source(source: string, query: unknown): Descriptor }) => unknown,
+            execution: QueryExecutionOptions = {},
+        ) {
+            return instrument('insight.query', {}, async (span) => {
+                execution.signal?.throwIfAborted()
+                const selection = select({
+                    source(sourceId, query) {
+                        const source = byId.get(sourceId)
+                        if (!source) {
+                            throw new InsightError(
+                                'SOURCE_NOT_FOUND',
+                                `Unknown Source: ${sourceId}`,
+                            )
+                        }
+                        return { [descriptor]: true, query, source }
+                    },
+                })
+                const entries = selectionEntries(selection)
+                span.setAttribute('insight.query.count', entries.length)
+                const values = await executeSelection(
+                    entries.map(([, value]) => value),
+                    execution,
                 )
-            }
-            const event = {
-                id: crypto.randomUUID(),
-                name,
-                origin: 'server' as const,
-                properties: normalized,
-                timestamp: now().toISOString(),
-            }
-            await Promise.all(destinations.map(async (destination) => destination.track(event)))
+                return Object.fromEntries(entries.map(([name], index) => [name, values[index]]))
+            })
+        },
+        sources: () => sources.map(({ id, provider }) => ({ id, provider: provider.id })),
+        async track(name: string, properties?: Readonly<Record<string, unknown>>) {
+            return instrument('insight.event.track', { 'insight.event.name': name }, async () => {
+                const events: EventDefinitions | undefined = options.events
+                const definition = events && Object.hasOwn(events, name) ? events[name] : undefined
+                const normalized = validateEvent(name, definition, properties)
+                const destinations = options.providers.flatMap(({ events: destination }) =>
+                    destination ? [destination] : [],
+                )
+                if (destinations.length === 0) {
+                    throw new InsightError(
+                        'CAPABILITY_UNAVAILABLE',
+                        'No Provider event destination is configured',
+                    )
+                }
+                const context = options.instrumentation?.activeTraceContext?.()
+                const event = {
+                    ...(context ? { context } : {}),
+                    id: crypto.randomUUID(),
+                    name,
+                    origin: 'server' as const,
+                    properties: normalized,
+                    timestamp: now().toISOString(),
+                }
+                await Promise.all(destinations.map(async (destination) => destination.track(event)))
+            })
         },
     }
-    // Runtime construction follows the generic Provider tuple checked by the public return type.
-    // oxlint-disable-next-line typescript/no-unsafe-type-assertion
+    // The implementation validates every erased Source/query boundary before constructing results.
+    // eslint-disable-next-line typescript/no-unsafe-type-assertion
     return client as unknown as InsightClient<TOptions>
+
+    async function executeProvider(
+        provider: ProviderDefinition,
+        requests: readonly PreparedRequest[],
+        execution: QueryExecutionOptions,
+    ): Promise<readonly SourceExecutionResult<unknown, object>[]> {
+        const providerRequests = requests.map(({ query, source }) => ({
+            execute: () =>
+                Promise.resolve(
+                    source.definition.execute(query, {
+                        provider: provider.id,
+                        ...(execution.signal ? { signal: execution.signal } : {}),
+                        source: source.id,
+                    }),
+                ),
+            key: source.key,
+            query,
+            source: source.id,
+        }))
+        return provider.execute
+            ? provider.execute(providerRequests, execution)
+            : mapConcurrent(providerRequests, concurrency, ({ execute }) => execute())
+    }
 }
 
-function runtimeSources(providers: CreateInsightOptions['providers']): RuntimeReportSource[] {
+function runtimeSources(providers: readonly ProviderDefinition[]): RuntimeSource[] {
     const providerIds = providers.map(({ id }) => id)
     if (new Set(providerIds).size !== providerIds.length) {
         throw new InsightError('INVALID_QUERY', 'Provider ids must be unique')
@@ -153,195 +249,125 @@ function runtimeSources(providers: CreateInsightOptions['providers']): RuntimeRe
                 'Provider ids must be non-empty and cannot contain a dot',
             )
         }
-        return Object.entries(provider.reports ?? {}).map(([key, definition]) => {
+        return Object.entries(provider.sources ?? {}).map(([key, value]) => {
             if (!key || key.includes('.')) {
                 throw new InsightError(
                     'INVALID_QUERY',
-                    'Report Source keys must be non-empty and cannot contain a dot',
+                    'Source keys must be non-empty and cannot contain a dot',
                 )
             }
-            return { definition, id: `${provider.id}.${key}`, key, provider: provider.id }
+            const definition = sourceDefinition(value, key)
+            return { definition, id: `${provider.id}.${key}`, key, provider }
         })
     })
     const ids = sources.map(({ id }) => id)
     if (new Set(ids).size !== ids.length) {
-        throw new InsightError('INVALID_QUERY', 'Report Source ids must be unique')
+        throw new InsightError('INVALID_QUERY', 'Source ids must be unique')
     }
     return sources
 }
 
-const createReport = (
-    source: string,
-    operation: ReportOperation,
-    query: Record<string, unknown>,
-    result: Record<string, unknown>,
-    metrics: readonly string[],
-    queriedAt: Date,
-): Report => {
-    const resultTemporal = reportTemporal(result.temporal, source)
-    const temporal: ReportMeta['temporal'] = {
-        ...(isGrain(query.grain) ? { grain: query.grain } : {}),
-        ...(typeof query.timezone === 'string' ? { bucketTimezone: query.timezone } : {}),
-        ...resultTemporal,
+function sourceDefinition(value: unknown, key: string) {
+    if (!isSourceDefinition(value)) {
+        throw new InsightError('INVALID_QUERY', `Source "${key}" has an invalid definition`)
     }
-    const freshness = reportFreshness(result.freshness, source)
-    const meta: ReportMeta = {
-        ...(freshness ? { freshness } : {}),
-        quality: reportQuality(result.quality, source),
-        queriedAt: queriedAt.toISOString(),
-        source,
-        temporal,
+    return value
+}
+
+function selectionEntries(value: unknown): [string, Descriptor][] {
+    if (!isRecord(value)) {
+        throw new InsightError('INVALID_QUERY', 'Query selection must return an object')
     }
-    if (operation === 'summary' || operation === 'snapshot') {
-        const values = selectValues(result.values, metrics)
-        return { kind: 'scalar', meta, values }
-    }
-    if (operation === 'series') {
-        const points = result.points
-        if (!Array.isArray(points)) return invalidResult(source, operation)
-        return {
-            kind: 'series',
-            meta,
-            points: points.map((value) => {
-                const point = requireResultRecord(value, source, 'series point')
-                const dimensions = reportDimensions(point.dimensions, source)
-                return {
-                    ...(dimensions ? { dimensions } : {}),
-                    time: normalizeTimestamp(point.time, 'series point time'),
-                    values: selectValues(point.values, metrics),
-                }
-            }),
+    return Object.entries(value).map(([name, selected]) => {
+        if (!isDescriptor(selected)) {
+            throw new InsightError(
+                'INVALID_QUERY',
+                `Query selection "${name}" must be created with q.source()`,
+            )
         }
+        return [name, selected]
+    })
+}
+
+function queryResult(
+    source: string,
+    value: SourceExecutionResult<unknown, object>,
+    queriedAt: Date,
+): QueryResult<unknown, object> {
+    if (!isRecord(value) || !Object.hasOwn(value, 'data')) {
+        throw new InsightError(
+            'INVALID_QUERY',
+            `Source "${source}" returned an invalid execution result`,
+        )
     }
-    const rows = result.rows
-    if (!Array.isArray(rows)) return invalidResult(source, operation)
+    const meta = value.meta === undefined ? {} : requireRecord(value.meta, 'Source metadata')
+    const quality = parseQuality(value.quality)
     return {
-        kind: 'table',
-        meta,
-        rows: rows.map((value) => {
-            const row = requireResultRecord(value, source, 'breakdown row')
-            const dimensions = reportDimensions(row.dimensions, source)
-            if (!dimensions) return invalidResult(source, operation)
-            return { dimensions, metrics: selectValues(row.metrics, metrics) }
-        }),
+        data: value.data,
+        meta: {
+            ...meta,
+            ...(quality ? { quality } : {}),
+            queriedAt: queriedAt.toISOString(),
+            source,
+        },
     }
 }
 
-const selectValues = (
-    values: unknown,
-    metrics: readonly string[],
-): Readonly<Record<string, number | null>> => {
-    if (!isRecord(values))
-        throw new InsightError('INVALID_QUERY', 'Report values must be an object')
-    return Object.fromEntries(
-        metrics.map((metric) => {
-            const value = values[metric]
-            if (value === null) return [metric, null]
-            if (typeof value !== 'number' || !Number.isFinite(value)) {
-                throw new InsightError('INVALID_QUERY', `Metric "${metric}" must be finite or null`)
-            }
-            return [metric, value]
-        }),
-    )
-}
-
-const operationNames = (source: ReportSourceDefinition): ReportOperation[] => {
-    return (['summary', 'series', 'breakdown', 'snapshot'] as const).filter(
-        (operation) => typeof source[operation] === 'function',
-    )
-}
-
-const reportQuality = (value: unknown, source: string): ReportMeta['quality'] => {
-    if (value === undefined) return {}
-    const quality = requireResultRecord(value, source, 'quality metadata')
+function parseQuality(value: unknown) {
+    if (value === undefined) return undefined
+    const quality = requireRecord(value, 'Query quality')
     const warnings = quality.warnings
-    if (warnings !== undefined && !Array.isArray(warnings)) return invalidResult(source, 'quality')
-    const parsedWarnings = warnings?.map((warningValue) => {
-        const warning = requireResultRecord(warningValue, source, 'quality warning')
+    if (warnings !== undefined && !Array.isArray(warnings)) {
+        throw new InsightError('INVALID_QUERY', 'Query quality warnings must be an array')
+    }
+    const parsedWarnings = warnings?.map((item) => {
+        const warning = requireRecord(item, 'Query quality warning')
         if (typeof warning.code !== 'string' || typeof warning.message !== 'string') {
-            return invalidResult(source, 'quality')
+            throw new InsightError(
+                'INVALID_QUERY',
+                'Query quality warnings require code and message strings',
+            )
         }
         return { code: warning.code, message: warning.message }
     })
-    const sampleRate = quality.sampleRate
     if (
-        sampleRate !== undefined &&
-        (typeof sampleRate !== 'number' || !Number.isFinite(sampleRate))
+        quality.sampleRate !== undefined &&
+        (typeof quality.sampleRate !== 'number' ||
+            !Number.isFinite(quality.sampleRate) ||
+            quality.sampleRate < 0 ||
+            quality.sampleRate > 1)
     ) {
-        return invalidResult(source, 'quality')
+        throw new InsightError('INVALID_QUERY', 'Query quality sampleRate must be in [0, 1]')
     }
     return {
         ...(quality.approximate === true ? { approximate: true } : {}),
         ...(quality.partial === true ? { partial: true } : {}),
         ...(quality.sampled === true ? { sampled: true } : {}),
-        ...(typeof sampleRate === 'number' ? { sampleRate } : {}),
+        ...(typeof quality.sampleRate === 'number' ? { sampleRate: quality.sampleRate } : {}),
         ...(quality.thresholded === true ? { thresholded: true } : {}),
         ...(parsedWarnings && parsedWarnings.length > 0 ? { warnings: parsedWarnings } : {}),
     }
 }
 
-const reportFreshness = (value: unknown, source: string): ReportMeta['freshness'] | undefined => {
-    if (value === undefined) return undefined
-    const freshness = requireResultRecord(value, source, 'freshness metadata')
-    if (
-        (freshness.completeThrough !== undefined &&
-            typeof freshness.completeThrough !== 'string') ||
-        (freshness.incompleteFrom !== undefined && typeof freshness.incompleteFrom !== 'string')
-    ) {
-        return invalidResult(source, 'freshness')
-    }
-    return {
-        ...(typeof freshness.completeThrough === 'string'
-            ? { completeThrough: freshness.completeThrough }
-            : {}),
-        ...(typeof freshness.incompleteFrom === 'string'
-            ? { incompleteFrom: freshness.incompleteFrom }
-            : {}),
-    }
-}
-
-const reportTemporal = (value: unknown, source: string): ReportMeta['temporal'] => {
-    if (value === undefined) return {}
-    const temporal = requireResultRecord(value, source, 'temporal metadata')
-    if (
-        (temporal.grain !== undefined && !isGrain(temporal.grain)) ||
-        (temporal.bucketTimezone !== undefined && typeof temporal.bucketTimezone !== 'string') ||
-        (temporal.sourceTimezone !== undefined && typeof temporal.sourceTimezone !== 'string')
-    ) {
-        return invalidResult(source, 'temporal')
-    }
-    return {
-        ...(isGrain(temporal.grain) ? { grain: temporal.grain } : {}),
-        ...(typeof temporal.bucketTimezone === 'string'
-            ? { bucketTimezone: temporal.bucketTimezone }
-            : {}),
-        ...(typeof temporal.sourceTimezone === 'string'
-            ? { sourceTimezone: temporal.sourceTimezone }
-            : {}),
-    }
-}
-
-const reportDimensions = (
-    value: unknown,
-    source: string,
-): Readonly<Record<string, FilterValue>> | undefined => {
-    if (value === undefined) return undefined
-    const dimensions = requireResultRecord(value, source, 'dimensions')
-    const result: Record<string, FilterValue> = {}
-    for (const [field, fieldValue] of Object.entries(dimensions)) {
-        if (!isFilterValue(fieldValue)) return invalidResult(source, 'dimensions')
-        result[field] = fieldValue
-    }
-    return result
-}
-
-const requireResultRecord = (
-    value: unknown,
-    source: string,
-    name: string,
-): Record<string, unknown> => {
-    if (!isRecord(value)) return invalidResult(source, name)
-    return value
+async function mapConcurrent<TInput, TOutput>(
+    values: readonly TInput[],
+    limit: number,
+    mapper: (value: TInput) => Promise<TOutput>,
+): Promise<TOutput[]> {
+    const results: TOutput[] = []
+    let cursor = 0
+    await Promise.all(
+        Array.from({ length: Math.min(limit, values.length) }, async () => {
+            while (cursor < values.length) {
+                const index = cursor
+                cursor += 1
+                // Bounded workers deliberately claim one item at a time.
+                // eslint-disable-next-line no-await-in-loop
+                results[index] = await mapper(values[index]!)
+            }
+        }),
+    )
+    return results
 }
 
 function validateEvent(
@@ -393,99 +419,20 @@ function validateEvent(
     return Object.fromEntries(Object.entries(properties))
 }
 
-function normalizeTimeRangeValue(value: unknown) {
-    const range = requireRecord(value, 'range')
-    if (typeof range.from !== 'string' || typeof range.to !== 'string') {
-        throw new InsightError('INVALID_QUERY', 'Range from and to must be ISO strings')
-    }
-    return normalizeTimeRange({ from: range.from, to: range.to })
-}
-
-function normalizeTimestamp(value: unknown, name: string): string {
-    if (typeof value !== 'string' || !Number.isFinite(new Date(value).valueOf())) {
-        throw new InsightError('INVALID_QUERY', `${name} must be an ISO timestamp`)
-    }
-    return new Date(value).toISOString()
-}
-
-function stringArray(value: unknown, name: string): string[] {
-    if (!Array.isArray(value) || value.some((item) => typeof item !== 'string')) {
-        throw new InsightError('INVALID_QUERY', `${name} must be a string array`)
-    }
-    return [...new Set(value)]
-}
-
-const filterOperators = new Set([
-    'eq',
-    'neq',
-    'in',
-    'not-in',
-    'contains',
-    'matches',
-    'gt',
-    'gte',
-    'lt',
-    'lte',
-])
-const grains = new Set(['minute', 'hour', 'day', 'week', 'month', 'year'])
-
-type FilterOperator = Extract<Filter, { field: string }>['operator']
-
-const parseFilter = (value: unknown): Filter | undefined => {
-    if (value === undefined) return undefined
-    if (!isRecord(value)) throw new InsightError('INVALID_QUERY', 'Filter must be an object')
-    if ('field' in value) {
-        if (
-            typeof value.field !== 'string' ||
-            !isFilterOperator(value.operator) ||
-            (!isFilterValue(value.value) &&
-                (!Array.isArray(value.value) || !value.value.every(isFilterValue)))
-        ) {
-            throw new InsightError('INVALID_QUERY', 'Filter field or operator is invalid')
-        }
-        return { field: value.field, operator: value.operator, value: value.value }
-    }
-    if ('not' in value) {
-        const parsed = parseFilter(value.not)
-        if (!parsed) throw new InsightError('INVALID_QUERY', 'Filter not value is invalid')
-        return { not: parsed }
-    }
-    const key = 'and' in value ? 'and' : 'or' in value ? 'or' : undefined
-    if (!key || !Array.isArray(value[key])) {
-        throw new InsightError('INVALID_QUERY', 'Filter group is invalid')
-    }
-    const children: Filter[] = []
-    for (const child of value[key]) {
-        const parsed = parseFilter(child)
-        if (!parsed) throw new InsightError('INVALID_QUERY', 'Filter group value is invalid')
-        children.push(parsed)
-    }
-    return key === 'and' ? { and: children } : { or: children }
-}
-
-const isFilterOperator = (value: unknown): value is FilterOperator =>
-    typeof value === 'string' && filterOperators.has(value)
-
-const isFilterValue = (value: unknown): value is FilterValue =>
-    value === null ||
-    typeof value === 'boolean' ||
-    typeof value === 'number' ||
-    typeof value === 'string'
-
-const isGrain = (value: unknown): value is Grain => typeof value === 'string' && grains.has(value)
-
 function requireRecord(value: unknown, name: string): Record<string, unknown> {
     if (!isRecord(value)) throw new InsightError('INVALID_QUERY', `${name} must be an object`)
     return value
 }
 
-function isRecord(value: unknown): value is Record<string, unknown> {
+function isRecord(value: unknown): value is Record<PropertyKey, unknown> {
     return typeof value === 'object' && value !== null && !Array.isArray(value)
 }
 
-function invalidResult(source: string, operation: string): never {
-    throw new InsightError(
-        'INVALID_QUERY',
-        `Report Source "${source}" returned an invalid ${operation} result`,
-    )
-}
+const isDescriptor = (value: unknown): value is Descriptor =>
+    isRecord(value) && value[descriptor] === true
+
+const isSourceDefinition = (value: unknown): value is RuntimeSource['definition'] =>
+    isRecord(value) &&
+    typeof value.normalize === 'function' &&
+    typeof value.key === 'function' &&
+    typeof value.execute === 'function'

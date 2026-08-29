@@ -2,62 +2,65 @@
 
 ## Dependency boundaries
 
-- Core imports no Provider implementation, History Engine, Integration, UI framework, DOM API, or
-  renderer.
-- Provider implementations import Core and never import an Integration, History, or UI layer.
-- History and UI Core import Core independently and do not depend on each other.
-- Integrations depend only on the layers they connect; there is no mandatory common Integration
-  interface or linear Adapter stack.
-- Public entries do not re-export another entry's runtime graph accidentally.
-- UI Core imports Core only and has no DOM, framework, renderer, Nitro, or Provider imports.
+- Core imports no Provider implementation, Metric helper, History Engine, OpenTelemetry package,
+  Integration, UI framework, DOM API, or renderer.
+- Providers and Metric helpers depend on Core; Provider implementations import no Integration,
+  History, or UI layer.
+- History depends on Core and Metric contracts. UI Core does the same independently.
+- `@opentelemetry/api` is an optional peer reachable only from `insight-ts/opentelemetry`.
+- Integrations depend only on the layers they connect; no mandatory Integration interface exists.
 - UI renderer code and CSS are reachable only from `insight-ts/vue/ui`.
-- Nitro is not H3. Nitro Integration imports no H3 API or request-context type.
-- Nuxt composes Nitro Integration; it does not duplicate Nitro Storage or History task wiring.
+- Nitro is not H3. Nuxt composes Nitro rather than duplicating storage or task wiring.
 
-## Capability, query, and report behavior
+## Source and query behavior
 
-- Providers are optional capability collections; no common capability is mandatory.
-- Report Source IDs are `${providerId}.${sourceKey}` and are never configured twice.
-- Normal report access is capability-first and Source-explicit.
-- Source declarations expose only implemented `summary`, `series`, `breakdown`, and `snapshot`.
-- Ranges are absolute ISO timestamps with half-open `[from, to)` semantics.
-- Filters use generic `field` names; provider-native query languages are not forced into one AST.
-- Provider capability validation happens before network I/O.
-- Additive metrics may be summed; derived ratios are recomputed; unsafe rollups are rejected.
-- Provider sampling, approximation, freshness, partial status, and warnings survive merges.
+- Source IDs are `${providerId}.${sourceKey}` and are selected explicitly with `q.source()`.
+- `normalize()` is pure, deterministic, and I/O-free; `key()` is the exact Source-owned dedupe key.
+- Core does not inspect query objects, filter ASTs, dimensions, grains, cursors, or result data.
+- `insight.query()` is lazy: only descriptors returned by the selection callback execute.
+- Equivalent normalized queries for one Source execute once; Providers receive compatible request
+  groups and fallback execution is bounded.
+- `AbortSignal` belongs to query execution options and reaches Provider and Source execution.
+- Core constructs every `QueryResult` envelope and validates only shared `QueryQuality`.
+- Provider validation happens before network I/O. Provider metadata remains Source-specific.
 - External I/O scales with Provider request groups or History range slices, never result rows.
 
-## Nuxt configuration
+## Metrics and filters
 
-- Built-in Provider enablement and History Source selection have one source of truth:
-  `nuxt.config.ts`.
-- Provider credentials and custom Provider construction remain private server runtime config.
-- Built-in Provider credentials use top-level `runtimeConfig.<provider>` keys and never
-  `runtimeConfig.insight.<provider>`.
-- Search Console authentication is a host-owned `getAccessToken` callback.
-- Generated History imports, tasks, and storage bridges exist only when History is configured.
-- Existing Nitro storage and task entries are not overwritten.
-- History uses `nitro.storage.insight` and `nitro.devStorage.insight`; missing mounts fail explicitly.
-- Nitro Tasks are opt-in and never enable `experimental.tasks` implicitly.
+- Metric semantics are optional helpers, not Core semantics.
+- Metric values are `number | null`; semantic units and aggregation never encode presentation.
+- Aggregations are structured. Ratios name supporting metrics; unsafe percentile and other
+  non-additive rollups are rejected.
+- Histogram/distribution capability does not exist until a real Provider requires it.
+- `where` is derived from a Source's dimension schema. Scalar values mean equality; fields and
+  operators in one object are implicit AND; `AND`, `OR`, and `NOT` are explicit groups.
+- Only field-supported operators and value types appear in TypeScript. Canonical normalization
+  makes equivalent shorthand/operator forms share one key.
 
-## Events and UI
+## Observability and events
 
-- Browser events are same-origin, bounded, schema-validated, and best effort.
-- Event IDs, timestamps, and origin are server-owned.
-- Vue components accept reports and never perform Provider I/O, caching, History work, or auth.
-- Nuxt does not register optional Vue Insight components.
-- Provider Quality and History Fidelity remain separate Core metadata.
-- UI notices retain semantic Quality/Fidelity data before default text formatting.
-- Vue VDOM and Vapor compile the same template-based SFC source; no Vapor-specific public entry or
-  Nuxt Vapor switch is generated.
-- Framework UI Integrations own markup, reactivity, lifecycle, and native composition. Formatting
-  and semantic notice logic remain in UI Core.
+- OpenTelemetry is the observability interoperability standard, not the universal Source model.
+- Hosts own OTel SDKs, exporters, Collectors, sampling, and baggage.
+- Instrumentation attributes use `insight.*` and never contain raw queries, filters, event
+  properties, credentials, or PII.
+- Active trace/span IDs may be linked to tracked events; baggage is never copied automatically.
+- Browser events are same-origin, bounded, schema-validated, and best effort. IDs, timestamps, and
+  origin are server-owned.
 
 ## History
 
-- Sources own schema, query semantics, rollup, freshness, History mode/grain, and safe breakdowns.
-- The Engine owns gap detection, range slicing, Provider fetch, composition, reduction, fidelity,
-  segment IDs, and idempotency.
-- Repositories only implement `coverage`, `read`, and `write`; silent lossy processing is forbidden.
-- Provider Quality and range-scoped History Fidelity are never collapsed into one flag.
-- Schedulers only wake `insight.history.sync()` or `insight.history.capture()`.
+- History is an optional Source-specific strategy; the implemented strategy is Metric-only.
+- History fetches through normal multi-query execution.
+- The Engine owns coverage, gaps, composition, safe rollup, reductions, Fidelity, segment IDs, and
+  idempotency. Repositories only implement `coverage`, `read`, and `write`.
+- Provider Quality and range-scoped History Fidelity remain distinct.
+- Nitro Tasks may invoke only `insight.history.sync()` and are explicitly enabled.
+
+## UI and Nuxt
+
+- Public UI renders Metric Source results and never performs Provider I/O, auth, caching, or History.
+- Every data-bearing Vue prop is named `data`; line/area render all selected metrics in Source order.
+- Presentation formatters own percent, currency, and compact notation.
+- Logs, traces, funnels, and billing renderers remain application-local.
+- Nuxt does not register Vue UI, scan UI source, control Vapor, or serialize secrets.
+- Vue VDOM and Vapor compile the same SFC source; no Vapor-specific public entry exists.

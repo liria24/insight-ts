@@ -40,6 +40,8 @@ async function verifyPackage(): Promise<void> {
             manifest.license !== 'MIT' ||
             manifest.dependencies?.['@tanstack/charts'] !== '0.16.0' ||
             manifest.dependencies?.['d3-shape'] !== '3.2.0' ||
+            manifest.peerDependencies?.['@opentelemetry/api'] !== '^1.9.1' ||
+            manifest.peerDependenciesMeta?.['@opentelemetry/api']?.optional !== true ||
             manifest.peerDependencies?.vue !== '>=3.5.0'
         )
             throw new Error('Package identity, license, renderer pin, or Vue peer range is invalid')
@@ -48,6 +50,7 @@ async function verifyPackage(): Promise<void> {
             'index.js',
             'browser.js',
             'history.js',
+            'metrics.js',
             'nitro.js',
             'nuxt.js',
             'provider.js',
@@ -94,21 +97,31 @@ const consumers: readonly Consumer[] = [
         name: 'core',
         source: `import { createInsight } from 'insight-ts'
 import { createBrowserInsight } from 'insight-ts/browser'
+import { defineMetricSource } from 'insight-ts/metrics'
 import { defineProvider } from 'insight-ts/provider'
 import { createSeriesModel } from 'insight-ts/ui-core'
 
+const source = defineMetricSource({
+  metrics: { views: { aggregation: { kind: 'sum' }, rollup: 'additive' } },
+  execute(query) {
+    return {
+      points: [{ time: query.time.from, values: { views: 3 } }],
+      values: { views: 3 },
+    }
+  },
+})
 const provider = defineProvider({
   id: 'app',
-  reports: { usage: {
-    metrics: { views: { valueType: 'integer', aggregation: 'sum', rollup: 'additive' } },
-    async series({ range }) { return { points: [{ time: range.from, values: { views: 3 } }] } },
-  } },
+  sources: { usage: source },
 })
 const insight = createInsight({ providers: [provider] })
-const report = await insight.reports('app.usage').series({
-  metrics: ['views'], range: { from: '2026-08-01T00:00:00.000Z', to: '2026-08-02T00:00:00.000Z' },
-})
-if (createSeriesModel(report).series[0]?.values[0]?.value !== 3 || typeof createBrowserInsight !== 'function') {
+const { usage } = await insight.query((q) => ({
+  usage: q.source('app.usage', {
+    metrics: ['views'],
+    time: { from: '2026-08-01T00:00:00.000Z', grain: 'day', to: '2026-08-02T00:00:00.000Z' },
+  }),
+}))
+if (createSeriesModel(usage, { colors: ['#123456'] }).series[0]?.values[0]?.value !== 3 || typeof createBrowserInsight !== 'function') {
   throw new Error('Packed Core/UI Core export failed')
 }
 `,
@@ -155,20 +168,40 @@ Object.assign(globalThis, {
 })
 const { createSSRApp, h, nextTick } = await import('vue')
 const { renderToString } = await import('vue/server-renderer')
-const { InsightAreaChart, InsightLineChart, InsightStat } = await import('insight-ts/vue/ui')
-const meta = { quality: {}, queriedAt: '2026-08-28T00:00:00.000Z', source: 'packed', temporal: { grain: 'day' } } as const
-const scalar = { kind: 'scalar', meta, values: { visits: 12 } } as const
-const series = { kind: 'series', meta, points: [
-  { time: '2026-08-26T00:00:00.000Z', values: { visits: 9 } },
-  { time: '2026-08-31T00:00:00.000Z', values: { visits: 12 } },
-] } as const
-const Root = () => h('main', [h(InsightStat, { metric: 'visits', report: scalar }), h(InsightLineChart, { report: series }), h(InsightAreaChart, { report: series })])
+const {
+  InsightAreaChart, InsightBarChart, InsightBreakdownTable, InsightLineChart,
+  InsightQualityNotice, InsightSparkline, InsightStat,
+} = await import('insight-ts/vue/ui')
+const data = {
+  data: { visits: {
+    value: 12,
+    points: [
+      { dimensions: { country: 'JP' }, time: '2026-08-26T00:00:00.000Z', value: 9 },
+      { dimensions: { country: 'US' }, time: '2026-08-31T00:00:00.000Z', value: 12 },
+    ],
+  } },
+  meta: {
+    quality: { sampled: true, sampleRate: 0.5 },
+    queriedAt: '2026-08-28T00:00:00.000Z',
+    source: 'packed',
+    temporal: { grain: 'day' },
+  },
+} as const
+const Root = () => h('main', [
+  h(InsightStat, { data, metric: 'visits' }),
+  h(InsightLineChart, { data }),
+  h(InsightAreaChart, { data }),
+  h(InsightSparkline, { data, metric: 'visits' }),
+  h(InsightBarChart, { data, dimension: 'country', metric: 'visits' }),
+  h(InsightBreakdownTable, { data }),
+  h(InsightQualityNotice, { data: data.meta.quality }),
+])
 const html = await renderToString(createSSRApp(Root))
-if ((html.match(/<svg/g) ?? []).length !== 2 || !html.includes('insight-chart__data insight-sr-only') || !html.includes('12')) throw new Error('Packed Vue SSR failed')
+if ((html.match(/<svg/g) ?? []).length !== 3 || !html.includes('insight-chart__data insight-sr-only') || !html.includes('50% sampling')) throw new Error('Packed Vue SSR failed')
 const container = document.createElement('div'); container.innerHTML = html; document.body.append(container)
 const warnings: unknown[][] = []; const warn = console.warn; console.warn = (...args) => warnings.push(args)
 const app = createSSRApp(Root); app.mount(container); await nextTick(); console.warn = warn
-if (container.querySelectorAll('svg').length !== 2 || warnings.some(([message]) => String(message).includes('Hydration'))) {
+if (container.querySelectorAll('svg').length !== 3 || warnings.some(([message]) => String(message).includes('Hydration'))) {
   throw new Error('Packed Vue hydration failed')
 }
 app.unmount(); browser.close()

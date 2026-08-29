@@ -1,87 +1,11 @@
 export type Awaitable<T> = Promise<T> | T
 
-export interface TimeRange {
-    from: string
-    to: string
-}
-
-export type Grain = 'minute' | 'hour' | 'day' | 'week' | 'month' | 'year'
-export type FilterValue = boolean | number | string | null
-
-export type Filter =
-    | {
-          field: string
-          operator:
-              | 'eq'
-              | 'neq'
-              | 'in'
-              | 'not-in'
-              | 'contains'
-              | 'matches'
-              | 'gt'
-              | 'gte'
-              | 'lt'
-              | 'lte'
-          value: FilterValue | readonly FilterValue[]
-      }
-    | { and: readonly Filter[] }
-    | { not: Filter }
-    | { or: readonly Filter[] }
-
-export type MetricValueType =
-    | 'integer'
-    | 'number'
-    | 'duration'
-    | 'ratio'
-    | 'currency'
-    | 'position'
-    | 'score'
-
-export type MetricAggregation =
-    | 'sum'
-    | 'count'
-    | 'unique'
-    | 'approx-unique'
-    | 'mean'
-    | 'median'
-    | 'min'
-    | 'max'
-    | 'ratio'
-    | 'percentile'
-    | 'last'
-    | 'provider-defined'
-
-export type MetricRollup = 'additive' | 'derived' | 'non-additive' | 'provider-defined'
-
-export interface MetricDefinition {
-    aggregation?: MetricAggregation
-    derive?: {
-        denominator: string
-        numerator: string
-        operation: 'ratio'
-    }
-    label?: string
-    rollup?: MetricRollup
-    valueType: MetricValueType
-}
-
-export type MetricInput = MetricDefinition | MetricValueType
-
-export interface DimensionDefinition {
-    label?: string
-    valueType: 'boolean' | 'date' | 'datetime' | 'number' | 'string'
-}
-
-export type DimensionInput = DimensionDefinition | DimensionDefinition['valueType']
-export type MetricDefinitions = Readonly<Record<string, MetricInput>>
-export type DimensionDefinitions = Readonly<Record<string, DimensionInput>>
-
 export interface Warning {
     code: string
     message: string
 }
 
-export interface ReportQuality {
+export interface QueryQuality {
     approximate?: boolean
     partial?: boolean
     sampled?: boolean
@@ -90,167 +14,83 @@ export interface ReportQuality {
     warnings?: readonly Warning[]
 }
 
-export type HistoryTransformation =
-    | { kind: 'sample'; rate: number }
-    | { field: string; kind: 'filter' }
-    | { fields: readonly string[]; kind: 'omit-fields' }
-    | { kind: 'truncate'; limit: number }
-    | { grain: Grain; kind: 'aggregate' }
-    | { id: string; kind: 'custom' }
-
-export interface HistoryFidelity {
-    preservation: 'full' | 'reduced'
-    transformations: readonly HistoryTransformation[]
-}
-
-export interface HistoryFidelityBand extends HistoryFidelity {
-    range: TimeRange
-}
-
-export interface ReportMeta<TSource extends string = string> {
-    fidelity?: readonly HistoryFidelityBand[]
-    freshness?: {
-        completeThrough?: string
-        incompleteFrom?: string
-    }
-    quality: ReportQuality
-    queriedAt: string
-    source: TSource
-    temporal: {
-        bucketTimezone?: string
-        grain?: Grain
-        sourceTimezone?: string
-    }
-}
-
-export type MetricValues<TMetric extends string = string> = Readonly<Record<TMetric, number | null>>
-export type DimensionValues<TDimension extends string = string> = Readonly<
-    Record<TDimension, FilterValue>
->
-
-export interface ScalarReport<TMetric extends string = string, TSource extends string = string> {
-    kind: 'scalar'
-    meta: ReportMeta<TSource>
-    values: MetricValues<TMetric>
-}
-
-export interface SeriesPoint<TMetric extends string = string, TDimension extends string = string> {
-    dimensions?: Partial<DimensionValues<TDimension>>
-    time: string
-    values: MetricValues<TMetric>
-}
-
-export interface SeriesReport<
-    TMetric extends string = string,
-    TDimension extends string = string,
+export interface QueryResult<
+    TData,
+    TMeta extends object = Record<never, never>,
     TSource extends string = string,
 > {
-    kind: 'series'
-    meta: ReportMeta<TSource>
-    points: readonly SeriesPoint<TMetric, TDimension>[]
+    data: TData
+    meta: {
+        quality?: QueryQuality
+        queriedAt: string
+        source: TSource
+    } & TMeta
 }
 
-export interface TableRow<TMetric extends string = string, TDimension extends string = string> {
-    dimensions: DimensionValues<TDimension>
-    metrics: MetricValues<TMetric>
+export interface SourceExecutionResult<TData, TMeta extends object = Record<never, never>> {
+    data: TData
+    meta?: TMeta
+    quality?: QueryQuality
 }
 
-export interface TableReport<
-    TMetric extends string = string,
-    TDimension extends string = string,
-    TSource extends string = string,
+export interface SourceExecutionContext {
+    provider: string
+    signal?: AbortSignal
+    source: string
+}
+
+export declare const sourceResultType: unique symbol
+export declare const sourceDefinitionType: unique symbol
+
+export interface SourceDefinition<
+    TQuery = unknown,
+    TNormalized = TQuery,
+    TData = unknown,
+    TMeta extends object = Record<never, never>,
 > {
-    kind: 'table'
-    meta: ReportMeta<TSource>
-    rows: readonly TableRow<TMetric, TDimension>[]
+    readonly [sourceDefinitionType]?: {
+        data: TData
+        meta: TMeta
+        normalized: TNormalized
+        query: TQuery
+    }
+    execute(
+        query: TNormalized,
+        context: SourceExecutionContext,
+    ): Awaitable<SourceExecutionResult<TData, TMeta>>
+    key(query: TNormalized): string
+    normalize(query: TQuery): TNormalized
 }
 
-export type Report = ScalarReport | SeriesReport | TableReport
+export type SourceDefinitions = Readonly<Record<string, unknown>>
 
-export interface ResultMetadata {
-    freshness?: ReportMeta['freshness']
-    quality?: ReportQuality
-    temporal?: Omit<ReportMeta['temporal'], 'grain'>
+export interface InstrumentationSpan {
+    recordException(error: unknown): void
+    setAttribute(name: string, value: boolean | number | string): void
 }
 
-export interface SummaryResult<TMetric extends string = string> extends ResultMetadata {
-    values: MetricValues<TMetric>
+export interface Instrumentation {
+    activeTraceContext?(): { spanId: string; traceId: string } | undefined
+    run<T>(
+        name: string,
+        attributes: Readonly<Record<string, boolean | number | string>>,
+        operation: (span: InstrumentationSpan) => Awaitable<T>,
+    ): Awaitable<T>
 }
 
-export interface SeriesResult<
-    TMetric extends string = string,
-    TDimension extends string = string,
-> extends ResultMetadata {
-    points: readonly SeriesPoint<TMetric, TDimension>[]
+export interface ProviderExecutionRequest {
+    execute(): Promise<SourceExecutionResult<unknown, object>>
+    key: string
+    query: unknown
+    source: string
 }
 
-export interface BreakdownResult<
-    TMetric extends string = string,
-    TDimension extends string = string,
-> extends ResultMetadata {
-    rows: readonly TableRow<TMetric, TDimension>[]
-}
-
-export interface SnapshotResult<TMetric extends string = string> extends ResultMetadata {
-    observedAt?: string
-    values: MetricValues<TMetric>
-}
-
-export interface BaseReportQuery<TMetric extends string = string> {
-    filters?: Filter
-    metrics: readonly TMetric[]
-    range: TimeRange
-    timezone?: string
-}
-
-export interface SummaryQuery<TMetric extends string = string> extends BaseReportQuery<TMetric> {}
-
-export interface SeriesQuery<TMetric extends string = string> extends BaseReportQuery<TMetric> {
-    grain?: Grain
-}
-
-export interface BreakdownQuery<
-    TMetric extends string = string,
-    TDimension extends string = string,
-> extends BaseReportQuery<TMetric> {
-    dimensions: readonly TDimension[]
-    grain?: Grain
-    limit?: number
-}
-
-export interface SnapshotQuery<TMetric extends string = string> {
-    metrics: readonly TMetric[]
-}
-
-export type HistoryDeclaration =
-    | {
-          breakdowns?: readonly string[]
-          grain: Grain
-          metrics?: readonly string[]
-          mode: 'range'
-      }
-    | { metrics?: readonly string[]; mode: 'snapshot' }
-
-export interface ReportSourceDefinition<
-    TMetrics extends MetricDefinitions = MetricDefinitions,
-    TDimensions extends DimensionDefinitions = DimensionDefinitions,
-> {
-    breakdown?: (
-        query: BreakdownQuery<Extract<keyof TMetrics, string>, Extract<keyof TDimensions, string>>,
-    ) => Awaitable<BreakdownResult>
-    dimensions?: TDimensions
-    history?: HistoryDeclaration
-    metrics: TMetrics
-    series?: (query: SeriesQuery<Extract<keyof TMetrics, string>>) => Awaitable<SeriesResult>
-    snapshot?: (query: SnapshotQuery<Extract<keyof TMetrics, string>>) => Awaitable<SnapshotResult>
-    summary?: (query: SummaryQuery<Extract<keyof TMetrics, string>>) => Awaitable<SummaryResult>
+export interface ProviderExecutionContext {
+    signal?: AbortSignal
 }
 
 export interface Event {
-    context?: {
-        spanId?: string
-        traceId?: string
-    }
+    context?: { spanId?: string; traceId?: string }
     id: string
     name: string
     origin: 'client' | 'import' | 'server'
@@ -264,13 +104,15 @@ export interface EventDestination {
 
 export interface ProviderDefinition<
     TId extends string = string,
-    TReports extends Readonly<Record<string, ReportSourceDefinition>> = Readonly<
-        Record<string, ReportSourceDefinition>
-    >,
+    TSources extends SourceDefinitions = SourceDefinitions,
 > {
     events?: EventDestination
+    execute?(
+        requests: readonly ProviderExecutionRequest[],
+        context: ProviderExecutionContext,
+    ): Awaitable<readonly SourceExecutionResult<unknown, object>[]>
     id: TId
-    reports?: TReports
+    sources?: TSources
 }
 
 export type Provider = ProviderDefinition
@@ -309,40 +151,43 @@ export type EventProperties<
     ? { readonly [TKey in keyof TProperties]: EventPropertyValue<TProperties[TKey]> }
     : Record<never, never>
 
-export interface RuntimeReportSource {
-    definition: ReportSourceDefinition
+export interface RuntimeSource {
+    definition: SourceDefinition
     id: string
     key: string
-    provider: string
+    provider: ProviderDefinition
 }
 
-export type ReportOperation = 'breakdown' | 'series' | 'snapshot' | 'summary'
+export interface SourceRequest {
+    query: unknown
+    source: RuntimeSource
+}
+
+export interface QueryExecutionOptions {
+    signal?: AbortSignal
+}
 
 export interface HistoryRuntimeContext {
-    invoke(source: RuntimeReportSource, operation: ReportOperation, query: unknown): Promise<Report>
+    execute(
+        requests: readonly SourceRequest[],
+        options?: QueryExecutionOptions,
+    ): Promise<readonly QueryResult<unknown, object>[]>
+    instrumentation?: Instrumentation
     now(): Date
-    sources: readonly RuntimeReportSource[]
+    sources: readonly RuntimeSource[]
 }
 
-export interface HistoryController {
-    capture(options?: { sources?: readonly string[] }): Promise<{ captured: number }>
-    sync(options: {
-        range: TimeRange
-        sources?: readonly string[]
-    }): Promise<{ fetched: number; skipped: number }>
-}
-
-export interface HistoryRuntime extends HistoryController {
+export type HistoryRuntime<TController extends object = object> = TController & {
+    handles(source: RuntimeSource, query: unknown): boolean
     query(
-        source: RuntimeReportSource,
-        operation: ReportOperation,
+        source: RuntimeSource,
         query: unknown,
-        live: () => Promise<Report>,
-    ): Promise<Report>
+        live: () => Promise<QueryResult<unknown, object>>,
+    ): Promise<QueryResult<unknown, object>>
 }
 
-export interface HistoryExtension {
-    attach(context: HistoryRuntimeContext): HistoryRuntime
+export interface HistoryExtension<TController extends object = object> {
+    attach(context: HistoryRuntimeContext): HistoryRuntime<TController>
 }
 
 export interface CreateInsightOptions<
@@ -350,102 +195,76 @@ export interface CreateInsightOptions<
     TProviders extends readonly ProviderDefinition[] = readonly ProviderDefinition[],
 > extends InsightSchema<TEvents> {
     history?: HistoryExtension
+    instrumentation?: Instrumentation
     now?: () => Date
     providers: TProviders
 }
 
 type ProviderUnion<TProviders extends readonly ProviderDefinition[]> = TProviders[number]
 
-export type ReportSourceId<TProviders extends readonly ProviderDefinition[]> =
+export type SourceId<TProviders extends readonly ProviderDefinition[]> =
     ProviderUnion<TProviders> extends infer TProvider
         ? TProvider extends {
               id: infer TId extends string
-              reports?: infer TReports extends Readonly<Record<string, ReportSourceDefinition>>
+              sources?: infer TSources extends SourceDefinitions
           }
-            ? `${TId}.${Extract<keyof TReports, string>}`
+            ? `${TId}.${Extract<keyof TSources, string>}`
             : never
         : never
 
 type SourceForProvider<TProvider, TSource extends string> = TProvider extends {
     id: infer TId extends string
-    reports?: infer TReports extends Readonly<Record<string, ReportSourceDefinition>>
+    sources?: infer TSources extends SourceDefinitions
 }
     ? TSource extends `${TId}.${infer TKey}`
-        ? TKey extends keyof TReports
-            ? TReports[TKey]
+        ? TKey extends keyof TSources
+            ? TSources[TKey]
             : never
         : never
     : never
 
-export type ReportSourceFor<
+export type SourceFor<
     TProviders extends readonly ProviderDefinition[],
-    TSource extends ReportSourceId<TProviders>,
+    TSource extends SourceId<TProviders>,
 > = SourceForProvider<ProviderUnion<TProviders>, TSource>
 
-type MetricKey<TSource> = TSource extends { metrics: infer TMetrics }
-    ? Extract<keyof TMetrics, string>
+type SourceTypes<TSource> = TSource extends object
+    ? typeof sourceDefinitionType extends keyof TSource
+        ? NonNullable<TSource[typeof sourceDefinitionType]>
+        : never
     : never
+export type QueryOf<TSource> = SourceTypes<TSource> extends { query: infer TQuery } ? TQuery : never
+export type NormalizedQueryOf<TSource> =
+    SourceTypes<TSource> extends {
+        normalized: infer TNormalized
+    }
+        ? TNormalized
+        : never
+export type DataOf<TSource> = SourceTypes<TSource> extends { data: infer TData } ? TData : never
+export type MetaOf<TSource> =
+    SourceTypes<TSource> extends { meta: infer TMeta extends object } ? TMeta : never
 
-type DimensionKey<TSource> = TSource extends { dimensions?: infer TDimensions }
-    ? Extract<keyof NonNullable<TDimensions>, string>
-    : never
+type DataForQuery<TSource, TQuery> = TSource extends object
+    ? typeof sourceResultType extends keyof TSource
+        ? NonNullable<TSource[typeof sourceResultType]> extends (query: TQuery) => infer TData
+            ? TData
+            : DataOf<TSource>
+        : DataOf<TSource>
+    : DataOf<TSource>
 
-type SummaryClient<TSource, TSourceId extends string> = TSource extends {
-    summary: (...arguments_: never[]) => unknown
+export interface QueryDescriptor<TResult extends QueryResult<unknown, object>> {
+    readonly result?: TResult
 }
-    ? {
-          summary<const TMetrics extends readonly MetricKey<TSource>[]>(
-              query: SummaryQuery<TMetrics[number]> & { metrics: TMetrics },
-          ): Promise<ScalarReport<TMetrics[number], TSourceId>>
-      }
-    : {}
 
-type SeriesClient<TSource, TSourceId extends string> = TSource extends {
-    series: (...arguments_: never[]) => unknown
+export type QuerySelection = Readonly<Record<string, QueryDescriptor<QueryResult<unknown, object>>>>
+export type QuerySelectionResult<TSelection extends QuerySelection> = {
+    readonly [TKey in keyof TSelection]: NonNullable<TSelection[TKey]['result']>
 }
-    ? {
-          series<const TMetrics extends readonly MetricKey<TSource>[]>(
-              query: SeriesQuery<TMetrics[number]> & { metrics: TMetrics },
-          ): Promise<SeriesReport<TMetrics[number], DimensionKey<TSource>, TSourceId>>
-      }
-    : TSource extends { history: { mode: 'snapshot' } }
-      ? {
-            series<const TMetrics extends readonly MetricKey<TSource>[]>(
-                query: SeriesQuery<TMetrics[number]> & { metrics: TMetrics },
-            ): Promise<SeriesReport<TMetrics[number], DimensionKey<TSource>, TSourceId>>
-        }
-      : {}
 
-type BreakdownClient<TSource, TSourceId extends string> = TSource extends {
-    breakdown: (...arguments_: never[]) => unknown
+export interface SourceCatalogEntry {
+    id: string
+    provider: string
 }
-    ? {
-          breakdown<
-              const TMetrics extends readonly MetricKey<TSource>[],
-              const TDimensions extends readonly DimensionKey<TSource>[],
-          >(
-              query: BreakdownQuery<TMetrics[number], TDimensions[number]> & {
-                  dimensions: TDimensions
-                  metrics: TMetrics
-              },
-          ): Promise<TableReport<TMetrics[number], TDimensions[number], TSourceId>>
-      }
-    : {}
-
-type SnapshotClient<TSource, TSourceId extends string> = TSource extends {
-    snapshot: (...arguments_: never[]) => unknown
-}
-    ? {
-          snapshot<const TMetrics extends readonly MetricKey<TSource>[]>(
-              query: SnapshotQuery<TMetrics[number]> & { metrics: TMetrics },
-          ): Promise<ScalarReport<TMetrics[number], TSourceId>>
-      }
-    : {}
-
-export type ReportsClient<TSource, TSourceId extends string> = SummaryClient<TSource, TSourceId> &
-    SeriesClient<TSource, TSourceId> &
-    BreakdownClient<TSource, TSourceId> &
-    SnapshotClient<TSource, TSourceId>
 
 type TrackArguments<
     TSchema extends InsightSchema,
@@ -454,22 +273,32 @@ type TrackArguments<
     ? []
     : [properties: EventProperties<TSchema, TName>]
 
-export interface SourceCatalogEntry {
-    dimensions: readonly string[]
-    history?: HistoryDeclaration
-    id: string
-    metrics: readonly string[]
-    operations: readonly ReportOperation[]
-    provider: string
+export interface QueryBuilder<TProviders extends readonly ProviderDefinition[]> {
+    source<
+        TSource extends SourceId<TProviders>,
+        const TQuery extends QueryOf<SourceFor<TProviders, TSource>>,
+    >(
+        source: TSource,
+        query: TQuery,
+    ): QueryDescriptor<
+        QueryResult<
+            DataForQuery<SourceFor<TProviders, TSource>, TQuery>,
+            MetaOf<SourceFor<TProviders, TSource>>,
+            TSource
+        >
+    >
 }
 
 export type InsightClient<TOptions extends CreateInsightOptions> = {
-    reports<TSource extends ReportSourceId<TOptions['providers']>>(
-        source: TSource,
-    ): ReportsClient<ReportSourceFor<TOptions['providers'], TSource>, TSource>
+    query<const TSelection extends QuerySelection>(
+        select: (query: QueryBuilder<TOptions['providers']>) => TSelection,
+        options?: QueryExecutionOptions,
+    ): Promise<QuerySelectionResult<TSelection>>
     sources(): readonly SourceCatalogEntry[]
     track<TName extends EventName<TOptions>>(
         name: TName,
         ...arguments_: TrackArguments<TOptions, TName>
     ): Promise<void>
-} & (TOptions extends { history: HistoryExtension } ? { history: HistoryController } : {})
+} & (TOptions extends { history: HistoryExtension<infer TController> }
+    ? { history: TController }
+    : {})

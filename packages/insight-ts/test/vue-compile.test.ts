@@ -11,6 +11,9 @@ const components = [
     'InsightLineChart.vue',
     'InsightAreaChart.vue',
     'InsightBreakdownTable.vue',
+    'InsightBarChart.vue',
+    'InsightSparkline.vue',
+    'InsightQualityNotice.vue',
 ] as const
 const fs = { fileExists: existsSync, readFile: (path: string) => readFileSync(path, 'utf8') }
 

@@ -1,50 +1,35 @@
 import type {
-    BreakdownQuery,
-    Filter,
+    CanonicalWhere,
     Grain,
-    ReportOperation,
-    SeriesQuery,
-    SummaryQuery,
+    NormalizedMetricQuery,
     TimeRange,
-} from '../../core/types.ts'
+} from '../../metrics/index.ts'
 
-type ProviderReportQuery = BreakdownQuery | SeriesQuery | SummaryQuery
-
-export interface ResolvedReportQuery {
+export interface ResolvedMetricQuery {
     dimensions: readonly string[]
-    filters?: Filter
     grain: Grain | 'auto'
     limit?: number
     metrics: readonly string[]
     range: TimeRange
     source: string
     timezone: string
+    where?: CanonicalWhere
 }
 
-export const resolvedReportQuery = (
+export const resolvedMetricQuery = (
     source: string,
-    operation: Exclude<ReportOperation, 'snapshot'>,
-    query: ProviderReportQuery,
+    query: NormalizedMetricQuery,
     timeDimension: string,
-): ResolvedReportQuery => ({
-    ...(query.filters ? { filters: query.filters } : {}),
-    ...('limit' in query && query.limit !== undefined ? { limit: query.limit } : {}),
-    dimensions:
-        operation === 'series'
-            ? [timeDimension]
-            : operation === 'breakdown' && 'dimensions' in query
-              ? query.dimensions
-              : [],
-    grain:
-        operation === 'series'
-            ? 'grain' in query
-                ? (query.grain ?? 'day')
-                : 'day'
-            : 'grain' in query
-              ? (query.grain ?? 'auto')
-              : 'auto',
+): ResolvedMetricQuery => ({
+    dimensions: [
+        ...(query.grain === 'auto' ? [] : [timeDimension]),
+        ...query.dimensions.filter((dimension) => dimension !== timeDimension),
+    ],
+    grain: query.grain,
+    ...(query.limit === undefined ? {} : { limit: query.limit }),
     metrics: query.metrics,
-    range: query.range,
+    range: query.time,
     source,
-    timezone: query.timezone ?? 'UTC',
+    timezone: query.timezone,
+    ...(query.where ? { where: query.where } : {}),
 })

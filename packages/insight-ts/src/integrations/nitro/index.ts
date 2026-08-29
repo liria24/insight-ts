@@ -1,7 +1,7 @@
 import type { HistoryCoverage, HistoryRepository, HistorySegment } from '../../history/index.ts'
 
 const mount = 'insight'
-const prefix = 'history:v1'
+const prefix = 'history:v2'
 
 export interface NitroStorage {
     getItem(key: string): Promise<unknown>
@@ -33,7 +33,7 @@ export const createNitroHistoryRepository = (storage: NitroStorage): HistoryRepo
 
 export const configureNitroHistory = (
     nitroConfig: unknown,
-    tasks?: { captureHandler: string; syncHandler: string },
+    tasks?: { syncHandler: string },
 ): void => {
     const config = record(nitroConfig, 'Nitro config')
     const storage = isRecord(config.storage) ? config.storage : undefined
@@ -52,10 +52,6 @@ export const configureNitroHistory = (
     configuredTasks['insight:history:sync'] ??= {
         description: 'Synchronize missing Insight History ranges',
         handler: tasks.syncHandler,
-    }
-    configuredTasks['insight:history:capture'] ??= {
-        description: 'Capture Insight snapshot sources',
-        handler: tasks.captureHandler,
     }
 }
 
@@ -87,17 +83,15 @@ const isRecord = (value: unknown): value is Record<string, unknown> =>
 
 const isHistorySegment = (value: unknown): value is HistorySegment => {
     if (!isRecord(value) || !isRecord(value.range) || !isRecord(value.fidelity)) return false
-    if (!isRecord(value.report) || !isRecord(value.report.meta)) return false
+    if (!isRecord(value.data) || !isRecord(value.meta)) return false
     return (
         typeof value.id === 'string' &&
         typeof value.source === 'string' &&
         typeof value.observedAt === 'string' &&
-        value.schemaVersion === 1 &&
+        value.schemaVersion === 2 &&
         typeof value.range.from === 'string' &&
         typeof value.range.to === 'string' &&
         (value.fidelity.preservation === 'full' || value.fidelity.preservation === 'reduced') &&
-        Array.isArray(value.fidelity.transformations) &&
-        value.report.kind === 'series' &&
-        Array.isArray(value.report.points)
+        Array.isArray(value.fidelity.transformations)
     )
 }

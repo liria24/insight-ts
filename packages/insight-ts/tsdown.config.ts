@@ -13,6 +13,7 @@ export default defineConfig({
     deps: {
         onlyImport: [
             '@tanstack/charts',
+            '@opentelemetry/api',
             'd3-shape',
             'node:fs',
             'node:path',
@@ -31,8 +32,10 @@ export default defineConfig({
         'google-search-console': 'src/providers/google-search-console/index.ts',
         history: 'src/history/index.ts',
         index: 'src/core/index.ts',
+        metrics: 'src/metrics/index.ts',
         nitro: 'src/integrations/nitro/index.ts',
         nuxt: 'src/integrations/nuxt/index.ts',
+        opentelemetry: 'src/integrations/opentelemetry/index.ts',
         provider: 'src/core/provider.ts',
         'ui-core': 'src/ui-core/index.ts',
         vue: 'src/integrations/vue/index.ts',

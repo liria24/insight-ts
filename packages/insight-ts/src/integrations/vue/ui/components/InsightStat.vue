@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed } from 'vue'
 
-import type { ReportQuality } from '../../../../core/types.ts'
+import type { QueryQuality } from '../../../../core/types.ts'
 import {
     createDataNotices,
     createStatModel,
@@ -26,7 +26,7 @@ defineSlots<{
     notices(properties: {
         messages: readonly string[]
         notices: readonly DataNotice[]
-        quality: ReportQuality
+        quality: QueryQuality | undefined
     }): unknown
     value(properties: { formatted: string; metric: string; value: number }): unknown
 }>()
@@ -38,18 +38,17 @@ const ui = computed<Required<InsightStatUI>>(() => ({
     root: resolveInsightUIClass('insight-stat', props.ui?.root),
     value: resolveInsightUIClass('insight-stat__value', props.ui?.value),
 }))
-const selection = computed(() => createStatModel(props.report, props.metric))
+const selection = computed(() => createStatModel(props.data, props.metric))
 const label = computed(() => props.label ?? formatMetricName(props.metric))
 const value = computed(() => selection.value?.value ?? undefined)
 const formatted = computed(() =>
     value.value === undefined
         ? ''
-        : formatNumber(value.value, props.locale, props.maximumFractionDigits),
+        : (props.formatter?.(value.value) ??
+          formatNumber(value.value, props.locale, props.maximumFractionDigits)),
 )
-const notices = computed(() => createDataNotices(props.report.meta))
-const messages = computed(() =>
-    notices.value.map((notice) => formatDataNotice(notice, props.locale)),
-)
+const notices = computed(() => createDataNotices(props.data.meta.quality))
+const messages = computed(() => notices.value.map(formatDataNotice))
 </script>
 
 <template>
@@ -73,7 +72,7 @@ const messages = computed(() =>
                 name="notices"
                 :messages
                 :notices
-                :quality="props.report.meta.quality"
+                :quality="props.data.meta.quality"
             >
                 <p aria-live="polite" :class="ui.notices" data-slot="notices" role="status">
                     {{ messages.join(' \u00b7 ') }}

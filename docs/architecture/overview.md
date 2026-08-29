@@ -1,44 +1,49 @@
 # Architecture overview
 
-Core is the dependency root for reports and History. The current modules form independent branches
-rather than one linear Integration/Adapter stack:
+Core is the generic execution root. The project has independent branches rather than a mandatory
+Integration/Adapter stack:
 
 ```text
-Providers ───────────────┐
-History ─────────────────┼──> Core
-UI Core ─────────────────┘
+Provider implementations ───────────────┐
+Metric helpers ─────────────────────────┤
+History ────────────────────────────────┼──> Core generic Source execution
+OpenTelemetry adapter ──────────────────┤
+UI Core ──> Metric helpers + Core ──────┘
 Nitro ──> History
 Nuxt ──> Nitro + Core/Provider runtime wiring
-Vue ──> Browser Integration
-Vue UI ──> UI Core + Core + private renderer
+Vue UI ──> UI Core + private renderer
 ```
 
-Core defines capability contracts, typed Report Sources, report metadata, rollup safety, and
-History extension semantics. Provider implementations validate native capability before I/O and
-translate Source queries into provider-native requests. Integrations connect only the host
-primitives they own without promoting those primitives into Core.
+Core knows `Provider`, `Source<TQuery, TNormalized, TData, TMeta>`, `QueryResult`, cross-cutting
+`QueryQuality`, events, and a generic instrumentation port. It never classifies Source data as
+analytics, metrics, logs, traces, profiles, funnels, or billing. A Source owns query semantics,
+normalization, its exact dedupe key, execution, and result metadata. Core owns lazy multi-Source
+selection, Provider grouping, bounded execution, dedupe, abort, and result envelopes.
 
-The public package surface mirrors these boundaries:
+The public package surface mirrors the boundaries:
 
-- `insight-ts` contains Core contracts and execution.
-- Provider subpaths contain Provider factories and their native request translation.
-- `insight-ts/provider` contains the custom `defineProvider()` extension helper.
-- `insight-ts/history` contains the History Engine, reductions, and small Repository contract.
-- `insight-ts/nitro` connects Nitro Storage and opt-in Nitro Tasks without importing H3.
-- `insight-ts/nuxt` composes the Nitro Integration and adds only Nuxt configuration and DX.
-- `insight-ts/ui-core` contains framework- and renderer-independent UI models.
+- `insight-ts` contains generic Core contracts and execution.
+- `insight-ts/provider` contains `defineSource()` and `defineProvider()`.
+- `insight-ts/metrics` contains structured Metric semantics and typed `where` helpers.
+- Provider subpaths contain native request translation and validation.
+- `insight-ts/history` contains the Metric History strategy and small Repository contract.
+- `insight-ts/opentelemetry` adapts Core instrumentation to the optional OTel API.
+- `insight-ts/nitro` connects Nitro Storage and opt-in sync tasks without importing H3.
+- `insight-ts/nuxt` composes Nitro and adds Nuxt configuration and DX.
+- `insight-ts/ui-core` contains Metric result models without framework or renderer APIs.
 - `insight-ts/vue` contains optional Vue browser-client integration.
-- `insight-ts/vue/ui` contains optional report-only Vue components.
+- `insight-ts/vue/ui` contains optional Metric result components.
 
-UI Core depends only on Core report contracts. Vue UI depends on UI Core and treats TanStack
-Charts as a private renderer. Core, browser, History, Nitro, Nuxt, UI Core, and the Vue integration
-entry do not reach the renderer or UI stylesheet.
+Provider implementations validate native capability before network I/O. Their external I/O may
+scale with compatible request groups, never rows, points, metrics, or dimension values. Analytics
+and product Sources do not adopt OTel semantics; observability Sources use OTel semantic
+conventions and UCUM units where applicable without using OTel as storage or query shape.
 
-Providers are optional capability collections. Implemented Report Sources expose only the
-operations they support: `summary`, `series`, `breakdown`, or `snapshot`. Source IDs derive from
-the Provider ID and Source key. Provider-native query languages remain explicit escape hatches.
+History consumes an optional Metric Source strategy. It owns coverage gaps, normal execution
+fetches, composition, safe rollup, reduction, Fidelity, and idempotent segments. Repositories only
+report coverage and read or write segments. Nitro supplies the `storage.insight` mount. History is
+historical materialization, not a persistent query-result cache.
 
-History consumes Source-owned schema, query, rollup, freshness, and History declarations. The
-Engine owns planning, gaps, composition, reduction, fidelity, and idempotency; a Repository only
-reports coverage and reads or writes segments. Nitro supplies the well-known `storage.insight`
-mount. History is historical materialization, not a result cache.
+UI Core depends on Core and Metric contracts. Vue UI treats TanStack Charts as private and accepts
+already queried `data`. Source-owned logs, traces, funnels, and billing use application-local
+renderers until stable contracts justify dedicated public UI.

@@ -1,4 +1,5 @@
-import { InsightError } from 'insight-ts'
+import { InsightError, ProviderError } from 'insight-ts'
+import { cloudflareWebAnalytics } from 'insight-ts/cloudflare'
 
 export default defineCachedEventHandler(
     async (event) => {
@@ -11,42 +12,31 @@ export default defineCachedEventHandler(
                 statusMessage: error instanceof Error ? error.message : 'Invalid demo range',
             })
         }
-        try {
-            const insight = useInsight()
-            const traffic = insight.reports('cloudflare.webAnalytics')
-            const now = new Date()
-            const [summary, series, online] = await Promise.all([
-                traffic.summary({ metrics: ['pageViews', 'visits'], range: query.range }),
-                traffic.series({
-                    grain: query.grain,
-                    metrics: ['pageViews', 'visits'],
-                    range: query.range,
-                }),
-                traffic
-                    .summary({
-                        metrics: ['activeUsers'],
-                        range: {
-                            from: new Date(now.valueOf() - 5 * 60 * 1000).toISOString(),
-                            to: now.toISOString(),
-                        },
-                    })
-                    .then(({ values }: { values: Readonly<Record<string, number | null>> }) =>
-                        typeof values.activeUsers === 'number' ? values.activeUsers : 0,
-                    )
-                    .catch((error: unknown) => {
-                        if (isUnavailableDemoProvider(error)) return 0
-                        throw error
+
+        const now = new Date()
+        const config = useRuntimeConfig().cloudflare
+        if (config.accountId && config.apiToken && config.siteTag) {
+            try {
+                return await executeDemoQuery(
+                    cloudflareWebAnalytics({
+                        accountId: config.accountId,
+                        apiToken: config.apiToken,
+                        host: config.host,
+                        siteTag: config.siteTag,
                     }),
-            ])
-            return { online, series, summary }
-        } catch (error) {
-            if (isUnavailableDemoProvider(error)) return createDemoFixture(query)
-            throw error
+                    query,
+                    now,
+                )
+            } catch (error) {
+                if (!isUnavailableDemoProvider(error)) throw error
+            }
         }
+        return createDemoFixture(query, now)
     },
     { maxAge: 4 * 60 * 60 },
 )
 
 const isUnavailableDemoProvider = (error: unknown): boolean =>
-    error instanceof InsightError &&
-    (error.code === 'SOURCE_NOT_FOUND' || error.code === 'CONFIGURATION_MISSING')
+    error instanceof ProviderError ||
+    (error instanceof InsightError &&
+        (error.code === 'SOURCE_NOT_FOUND' || error.code === 'CONFIGURATION_MISSING'))

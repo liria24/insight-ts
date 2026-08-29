@@ -1,4 +1,4 @@
-const publicUrl = 'https://analytics.liria.me'
+const publicUrl = 'https://insight.liria.me'
 
 export default defineNuxtConfig({
     future: { compatibilityVersion: 5 },
@@ -21,7 +21,7 @@ export default defineNuxtConfig({
         cloudflare: {
             accountId: '',
             apiToken: '',
-            host: 'analytics.liria.me',
+            host: 'insight.liria.me',
             siteTag: '',
         },
     },
@@ -30,7 +30,7 @@ export default defineNuxtConfig({
         preset: 'cloudflare_module',
         cloudflare: {
             wrangler: {
-                name: 'liria-analytics-docs',
+                name: 'insight-ts-docs',
                 assets: {
                     binding: 'ASSETS',
                     directory: '.output/public',
@@ -53,7 +53,7 @@ export default defineNuxtConfig({
                 },
                 routes: [
                     {
-                        pattern: 'analytics.liria.me',
+                        pattern: 'insight.liria.me',
                         custom_domain: true,
                     },
                 ],

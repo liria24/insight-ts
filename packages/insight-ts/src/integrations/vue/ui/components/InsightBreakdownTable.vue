@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed } from 'vue'
 
-import type { ReportQuality, TableRow } from '../../../../core/types.ts'
+import type { QueryQuality } from '../../../../core/types.ts'
 import {
     createBreakdownModel,
     createDataNotices,
@@ -10,6 +10,7 @@ import {
     formatTableCell,
     tableCellValue,
     type DataNotice,
+    type MetricTableRow,
 } from '../../../../ui-core/index.ts'
 import {
     resolveInsightUIClass,
@@ -38,7 +39,7 @@ defineSlots<{
     notices(properties: {
         messages: readonly string[]
         notices: readonly DataNotice[]
-        quality: ReportQuality
+        quality: QueryQuality | undefined
     }): unknown
 }>()
 
@@ -53,32 +54,25 @@ const ui = computed<Required<InsightBreakdownTableUI>>(() => ({
     row: resolveInsightUIClass('insight-breakdown-table__row', props.ui?.row),
     table: resolveInsightUIClass('insight-breakdown-table__table', props.ui?.table),
 }))
-const model = computed(() =>
-    createBreakdownModel(props.report, {
-        ...(props.dimensions ? { dimensions: props.dimensions } : {}),
-        ...(props.metrics ? { metrics: props.metrics } : {}),
-    }),
-)
+const model = computed(() => createBreakdownModel(props.data))
 const dimensions = computed(() => model.value.dimensions)
 const metrics = computed(() => model.value.metrics)
 const headers = computed(() => [...dimensions.value, ...metrics.value])
-const notices = computed(() => createDataNotices(props.report.meta))
-const messages = computed(() =>
-    notices.value.map((notice) => formatDataNotice(notice, props.locale)),
-)
+const notices = computed(() => createDataNotices(props.data.meta.quality))
+const messages = computed(() => notices.value.map(formatDataNotice))
 const isEmpty = computed(
-    () => props.report.rows.length === 0 || dimensions.value.length + metrics.value.length === 0,
+    () => model.value.rows.length === 0 || dimensions.value.length + metrics.value.length === 0,
 )
 
 function valueFor(
-    row: TableRow,
+    row: MetricTableRow,
     column: string,
     kind: 'dimension' | 'metric',
 ): boolean | number | string | null {
     return tableCellValue(column, kind === 'dimension' ? row.dimensions : row.metrics)
 }
 
-function formattedValue(row: TableRow, column: string, kind: 'dimension' | 'metric'): string {
+function formattedValue(row: MetricTableRow, column: string, kind: 'dimension' | 'metric'): string {
     return formatTableCell(valueFor(row, column, kind), props.locale, props.maximumFractionDigits)
 }
 </script>
@@ -116,7 +110,7 @@ function formattedValue(row: TableRow, column: string, kind: 'dimension' | 'metr
                 </thead>
                 <tbody :class="ui.body" data-slot="body">
                     <tr
-                        v-for="(row, rowIndex) in props.report.rows"
+                        v-for="(row, rowIndex) in model.rows"
                         :key="rowIndex"
                         :class="ui.row"
                         data-slot="row"
@@ -164,7 +158,7 @@ function formattedValue(row: TableRow, column: string, kind: 'dimension' | 'metr
                 name="notices"
                 :messages
                 :notices
-                :quality="props.report.meta.quality"
+                :quality="props.data.meta.quality"
             >
                 <p aria-live="polite" :class="ui.notices" data-slot="notices" role="status">
                     {{ messages.join(' \u00b7 ') }}

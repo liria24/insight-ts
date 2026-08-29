@@ -16,7 +16,8 @@ export default defineAppConfig({
         title: 'Insight.ts',
     },
     seo: {
-        description: 'Typed insights across analytics, observability, and application data.',
+        description:
+            'Runtime-neutral TypeScript SDK for analytics, observability, and application data—with Provider semantics intact.',
         title: 'Insight.ts',
         titleTemplate: '%s | Insight.ts',
     },
