@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import type { MetricQueryResult } from 'insight-ts/ui-core'
 import {
     InsightAreaChart,
     InsightBarChart,
@@ -25,6 +26,11 @@ const statUi = {
     label: 'text-xs font-medium uppercase tracking-wide text-muted',
     value: 'mt-2 text-3xl font-semibold tabular-nums tracking-tight text-highlighted',
 } as const
+
+const selectMetric = (data: MetricQueryResult, metric: string): MetricQueryResult => ({
+    data: data.data[metric] ? { [metric]: data.data[metric] } : {},
+    meta: data.meta,
+})
 </script>
 
 <template>
@@ -52,11 +58,8 @@ const statUi = {
             <section aria-labelledby="demo-overview" class="space-y-4">
                 <div class="flex items-end justify-between gap-4">
                     <div>
-                        <p class="text-xs font-medium uppercase tracking-wider text-primary">
+                        <h2 class="text-xs font-medium uppercase tracking-wider text-primary">
                             Overview
-                        </p>
-                        <h2 id="demo-overview" class="text-2xl font-semibold text-highlighted">
-                            One typed query, several domains
                         </h2>
                     </div>
                     <span class="text-sm text-muted">{{ data.online }} online</span>
@@ -67,14 +70,12 @@ const statUi = {
                     >
                         <InsightStat
                             class="p-5"
-                            :data="data.analytics.trafficSummary"
-                            metric="pageViews"
+                            :data="selectMetric(data.analytics.trafficSummary, 'pageViews')"
                             :ui="statUi"
                         />
                         <InsightStat
                             class="p-5"
-                            :data="data.analytics.trafficSummary"
-                            metric="visits"
+                            :data="selectMetric(data.analytics.trafficSummary, 'visits')"
                             :ui="statUi"
                         />
                         <div class="p-5">
@@ -86,8 +87,7 @@ const statUi = {
                                     data.online
                                 }}</strong>
                                 <InsightSparkline
-                                    :data="data.analytics.trafficSeries"
-                                    metric="visits"
+                                    :data="selectMetric(data.analytics.trafficSeries, 'visits')"
                                 />
                             </div>
                         </div>
@@ -111,11 +111,8 @@ const statUi = {
             <template v-if="!compact">
                 <section aria-labelledby="demo-analytics" class="space-y-4">
                     <div>
-                        <p class="text-xs font-medium uppercase tracking-wider text-primary">
+                        <h2 class="text-xs font-medium uppercase tracking-wider text-primary">
                             Analytics
-                        </p>
-                        <h2 id="demo-analytics" class="text-2xl font-semibold text-highlighted">
-                            Cloudflare and Search Console semantics
                         </h2>
                     </div>
                     <div class="grid gap-5 xl:grid-cols-2">
@@ -123,11 +120,7 @@ const statUi = {
                             <h3 class="mb-5 font-semibold text-highlighted">
                                 Web Analytics breakdowns
                             </h3>
-                            <InsightBarChart
-                                :data="data.analytics.topPages"
-                                dimension="path"
-                                metric="pageViews"
-                            />
+                            <InsightBarChart :data="data.analytics.topPages" dimension="path" />
                             <div class="mt-6 grid gap-5 md:grid-cols-2">
                                 <InsightBreakdownTable :data="data.analytics.countries" />
                                 <InsightBreakdownTable :data="data.analytics.devices" />
@@ -139,13 +132,13 @@ const statUi = {
                         <UCard variant="subtle">
                             <div class="grid grid-cols-2 gap-4">
                                 <InsightStat
-                                    :data="data.analytics.searchSummary"
-                                    metric="clicks"
+                                    :data="selectMetric(data.analytics.searchSummary, 'clicks')"
                                     :ui="statUi"
                                 />
                                 <InsightStat
-                                    :data="data.analytics.searchSummary"
-                                    metric="impressions"
+                                    :data="
+                                        selectMetric(data.analytics.searchSummary, 'impressions')
+                                    "
                                     :ui="statUi"
                                 />
                             </div>
@@ -165,33 +158,26 @@ const statUi = {
 
                 <section aria-labelledby="demo-product" class="space-y-4">
                     <div>
-                        <p class="text-xs font-medium uppercase tracking-wider text-primary">
+                        <h2 class="text-xs font-medium uppercase tracking-wider text-primary">
                             Product &amp; Revenue
-                        </p>
-                        <h2 id="demo-product" class="text-2xl font-semibold text-highlighted">
-                            Application-owned metrics stay application-owned
                         </h2>
                     </div>
                     <div class="grid gap-5 xl:grid-cols-3">
-                        <UCard variant="subtle"
-                            ><InsightStat
-                                :data="data.product.summary"
-                                metric="signups"
+                        <UCard variant="subtle">
+                            <InsightStat
+                                :data="selectMetric(data.product.summary, 'signups')"
                                 :ui="statUi"
-                        /></UCard>
-                        <UCard variant="subtle"
-                            ><InsightStat
-                                :data="data.product.summary"
-                                metric="activeTeams"
+                            />
+                        </UCard>
+                        <UCard variant="subtle">
+                            <InsightStat
+                                :data="selectMetric(data.product.summary, 'activeTeams')"
                                 :ui="statUi"
-                        /></UCard>
+                            />
+                        </UCard>
                         <UCard class="xl:row-span-2" variant="subtle">
                             <h3 class="mb-5 font-semibold text-highlighted">MRR by plan</h3>
-                            <InsightBarChart
-                                :data="data.product.revenue"
-                                dimension="plan"
-                                metric="mrr"
-                            />
+                            <InsightBarChart :data="data.product.revenue" dimension="plan" />
                         </UCard>
                         <UCard class="xl:col-span-2" variant="subtle">
                             <InsightAreaChart
@@ -215,18 +201,15 @@ const statUi = {
                     <UCard variant="subtle">
                         <div class="grid gap-5 sm:grid-cols-3">
                             <InsightStat
-                                :data="data.observability.summary"
-                                metric="requestRate"
+                                :data="selectMetric(data.observability.summary, 'requestRate')"
                                 :ui="statUi"
                             />
                             <InsightStat
-                                :data="data.observability.summary"
-                                metric="errorRate"
+                                :data="selectMetric(data.observability.summary, 'errorRate')"
                                 :ui="statUi"
                             />
                             <InsightStat
-                                :data="data.observability.summary"
-                                metric="latencyP95"
+                                :data="selectMetric(data.observability.summary, 'latencyP95')"
                                 :ui="statUi"
                             />
                         </div>
@@ -245,14 +228,11 @@ const statUi = {
 
                 <section aria-labelledby="demo-data" class="space-y-4">
                     <div>
-                        <p class="text-xs font-medium uppercase tracking-wider text-primary">
+                        <h2 class="text-xs font-medium uppercase tracking-wider text-primary">
                             Data &amp; Execution
-                        </p>
-                        <h2 id="demo-data" class="text-2xl font-semibold text-highlighted">
-                            Source-owned results in the same execution
                         </h2>
                     </div>
-                    <DemoOwnedSourceResults :data="data" />
+                    <DemoOwnedSourceResults :data />
                     <UCard variant="subtle">
                         <p class="text-sm text-muted">
                             Queried {{ data.execution.sources.length }} Sources at
@@ -264,8 +244,9 @@ const statUi = {
                                 :key="source"
                                 color="neutral"
                                 variant="subtle"
-                                >{{ source }}</UBadge
                             >
+                                {{ source }}
+                            </UBadge>
                         </div>
                     </UCard>
                 </section>

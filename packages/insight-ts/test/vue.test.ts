@@ -14,9 +14,13 @@ import {
     InsightStat,
     type InsightAreaChartProps,
     type InsightBarChartProps,
+    type InsightBarChartUI,
     type InsightBreakdownTableProps,
     type InsightLineChartProps,
+    type InsightQualityNoticeProps,
+    type InsightQualityNoticeUI,
     type InsightSparklineProps,
+    type InsightSparklineUI,
     type InsightStatProps,
     type InsightUIClass,
 } from '../src/integrations/vue/ui/index.ts'
@@ -75,19 +79,19 @@ describe('Vue integration', () => {
     })
 
     it('uses data-only Metric Source props with inferred selections', () => {
-        expectTypeOf<InsightStatProps<typeof data>['metric']>().toEqualTypeOf<
-            'pageViews' | 'visits'
-        >()
-        expectTypeOf<InsightSparklineProps<typeof data>['metric']>().toEqualTypeOf<
-            'pageViews' | 'visits'
-        >()
-        expectTypeOf<InsightBarChartProps<typeof data>['metric']>().toEqualTypeOf<
-            'pageViews' | 'visits'
-        >()
+        expectTypeOf<InsightStatProps>().not.toHaveProperty('metric')
+        expectTypeOf<InsightSparklineProps>().not.toHaveProperty('metric')
+        expectTypeOf<InsightBarChartProps<typeof data>>().not.toHaveProperty('metric')
+        expectTypeOf<InsightBarChartProps<typeof data>['dimension']>().toEqualTypeOf<'country'>()
         expectTypeOf<InsightLineChartProps['data']>().toEqualTypeOf<MetricQueryResult>()
         expectTypeOf<InsightAreaChartProps['data']>().toEqualTypeOf<MetricQueryResult>()
         expectTypeOf<InsightBreakdownTableProps['data']>().toEqualTypeOf<MetricQueryResult>()
         expectTypeOf<InsightUIClass>().toEqualTypeOf<string | readonly string[]>()
+        expectTypeOf<InsightBarChartProps['ui']>().toEqualTypeOf<InsightBarChartUI | undefined>()
+        expectTypeOf<InsightSparklineProps['ui']>().toEqualTypeOf<InsightSparklineUI | undefined>()
+        expectTypeOf<InsightQualityNoticeProps['ui']>().toEqualTypeOf<
+            InsightQualityNoticeUI | undefined
+        >()
         expectTypeOf<InsightLineChartProps>().not.toHaveProperty('metrics')
         expectTypeOf<InsightBreakdownTableProps>().not.toHaveProperty('dimensions')
     })
@@ -96,13 +100,35 @@ describe('Vue integration', () => {
         const html = await renderToString(
             createSSRApp(() =>
                 h('main', [
-                    h(InsightStat, { data, metric: 'pageViews' }),
-                    h(InsightSparkline, { data, metric: 'visits' }),
+                    h(InsightStat, { data }),
+                    h(InsightSparkline, {
+                        data,
+                        ui: { path: 'custom-sparkline-path', root: 'custom-sparkline' },
+                    }),
                     h(InsightLineChart, { data, title: 'Traffic line' }),
                     h(InsightAreaChart, { data, title: 'Traffic area' }),
-                    h(InsightBarChart, { data, dimension: 'country', metric: 'pageViews' }),
+                    h(InsightBarChart, {
+                        data,
+                        dimension: 'country',
+                        ui: {
+                            bar: 'custom-bar',
+                            item: 'custom-bar-item',
+                            label: 'custom-bar-label',
+                            list: 'custom-bar-list',
+                            root: 'custom-bar-root',
+                            track: 'custom-bar-track',
+                            value: 'custom-bar-value',
+                        },
+                    }),
                     h(InsightBreakdownTable, { data }),
-                    h(InsightQualityNotice, { data: data.meta.quality! }),
+                    h(InsightQualityNotice, {
+                        data: data.meta.quality!,
+                        ui: {
+                            item: 'custom-quality-item',
+                            list: 'custom-quality-list',
+                            root: 'custom-quality-root',
+                        },
+                    }),
                 ]),
             ),
         )
@@ -116,6 +142,9 @@ describe('Vue integration', () => {
         expect(html).toContain('Results use 25% sampling')
         expect(html.match(/<svg/g)).toHaveLength(3)
         expect(html).toContain('insight-bar-chart__bar')
+        expect(html).toContain('custom-bar-value')
+        expect(html).toContain('custom-sparkline-path')
+        expect(html).toContain('custom-quality-item')
         expect(html).toContain('data-slot="table"')
     })
 

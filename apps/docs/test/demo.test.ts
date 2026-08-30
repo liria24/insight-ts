@@ -6,29 +6,56 @@ import { resolveDemoReportQuery } from '../shared/utils/demo-range'
 const now = new Date('2026-08-21T12:00:00.000Z')
 
 describe('Demo analytics range', () => {
-    it('embeds live UI examples with reproduction code on every UI page', async () => {
+    it('renders direct MDC examples with literal data on every UI page', async () => {
         const pages = {
-            '1.styling.md': 'styling',
-            '2.stat.md': 'stat',
-            '3.line-chart.md': 'line',
-            '4.area-chart.md': 'area',
-            '5.breakdown-table.md': 'breakdown',
+            '2.stat.md': { fixture: 'value: 4140', tag: 'insight-stat' },
+            '3.line-chart.md': { fixture: 'value: 4140', tag: 'insight-line-chart' },
+            '4.area-chart.md': { fixture: 'value: 4140', tag: 'insight-area-chart' },
+            '5.breakdown-table.md': {
+                fixture: 'value: 4140',
+                tag: 'insight-breakdown-table',
+            },
+            '6.bar-chart.md': { fixture: 'value: 4140', tag: 'insight-bar-chart' },
+            '7.sparkline.md': { fixture: 'value: 4140', tag: 'insight-sparkline' },
+            '8.quality-notice.md': {
+                fixture: 'sampleRate: 0.25',
+                tag: 'insight-quality-notice',
+            },
         } as const
         await Promise.all(
-            Object.entries(pages).map(async ([file, kind]) => {
+            Object.entries(pages).map(async ([file, { fixture, tag }]) => {
                 const content = await Bun.file(
                     new URL(`../content/5.ui/${file}`, import.meta.url),
                 ).text()
-                expect(content).toContain(`insight-ui-docs-example{kind="${kind}"}`)
+                const example = content.slice(
+                    content.indexOf('## Example'),
+                    content.indexOf('## Usage'),
+                )
+                expect(example).toContain(`:::${tag}{:data='`)
+                expect(example).toContain(fixture)
+                expect(example).toContain('#code')
+                expect(example).not.toContain('dashboard.')
+                expect(example).not.toContain('\n---')
+                expect(example).not.toContain('insight-ui-preview')
+                expect(content).toContain('## Props')
+                expect(content).toContain('## Customization')
             }),
         )
-        const example = await Bun.file(
-            new URL('../app/components/InsightUiDocsExample.vue', import.meta.url),
+        const registration = await Bun.file(
+            new URL('../app/plugins/insight-ui.ts', import.meta.url),
         ).text()
-        expect(example).toContain('Live example')
-        expect(example).toContain('Reproduction code')
+        for (const component of [
+            'InsightAreaChart',
+            'InsightBarChart',
+            'InsightBreakdownTable',
+            'InsightLineChart',
+            'InsightQualityNotice',
+            'InsightSparkline',
+            'InsightStat',
+        ]) {
+            expect(registration).toContain(`vueApp.component('${component}'`)
+        }
     })
-
     it('renders Metric results through data-only public UI', async () => {
         const [source, dashboard] = await Promise.all([
             Bun.file(new URL('../app/pages/demo.vue', import.meta.url)).text(),
@@ -45,8 +72,16 @@ describe('Demo analytics range', () => {
         expect(dashboard).toContain(':data=')
         expect(dashboard).not.toContain(':report=')
         expect(dashboard).not.toContain(':metrics=')
+        expect(dashboard).not.toContain('metric="')
         expect(source).not.toContain('useLazyFetch')
         expect(source).not.toContain('server: false')
+    })
+
+    it('keeps code-preview source on one scrollable line', async () => {
+        const config = await Bun.file(new URL('../app/app.config.ts', import.meta.url)).text()
+
+        expect(config).toContain('[&>div>pre]:whitespace-pre')
+        expect(config).toContain('[&>div>pre]:wrap-normal')
     })
 
     it('reuses the report dashboard on the landing page with a fixed seven-day range', async () => {

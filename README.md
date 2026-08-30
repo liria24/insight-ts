@@ -132,7 +132,7 @@ import { InsightAreaChart, InsightStat } from 'insight-ts/vue/ui'
 </script>
 
 <template>
-    <InsightStat :data="dashboard.trafficSummary" metric="pageViews" />
+    <InsightStat :data="dashboard.pageViews" />
     <InsightAreaChart :data="dashboard.trafficSeries" />
 </template>
 ```

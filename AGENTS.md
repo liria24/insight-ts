@@ -126,3 +126,9 @@ accepted decision.
 The project is MIT licensed. Verify runtime dependency licenses before adding them, prefer
 permissive licenses, and preserve required notices when deriving substantial third-party code.
 Provider API terms and software licenses are separate concerns.
+
+## Documentation
+
+- When a change affects public API, configuration, behavior, entrypoints, UI components, Providers,
+  or Integrations, update `apps/docs` in the same change and update the README when it is affected.
+  Do not defer documentation updates to separate work.

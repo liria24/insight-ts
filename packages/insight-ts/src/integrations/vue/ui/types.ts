@@ -50,15 +50,36 @@ export interface InsightBreakdownTableUI {
     empty?: InsightUIClass
 }
 
-export interface InsightStatProps<TData extends MetricQueryResult = MetricQueryResult> {
+export interface InsightBarChartUI {
+    root?: InsightUIClass
+    list?: InsightUIClass
+    item?: InsightUIClass
+    label?: InsightUIClass
+    track?: InsightUIClass
+    bar?: InsightUIClass
+    value?: InsightUIClass
+    empty?: InsightUIClass
+}
+
+export interface InsightSparklineUI {
+    root?: InsightUIClass
+    path?: InsightUIClass
+}
+
+export interface InsightQualityNoticeUI {
+    root?: InsightUIClass
+    list?: InsightUIClass
+    item?: InsightUIClass
+}
+
+export interface InsightStatProps {
     class?: InsightUIClass
-    data: TData
+    data: MetricQueryResult
     emptyText?: string
     formatter?: (value: number) => string
     label?: string
     locale?: string
     maximumFractionDigits?: number
-    metric: Extract<keyof TData['data'], string>
     ui?: InsightStatUI
 }
 
@@ -96,21 +117,21 @@ export interface InsightBarChartProps<TData extends MetricQueryResult = MetricQu
     formatter?: (value: number) => string
     height?: number
     locale?: string
-    metric: Extract<keyof TData['data'], string>
+    ui?: InsightBarChartUI
 }
 
-export interface InsightSparklineProps<TData extends MetricQueryResult = MetricQueryResult> {
+export interface InsightSparklineProps {
     class?: InsightUIClass
-    data: TData
+    data: MetricQueryResult
     height?: number
-    metric: Extract<keyof TData['data'], string>
+    ui?: InsightSparklineUI
     width?: number
 }
 
 export interface InsightQualityNoticeProps {
     class?: InsightUIClass
     data?: QueryQuality
-    locale?: string
+    ui?: InsightQualityNoticeUI
 }
 
 export interface InsightSeriesChartSlots {

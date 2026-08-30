@@ -2,7 +2,13 @@
 import { computed } from 'vue'
 
 import { formatNumber } from '../../../../ui-core/index.ts'
-import type { InsightBarChartProps } from '../types.ts'
+import {
+    resolveInsightUIClass,
+    type InsightBarChartProps,
+    type InsightBarChartUI,
+} from '../types.ts'
+
+defineOptions({ inheritAttrs: false })
 
 const props = withDefaults(defineProps<InsightBarChartProps>(), {
     emptyText: 'No data',
@@ -10,8 +16,9 @@ const props = withDefaults(defineProps<InsightBarChartProps>(), {
     locale: 'en-US',
 })
 
+const metric = computed(() => Object.keys(props.data.data)[0] ?? '')
 const rows = computed(() =>
-    (props.data.data[props.metric]?.points ?? []).flatMap((point) => {
+    (props.data.data[metric.value]?.points ?? []).flatMap((point) => {
         const label = point.dimensions?.[props.dimension]
         return label === undefined || point.value === null
             ? []
@@ -19,30 +26,43 @@ const rows = computed(() =>
     }),
 )
 const maximum = computed(() => Math.max(0, ...rows.value.map(({ value }) => value)))
+const ui = computed<Required<InsightBarChartUI>>(() => ({
+    bar: resolveInsightUIClass('insight-bar-chart__bar', props.ui?.bar),
+    empty: resolveInsightUIClass('insight-empty-state', props.ui?.empty),
+    item: resolveInsightUIClass('insight-bar-chart__item', props.ui?.item),
+    label: resolveInsightUIClass('insight-bar-chart__label', props.ui?.label),
+    list: resolveInsightUIClass('insight-bar-chart__list', props.ui?.list),
+    root: resolveInsightUIClass('insight-bar-chart', props.ui?.root),
+    track: resolveInsightUIClass('insight-bar-chart__track', props.ui?.track),
+    value: resolveInsightUIClass('insight-bar-chart__value', props.ui?.value),
+}))
 </script>
 
 <template>
     <div
-        :aria-label="`${props.metric} by ${props.dimension}`"
-        :class="['insight-bar-chart', props.class]"
+        v-bind="$attrs"
+        :aria-label="String($attrs['aria-label'] ?? `${metric} by ${props.dimension}`)"
+        :class="[ui.root, props.class]"
+        :data-slot="String($attrs['data-slot'] ?? 'root')"
         role="figure"
         :style="{ minHeight: `${props.height}px` }"
     >
-        <ol v-if="rows.length" class="insight-bar-chart__list">
-            <li v-for="row in rows" :key="row.label" class="insight-bar-chart__item">
-                <span class="insight-bar-chart__label">{{ row.label }}</span>
-                <span class="insight-bar-chart__track">
+        <ol v-if="rows.length" :class="ui.list" data-slot="list">
+            <li v-for="row in rows" :key="row.label" :class="ui.item" data-slot="item">
+                <span :class="ui.label" data-slot="label">{{ row.label }}</span>
+                <span :class="ui.track" data-slot="track">
                     <span
-                        class="insight-bar-chart__bar"
+                        :class="ui.bar"
+                        data-slot="bar"
                         :style="{ width: `${maximum === 0 ? 0 : (row.value / maximum) * 100}%` }"
                     />
                 </span>
-                <span class="insight-bar-chart__value">{{
+                <span :class="ui.value" data-slot="value">{{
                     props.formatter?.(row.value) ?? formatNumber(row.value, props.locale)
                 }}</span>
             </li>
         </ol>
-        <div v-else aria-live="polite" class="insight-empty-state" role="status">
+        <div v-else aria-live="polite" :class="ui.empty" data-slot="empty" role="status">
             {{ props.emptyText }}
         </div>
     </div>

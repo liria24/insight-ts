@@ -17,7 +17,7 @@ const isLoading = computed(() => status.value === 'idle' || status.value === 'pe
                     <h2
                         class="text-highlighted mt-4 text-4xl leading-tight font-semibold tracking-tight text-balance sm:text-5xl"
                     >
-                        Reports you can render, not another dashboard contract.
+                        Metric results ready for your own interface.
                     </h2>
                     <p class="text-muted mt-6 text-lg leading-8">
                         UI components receive typed reports. They do not fetch Providers, store

@@ -64,9 +64,11 @@ watch(calendarRange, ({ end, start }) => {
                             class="size-2.5 rounded-full"
                             :class="online > 0 ? 'bg-success' : 'bg-muted'"
                         />
-                        <span aria-live="polite" class="text-sm text-muted"
-                            >{{ online }} online · app KPI from 5-minute visits</span
-                        >
+                        <UTooltip text="app KPI from 5-minute visits">
+                            <span aria-live="polite" class="text-sm text-muted">
+                                {{ online }} online
+                            </span>
+                        </UTooltip>
                     </div>
                 </div>
             </div>

@@ -38,8 +38,11 @@ const ui = computed<Required<InsightStatUI>>(() => ({
     root: resolveInsightUIClass('insight-stat', props.ui?.root),
     value: resolveInsightUIClass('insight-stat__value', props.ui?.value),
 }))
-const selection = computed(() => createStatModel(props.data, props.metric))
-const label = computed(() => props.label ?? formatMetricName(props.metric))
+const selection = computed(() => createStatModel(props.data))
+const metric = computed(() => selection.value?.metric ?? '')
+const label = computed(
+    () => props.label ?? (metric.value ? formatMetricName(metric.value) : 'Metric'),
+)
 const value = computed(() => selection.value?.value ?? undefined)
 const formatted = computed(() =>
     value.value === undefined
@@ -59,11 +62,11 @@ const messages = computed(() => notices.value.map(formatDataNotice))
         :data-slot="String($attrs['data-slot'] ?? 'root')"
     >
         <template v-if="value !== undefined">
-            <slot name="label" :label :metric="props.metric">
+            <slot name="label" :label :metric>
                 <p :class="ui.label" data-slot="label">{{ label }}</p>
             </slot>
 
-            <slot name="value" :formatted :metric="props.metric" :value>
+            <slot name="value" :formatted :metric :value>
                 <p :class="ui.value" data-slot="value">{{ formatted }}</p>
             </slot>
 
@@ -80,7 +83,7 @@ const messages = computed(() => notices.value.map(formatDataNotice))
             </slot>
         </template>
 
-        <slot v-else name="empty" :metric="props.metric">
+        <slot v-else name="empty" :metric>
             <div aria-live="polite" :class="ui.empty" data-slot="empty" role="status">
                 <strong>{{ label }}</strong>
                 <span>{{ props.emptyText }}</span>

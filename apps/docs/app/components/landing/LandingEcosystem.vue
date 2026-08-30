@@ -3,12 +3,14 @@ const connections = [
     {
         from: 'Providers',
         to: 'Core',
-        description: 'Translate native requests into typed reports without hiding Provider facts.',
+        description:
+            'Turn native requests into typed results while retaining Provider-specific metadata.',
     },
     {
         from: 'History',
         to: 'Core',
-        description: 'Uses Source-owned schema, range, rollup, freshness, and report semantics.',
+        description:
+            'Backfills Source-declared Metric ranges with safe rollup and visible fidelity.',
     },
     {
         from: 'Nitro',
@@ -18,12 +20,13 @@ const connections = [
     {
         from: 'Browser',
         to: 'Vue',
-        description: 'Vue provides the standalone browser event client without server access.',
+        description:
+            'Vue provides the browser event client; server access remains application-owned.',
     },
     {
         from: 'UI Core',
         to: 'Vue UI',
-        description: 'Vue UI renders framework-neutral models with a private chart renderer.',
+        description: 'Vue UI renders existing Metric results with its own private chart renderer.',
     },
 ]
 
@@ -45,11 +48,11 @@ const entrypoints = [
                 <h2
                     class="text-highlighted mt-4 text-4xl leading-tight font-semibold tracking-tight text-balance sm:text-5xl"
                 >
-                    Integrations connect. Core stays small.
+                    Providers and integrations stay optional.
                 </h2>
                 <p class="text-muted mt-6 text-lg leading-8">
-                    There is no mandatory adapter stack. Each entrypoint depends only on the layers
-                    it connects, so runtime and framework choices remain independent.
+                    Choose only the entrypoints your application uses. Core, Providers, History,
+                    runtimes, browser events, and UI remain separate imports.
                 </p>
             </div>
 

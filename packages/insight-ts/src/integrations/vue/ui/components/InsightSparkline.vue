@@ -1,15 +1,22 @@
 <script setup lang="ts">
 import { computed } from 'vue'
 
-import type { InsightSparklineProps } from '../types.ts'
+import {
+    resolveInsightUIClass,
+    type InsightSparklineProps,
+    type InsightSparklineUI,
+} from '../types.ts'
+
+defineOptions({ inheritAttrs: false })
 
 const props = withDefaults(defineProps<InsightSparklineProps>(), {
     height: 32,
     width: 96,
 })
 
+const metric = computed(() => Object.keys(props.data.data)[0] ?? '')
 const values = computed(() =>
-    (props.data.data[props.metric]?.points ?? []).flatMap(({ value }) =>
+    (props.data.data[metric.value]?.points ?? []).flatMap(({ value }) =>
         value === null ? [] : [value],
     ),
 )
@@ -25,18 +32,31 @@ const path = computed(() => {
         )
         .join(' ')
 })
+const ui = computed<Required<InsightSparklineUI>>(() => ({
+    path: resolveInsightUIClass('insight-sparkline__path', props.ui?.path),
+    root: resolveInsightUIClass('insight-sparkline', props.ui?.root),
+}))
 </script>
 
 <template>
     <svg
-        :aria-label="`${props.metric} trend`"
-        :class="['insight-sparkline', props.class]"
+        v-bind="$attrs"
+        :aria-label="String($attrs['aria-label'] ?? `${metric} trend`)"
+        :class="[ui.root, props.class]"
+        :data-slot="String($attrs['data-slot'] ?? 'root')"
         :height="props.height"
         preserveAspectRatio="none"
         role="img"
         :viewBox="`0 0 ${props.width} ${props.height}`"
         :width="props.width"
     >
-        <path v-if="path" :d="path" fill="none" vector-effect="non-scaling-stroke" />
+        <path
+            v-if="path"
+            :class="ui.path"
+            data-slot="path"
+            :d="path"
+            fill="none"
+            vector-effect="non-scaling-stroke"
+        />
     </svg>
 </template>

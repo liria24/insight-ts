@@ -24,8 +24,12 @@
     color: var(--insight-text);
 }
 
-:where(.insight-line-chart, .insight-area-chart) {
+:where(.insight-line-chart, .insight-area-chart, .insight-breakdown-table) {
     min-width: 0;
+    width: 100%;
+}
+
+:where(.insight-line-chart, .insight-area-chart) {
     --ts-chart-tooltip-background: var(--insight-background);
     --ts-chart-tooltip-color: var(--insight-text);
     --ts-chart-tooltip-border: 1px solid var(--insight-border);
@@ -82,7 +86,7 @@
     color: var(--insight-text-muted);
 }
 
-.insight-sparkline path {
+.insight-sparkline__path {
     stroke: var(--insight-chart-1);
     stroke-width: 2;
 }
@@ -120,7 +124,7 @@
     font-variant-numeric: tabular-nums;
 }
 
-.insight-quality-notice ul {
+.insight-quality-notice__list {
     margin: 0;
     padding-inline-start: 1.25rem;
 }

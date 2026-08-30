@@ -188,11 +188,11 @@ const data = {
   },
 } as const
 const Root = () => h('main', [
-  h(InsightStat, { data, metric: 'visits' }),
+  h(InsightStat, { data }),
   h(InsightLineChart, { data }),
   h(InsightAreaChart, { data }),
-  h(InsightSparkline, { data, metric: 'visits' }),
-  h(InsightBarChart, { data, dimension: 'country', metric: 'visits' }),
+  h(InsightSparkline, { data }),
+  h(InsightBarChart, { data, dimension: 'country' }),
   h(InsightBreakdownTable, { data }),
   h(InsightQualityNotice, { data: data.meta.quality }),
 ])

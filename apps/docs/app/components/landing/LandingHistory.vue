@@ -1,23 +1,18 @@
 <script setup lang="ts">
 const features = [
     {
-        title: 'Missing-range backfill',
-        description:
-            'Fetch only uncovered or provisional intervals, then compose History and live data.',
+        title: 'History',
+        description: 'Backfill Source-declared Metric ranges and keep any reduction visible.',
     },
     {
-        title: 'Normal execution path',
+        title: 'Events',
         description:
-            'Fetch History gaps through the same multi-Source execution primitive as live queries.',
+            'Validate application events while Providers retain their native transport behavior.',
     },
     {
-        title: 'Idempotent writes',
-        description: 'Deterministic segment identity makes repeated sync work safe to retry.',
-    },
-    {
-        title: 'Fidelity metadata',
+        title: 'UI',
         description:
-            'Keep lossy reduction visible and separate from Provider Quality across the requested range.',
+            'Render existing Metric results without coupling charts to Providers or History.',
     },
 ]
 </script>
@@ -27,15 +22,18 @@ const features = [
         <UContainer>
             <div class="grid gap-12 lg:grid-cols-2 lg:items-start lg:gap-20">
                 <div>
-                    <p class="text-dimmed text-sm font-medium tracking-wide uppercase">History</p>
+                    <p class="text-dimmed text-sm font-medium tracking-wide uppercase">
+                        Optional features
+                    </p>
                     <h2
                         class="text-highlighted mt-4 text-4xl leading-tight font-semibold tracking-tight text-balance sm:text-5xl"
                     >
-                        Materialize history. Do not hide it behind a cache.
+                        Add History, events, and UI when your product needs them.
                     </h2>
                     <p class="text-muted mt-6 text-lg leading-8">
-                        Providers own query and safe rollup semantics. The History Engine owns gaps,
-                        fetches, composition, reduction, Fidelity, and segment identity.
+                        History backfills Source-declared Metric ranges. Events and UI remain
+                        optional, so the core query path stays focused on the data your application
+                        needs.
                     </p>
 
                     <pre
@@ -43,7 +41,7 @@ const features = [
                     ><code><span class="text-dimmed">await</span> insight.history.sync({ range })</code></pre>
 
                     <p class="text-dimmed mt-4 text-sm">
-                        Repositories stay small: `coverage`, `read`, and `write`.
+                        History repositories stay small: `coverage`, `read`, and `write`.
                     </p>
                 </div>
 

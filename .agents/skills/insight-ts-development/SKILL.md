@@ -76,3 +76,9 @@ Use this skill for work in this repository that changes Insight.ts behavior or p
 Run `bun run format:check` for documentation-only changes. Otherwise run the narrowest relevant
 test while iterating and `bun run check` before handoff. For package surface changes, also inspect
 the packed tarball and test its exported entry points.
+
+## Documentation follow-through
+
+Before handoff, check whether the implementation changes public API, configuration, behavior,
+entrypoints, UI components, Providers, or Integrations. Update `apps/docs` in the same change and
+update the README where the user-facing contract changed; do not defer documentation work.

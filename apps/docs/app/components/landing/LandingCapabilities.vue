@@ -8,9 +8,8 @@ const inferredTypes = [
 
 const principles = [
     {
-        title: 'Provider-native',
-        description:
-            'Source-owned queries, not imaginary parity. Native limits, sampling, freshness, and quality remain visible.',
+        title: 'Provider-aware',
+        description: 'Each Source keeps provider limits, sampling, freshness, and quality visible.',
         icon: 'mingcute:layers-line',
     },
     {
@@ -39,15 +38,15 @@ const principles = [
                     <h2
                         class="text-highlighted mt-4 text-4xl leading-tight font-semibold tracking-tight text-balance sm:text-5xl"
                     >
-                        Typed by what Providers actually support.
+                        Queries that keep Provider details visible.
                     </h2>
                     <p class="text-muted mt-6 text-lg leading-8">
-                        Providers do not share one capability surface. Pretending they do moves
-                        failure from TypeScript to production.
+                        Providers expose different capabilities. Insight.ts keeps those differences
+                        in the typed query instead of hiding them behind a generic dashboard API.
                     </p>
                     <p class="text-muted mt-4 leading-7">
                         Insight.ts derives each Source query and result from the configured Provider
-                        without forcing unrelated data into one model.
+                        while leaving unrelated data in its own shape.
                     </p>
                 </div>
 

@@ -70,6 +70,13 @@ export default defineAppConfig({
             upload: 'mingcute:upload-fill',
             warning: 'mingcute:alert-fill',
         },
+        prose: {
+            codePreview: {
+                slots: {
+                    code: '[&>div>pre]:whitespace-pre [&>div>pre]:wrap-normal',
+                },
+            },
+        },
         accordion: {
             slots: {
                 trigger: 'cursor-pointer',

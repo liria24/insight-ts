@@ -27,14 +27,14 @@ const ecosystem = [
                 <h1
                     class="text-highlighted mx-auto mt-7 max-w-5xl text-5xl leading-[1.02] font-semibold tracking-[-0.045em] text-balance sm:text-7xl lg:text-8xl"
                 >
-                    Typed insights, without flattening your providers.
+                    Typed queries for the data your product already uses.
                 </h1>
 
                 <p
                     class="text-muted mx-auto mt-7 max-w-3xl text-lg leading-8 text-pretty sm:text-xl"
                 >
-                    Query analytics, observability, and application data from one TypeScript SDK.
-                    Keep every Provider's real capabilities, metrics, limits, and semantics intact.
+                    Insight.ts is a TypeScript SDK for querying analytics, observability, and
+                    application data. Each Provider keeps its own metrics, limits, and metadata.
                 </p>
 
                 <div class="mt-10 flex flex-col items-center justify-center gap-3 sm:flex-row">
@@ -60,7 +60,8 @@ const ecosystem = [
                 </div>
 
                 <p class="text-dimmed mt-5 text-sm">
-                    Core first. Providers, History, runtimes, and UI stay optional.
+                    Start with one Source. Add Providers, History, events, runtimes, and UI only
+                    when you need them.
                 </p>
             </div>
         </UContainer>

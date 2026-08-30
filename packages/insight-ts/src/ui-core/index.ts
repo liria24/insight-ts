@@ -115,8 +115,9 @@ export const tableCellValue = (
 
 export const createStatModel = (
     result: MetricQueryResult,
-    metric: string,
 ): { metric: string; value: number | null } | undefined => {
+    const metric = Object.keys(result.data)[0]
+    if (!metric) return undefined
     const datum = result.data[metric]
     return datum ? { metric, value: datum.value } : undefined
 }
