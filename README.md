@@ -1,27 +1,30 @@
+<p align="center">
+  <img alt="header" src="https://shieldcn.dev/header/dots.svg?title=Insight.ts&amp;subtitle=A+runtime-neutral+TypeScript+SDK+for+analytics%2C+observability%2C+and+application+data.&amp;mode=dark&amp;font=geist" />
+</p>
+
+<p align="center">
+  <a href="https://www.npmjs.com/package/insight-ts"><img alt="badge" src="https://shieldcn.dev/npm/insight-ts.svg" /></a>
+  <a href="https://www.npmjs.com/package/insight-ts"><img alt="license" src="https://shieldcn.dev/npm/license/insight-ts.svg" /></a>
+  <a href="https://github.com/liria24/insight-ts/actions"><img alt="CI" src="https://shieldcn.dev/github/liria24/insight-ts/ci.svg" /></a>
+</p>
+
 # Insight.ts
 
-> A runtime-neutral TypeScript SDK for analytics, observability, and application data.
+Insight.ts is a TypeScript SDK for querying data from different services without forcing them into one shared schema. Configure explicit Sources, query them through one API, and keep each Provider's metrics, limits, sampling, and metadata visible.
 
-[![Runtime neutral](https://shieldcn.dev/badge/runtime-neutral-TypeScript-18181b.svg?variant=outline)](https://insight.liria.me/getting-started/introduction)
-[![Provider native](https://shieldcn.dev/badge/provider-semantics-18181b.svg?variant=outline)](https://insight.liria.me/concepts/overview)
-[![License](https://shieldcn.dev/badge/license-MIT-18181b.svg?variant=outline)](https://spdx.org/licenses/MIT.html)
+Start with Core and one Source. Add built-in Providers, History, events, Nitro or Nuxt integrations, OpenTelemetry, and Vue UI only when your application needs them.
 
-<!-- Add the npm badge and link it to npmx after the first public release. -->
+> **Alpha:** Insight.ts is still under active development. Public APIs may change before the first stable release.
 
-Analytics providers do not agree on metrics, query shapes, or operations. Flattening them into one
-universal interface hides the differences your application still has to handle.
-
-Insight.ts keeps those differences typed. Each Provider exposes generic Sources with their own
-query and result contracts; Core coordinates them without inventing one universal data model.
-
-The result is a small, composable SDK: use Core alone, or add Providers, History, Nitro, Nuxt,
-browser events, UI Core, and Vue UI as your application needs them.
-
-## Quick Start
+## Install
 
 ```sh
-bun add insight-ts
+npm install insight-ts
 ```
+
+## Quick start
+
+This example queries page views and visits from Cloudflare Web Analytics.
 
 ```ts
 import { createInsight } from 'insight-ts'
@@ -31,100 +34,67 @@ import { defineProvider } from 'insight-ts/provider'
 const cloudflare = defineProvider({
     id: 'cloudflare',
     sources: {
-        webAnalytics: cloudflareWebAnalytics({ accountId, apiToken, siteTag }),
+        webAnalytics: cloudflareWebAnalytics({
+            accountId,
+            apiToken,
+            siteTag,
+        }),
     },
 })
 
-const insight = createInsight({ providers: [cloudflare] as const })
+const insight = createInsight({
+    providers: [cloudflare] as const,
+})
+
 const dashboard = await insight.query((q) => ({
     traffic: q.source('cloudflare.webAnalytics', {
         metrics: ['pageViews', 'visits'],
         time: {
             from: '2026-08-01T00:00:00.000Z',
+            to: '2026-08-08T00:00:00.000Z',
             grain: 'day',
-            to: '2026-09-01T00:00:00.000Z',
+        },
+        where: {
+            country: { in: ['JP', 'US'] },
         },
     }),
 }))
+
+console.log(dashboard.traffic.data.pageViews.value)
 ```
 
-The Source ID, query, selected metric/dimension keys, result data, and metadata remain typed.
+The Source ID, query fields, selected metrics and dimensions, result data, and metadata stay typed throughout the query.
 
-## Features
-
-### Provider semantics stay visible
-
-A shared vocabulary should not imply universal support. Insight.ts validates the requested metric,
-dimension, filter, grain, range, and provider limit before network I/O, while preserving sampling,
-approximation, freshness, partial-result, and warning metadata in `QueryResult`.
+## Why Insight.ts?
 
 ### Typed end to end
 
-Providers declare Sources once. TypeScript carries each Source's query and result through one lazy
-`insight.query()` selection. Unsupported Source IDs, metrics, dimensions, filters, and values fail
-where they are written.
+A Source defines the query it accepts and the result it returns. TypeScript carries that information through `insight.query()`, so unsupported Source IDs, metrics, dimensions, filters, and values fail where you write them.
 
-### Optional by design
+### Provider details stay visible
 
-Core imports no Provider implementation, History engine, framework, renderer, or runtime package.
-Focused entrypoints keep unused Providers, integrations, UI, CSS, and chart code outside your
-runtime graph.
+Cloudflare, Search Console, application databases, observability systems, and other services do not expose identical capabilities.
+
+Insight.ts gives them a common execution API without hiding differences such as sampling, approximation, partial results, pagination, freshness, or Provider-specific metadata.
+
+### Add only what you need
+
+Core does not require a framework, History engine, UI renderer, or OpenTelemetry runtime. Features are exposed through focused entrypoints so applications can opt into them independently.
 
 ## Providers
 
-| Provider                    | Implemented capability                               | Native semantics retained                                        |
-| --------------------------- | ---------------------------------------------------- | ---------------------------------------------------------------- |
-| Cloudflare Web Analytics    | Metric Source for page views, visits, and breakdowns | Sampling, approximation, partial results, and freshness          |
-| Cloudflare Analytics Engine | Metric Source, event destination, or both            | Dataset/binding configuration and sample interval                |
-| Google Search Console       | Search Analytics Metric Source                       | Pagination, data state, provider limits, and Pacific boundaries  |
-| Application-defined         | Any `defineSource()` query/result contract           | Domain schema, validation, metadata, and optional Metric History |
+Built-in support currently includes:
 
-Providers are Source collections, not mandatory adapters. Analytics, logs, traces, funnels, and
-billing can coexist without a Core Source-kind union.
+- **Cloudflare Web Analytics** — page views, visits, dimensions, filters, and quality metadata
+- **Cloudflare Analytics Engine** — Metric queries, event delivery, or both
+- **Google Search Console** — Search Analytics metrics with native pagination and data-state metadata
+- **Application-defined Sources** — arbitrary typed query and result contracts through `defineSource()` and `defineProvider()`
 
-## Integrations
-
-Integrations connect Insight.ts to a host; they do not redefine Core semantics.
-
-| Entrypoint                 | Connects                                                                 |
-| -------------------------- | ------------------------------------------------------------------------ |
-| `insight-ts/nitro`         | History repositories to Nitro Storage and opt-in Nitro Tasks             |
-| `insight-ts/nuxt`          | Provider configuration and server access to Core, composed through Nitro |
-| `insight-ts/browser`       | Same-origin, bounded, best-effort event delivery                         |
-| `insight-ts/vue`           | Browser Insight to Vue provide/inject                                    |
-| `insight-ts/metrics`       | Structured Metric semantics and typed `where` DSL                        |
-| `insight-ts/opentelemetry` | Optional adapter from Core instrumentation to host OTel APIs             |
-| `insight-ts/ui-core`       | Metric results to framework- and renderer-independent UI models          |
-| `insight-ts/vue/ui`        | UI Core models to optional Vue Metric components and a private renderer  |
-
-Nitro is not treated as H3, and Nuxt composes the Nitro integration instead of rebuilding its
-storage or task behavior.
-
-## History
-
-Provider retention is finite. Metric History materializes declared ranges without turning storage
-into an opaque result cache.
-
-```ts
-import { createHistory } from 'insight-ts/history'
-
-const insight = createInsight({
-    providers,
-    history: createHistory({ repository, sources: ['cloudflare.webAnalytics'] }),
-})
-
-await insight.history.sync({ range }) // backfill missing or provisional intervals
-```
-
-The engine owns range slicing, safe rollup, live/History composition, reductions, Fidelity, and
-idempotent segment identity. A repository only implements `coverage`, `read`, and `write`.
-Non-additive values are rejected rather than silently summed, and lossy reduction remains visible
-as range-scoped Fidelity metadata.
+Custom Sources use the same query execution and type inference as built-in Providers.
 
 ## UI
 
-Metric components accept `data`; they never query Providers, handle credentials, cache results, or
-run History work.
+Insight.ts includes optional Vue components for Metric results.
 
 ```vue
 <script setup lang="ts">
@@ -132,26 +102,32 @@ import { InsightAreaChart, InsightStat } from 'insight-ts/vue/ui'
 </script>
 
 <template>
-    <InsightStat :data="dashboard.pageViews" />
-    <InsightAreaChart :data="dashboard.trafficSeries" />
+    <InsightStat :data="dashboard.summary" />
+
+    <InsightAreaChart :data="dashboard.traffic" title="Traffic" :ui="{ title: 'font-semibold' }" />
 </template>
 ```
 
-`insight-ts/ui-core` owns semantic models and formatting. `insight-ts/vue/ui` alone loads Vue UI
-components, base CSS, and the private TanStack Charts renderer.
+UI components render existing query results. They do not fetch Providers, handle credentials, or run History work.
+
+All components support root `class` customization and semantic `ui` slots for their internal elements.
 
 ## Documentation
 
+The complete documentation is available at [insight.liria.me](https://insight.liria.me).
+
 - [Introduction](https://insight.liria.me/getting-started/introduction)
+- [Installation](https://insight.liria.me/getting-started/installation)
 - [First query](https://insight.liria.me/getting-started/first-query)
 - [Providers](https://insight.liria.me/providers/cloudflare)
-- [History](https://insight.liria.me/guides/history)
+- [UI](https://insight.liria.me/ui/stat)
+- [Guides](https://insight.liria.me/guides/data-model)
+- [API reference](https://insight.liria.me/reference/api)
 - [Live demo](https://insight.liria.me/demo)
-- [API entrypoints](https://insight.liria.me/reference/api)
 
 ## Development
 
-This repository is a Bun workspace containing the SDK and its English Docus site.
+This repository is a Bun workspace containing the SDK, documentation site, tests, and architecture records.
 
 ```sh
 bun ci
@@ -159,11 +135,14 @@ bun run check
 bun run docs:dev
 ```
 
-- `packages/insight-ts` — package source and tests
-- `apps/docs` — documentation and product site
-- `docs/architecture` — invariants and accepted architecture decisions
+Repository structure:
 
-Add dependencies with `bun add` from the workspace that owns them.
+- `packages/insight-ts` — published SDK and tests
+- `apps/docs` — Docus documentation and product site
+- `docs/architecture` — architecture invariants and accepted decisions
+- `.agents/skills` — repository-specific development guidance
+
+Add dependencies from the workspace that owns them.
 
 ## License
 
