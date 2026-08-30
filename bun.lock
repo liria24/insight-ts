@@ -33,7 +33,7 @@
     },
     "packages/analytics": {
       "name": "@liria24/analytics",
-      "version": "0.0.0",
+      "version": "0.0.1",
       "dependencies": {
         "unstorage": "^1.17.5",
       },
