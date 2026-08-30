@@ -33,11 +33,60 @@ jobs:
             contents: write
             pull-requests: write
         steps:
-            - uses: danielroe/uppt/pr@09882a5a0a1a20a0e802613a77ad59fcb1c1611c # v0.6.9
+            - name: Update stable release PR
+              uses: danielroe/uppt/pr@09882a5a0a1a20a0e802613a77ad59fcb1c1611c # v0.6.9
+              with:
+                  packages: packages/insight-ts
+                  token: ${{ secrets.GITHUB_TOKEN }}
+
+            - name: Update alpha release PR
+              uses: danielroe/uppt/pr@09882a5a0a1a20a0e802613a77ad59fcb1c1611c # v0.6.9
               with:
                   packages: packages/insight-ts
                   prerelease: alpha
                   token: ${{ secrets.GITHUB_TOKEN }}
+
+            - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+              with:
+                  persist-credentials: false
+            - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
+              with:
+                  bun-version: 1.4.0
+
+            - name: Update release PR lockfiles
+              env:
+                  GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+              shell: bash
+              run: |
+                  set -euo pipefail
+
+                  gh auth setup-git
+
+                  mapfile -t branches < <(
+                      gh pr list \
+                          --repo "$GITHUB_REPOSITORY" \
+                          --state open \
+                          --base "${{ github.event.repository.default_branch }}" \
+                          --json headRefName,isCrossRepository \
+                          --jq '.[] | select(.isCrossRepository == false and (.headRefName | startswith("release/v"))) | .headRefName'
+                  )
+
+                  for branch in "${branches[@]}"; do
+                      git fetch --no-tags origin "$branch"
+                      git switch --detach FETCH_HEAD
+
+                      bun install --lockfile-only --ignore-scripts
+
+                      if git diff --quiet -- bun.lock; then
+                          continue
+                      fi
+
+                      git add bun.lock
+                      git -c user.name='github-actions[bot]' \
+                          -c user.email='41898282+github-actions[bot]@users.noreply.github.com' \
+                          commit -m 'chore: update bun.lock'
+                      git push origin "HEAD:$branch"
+                  done
 
     release:
         if: |
