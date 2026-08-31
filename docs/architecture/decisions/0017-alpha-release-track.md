@@ -2,15 +2,19 @@
 
 Status: accepted
 
-Supersedes the prerelease input described in ADR 0011 while Insight.ts is in alpha.
+Clarifies the prerelease behavior described in ADR 0011 while Insight.ts is in alpha.
 
 ## Decision
 
-The uppt Release PR job always receives `prerelease: alpha`. Main pushes therefore continue the
-`0.0.1-alpha.N` track instead of opening a stable `0.0.1` Release PR. Uppt continues to own
-versions, release branches, tags, and publication metadata.
+The release workflow maintains stable and alpha Release PRs in parallel. The stable Release PR job
+runs without a prerelease identifier, while the alpha Release PR job receives `prerelease: alpha`.
+Main pushes therefore update both the next stable release candidate and the `0.0.1-alpha.N` track.
+Merging an alpha Release PR advances the alpha track; merging the stable Release PR publishes the
+corresponding stable version. Uppt continues to own versions, release branches, tags, and publication
+metadata.
 
 ## Consequences
 
-Remove the fixed prerelease value when promoting Insight.ts to stable. Package versions remain
-unchanged on main outside uppt's generated Release PR.
+Alpha releases do not require changing the stable Release PR flow, and preparing a stable release
+does not require removing the alpha Release PR job. Package versions remain unchanged on main outside
+uppt's generated Release PRs.
