@@ -32,6 +32,7 @@ export default defineConfig({
         'google-search-console': 'src/providers/google-search-console/index.ts',
         history: 'src/history/index.ts',
         index: 'src/core/index.ts',
+        logs: 'src/logs/index.ts',
         metrics: 'src/metrics/index.ts',
         nitro: 'src/integrations/nitro/index.ts',
         nuxt: 'src/integrations/nuxt/index.ts',

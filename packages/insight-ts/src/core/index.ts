@@ -2,6 +2,8 @@ export { createInsight } from './insight.ts'
 export { defineCapabilityAdapter, defineProvider } from './provider.ts'
 export { InsightError, ProviderError } from './errors.ts'
 export type { InsightErrorCode } from './errors.ts'
+export { normalizeTimeRange } from './time.ts'
+export type { TimeRange } from './time.ts'
 export type {
     CreateInsightOptions,
     AdapterExecutionContext,

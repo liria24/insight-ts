@@ -23,17 +23,20 @@ const consumers: readonly Consumer[] = [
         source: `import { createInsight, defineProvider } from 'insight-ts'
 import { cloudflare } from 'insight-ts/cloudflare'
 import { googleSearchConsole } from 'insight-ts/google-search-console'
+import { defineLogAdapter } from 'insight-ts/logs'
 import { defineMetricAdapter } from 'insight-ts/metrics'
 
 const value = defineMetricAdapter({
   execute: () => ({ values: { value: 42 } }),
   metrics: { value: {} },
 })
-const insight = createInsight({ providers: [defineProvider({ adapters: { value }, id: 'app' })] })
+const logs = defineLogAdapter({ execute: () => ({ logs: [{ id: 'log-1', timestamp: '2026-08-01' }] }) })
+const insight = createInsight({ providers: [defineProvider({ adapters: { logs, value }, id: 'app' })] })
 const result = await insight.query((q) => ({
+  logs: q.logs({ time: { from: '2026-08-01', to: '2026-08-02' } }),
   value: q.metrics({ metrics: ['value'], time: { from: '2026-08-01', to: '2026-08-02' } }),
 }))
-if (result.value.data.values.value !== 42) throw new Error('Packed Core runtime failed')
+if (result.value.data.values.value !== 42 || result.logs.data.logs[0]?.id !== 'log-1') throw new Error('Packed Core runtime failed')
 
 const webOnly = cloudflare({
   accountId: 'account', apiToken: 'token', webAnalytics: { siteTag: 'site' },

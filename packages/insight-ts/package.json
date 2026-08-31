@@ -41,6 +41,10 @@
             "types": "./dist/history.d.ts",
             "import": "./dist/history.js"
         },
+        "./logs": {
+            "types": "./dist/logs.d.ts",
+            "import": "./dist/logs.js"
+        },
         "./metrics": {
             "types": "./dist/metrics.d.ts",
             "import": "./dist/metrics.js"

@@ -1,4 +1,5 @@
 import { InsightError } from '../core/errors.ts'
+import { normalizeTimeRange, normalizeTimestamp, type TimeRange } from '../core/time.ts'
 import type {
     AdapterExecutionContext,
     CapabilityAdapterDefinition,
@@ -8,10 +9,8 @@ import type {
     QueryQuality,
 } from '../core/types.ts'
 
-export interface TimeRange {
-    from: string
-    to: string
-}
+export { normalizeTimeRange }
+export type { TimeRange }
 
 export type Grain = 'minute' | 'hour' | 'day' | 'week' | 'month' | 'year'
 export type DimensionValue = boolean | number | string | null
@@ -555,18 +554,6 @@ const selectedMetricValues = (
         ]),
     )
 
-export const normalizeTimeRange = (range: TimeRange): TimeRange => {
-    const from = new Date(range.from)
-    const to = new Date(range.to)
-    if (!Number.isFinite(from.valueOf()) || !Number.isFinite(to.valueOf()) || from >= to) {
-        throw new InsightError(
-            'INVALID_QUERY',
-            'Time must contain valid absolute from and to timestamps with from before to',
-        )
-    }
-    return { from: from.toISOString(), to: to.toISOString() }
-}
-
 const grains = new Set<string>(['minute', 'hour', 'day', 'week', 'month', 'year'])
 const isGrain = (value: unknown): value is Grain => typeof value === 'string' && grains.has(value)
 
@@ -583,14 +570,6 @@ const finiteOrNull = (value: unknown, name: string): number | null => {
         throw new InsightError('INVALID_QUERY', `${name} must be finite or null`)
     }
     return value
-}
-
-const normalizeTimestamp = (value: string, name: string): string => {
-    const date = new Date(value)
-    if (!Number.isFinite(date.valueOf())) {
-        throw new InsightError('INVALID_QUERY', `${name} must be an ISO timestamp`)
-    }
-    return date.toISOString()
 }
 
 const requireRecord = (value: unknown, name: string): Record<string, unknown> => {
