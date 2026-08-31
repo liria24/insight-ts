@@ -1,11 +1,19 @@
 import { InsightError } from '../core/errors.ts'
+import {
+    decodeContinuation,
+    encodeContinuation,
+    initialContinuation,
+    mergeContinuation,
+    shouldFetchContinuation,
+    type ContinuationState,
+} from '../core/pagination.ts'
 import { normalizeTimeRange, normalizeTimestamp, type TimeRange } from '../core/time.ts'
 import type {
     AdapterExecutionContext,
     CapabilityAdapterDefinition,
     CapabilityContract,
-    CapabilityContribution,
     CapabilitySchema,
+    InsightCursor,
     QueryQuality,
 } from '../core/types.ts'
 
@@ -51,6 +59,7 @@ export interface LogData {
 }
 
 export interface LogQuery {
+    cursor?: InsightCursor
     limit?: number
     time: TimeRange
     where?: LogWhere
@@ -63,13 +72,16 @@ export interface CanonicalLogFilter {
 }
 
 export interface NormalizedLogQuery {
+    cursor?: InsightCursor
     limit?: number
+    nativeCursor?: string
     time: TimeRange
     where?: readonly CanonicalLogFilter[]
 }
 
 export interface LogAdapterOutput {
     logs: readonly LogRecord[]
+    nativeCursor?: string
     quality?: QueryQuality
 }
 
@@ -107,6 +119,7 @@ export const defineLogAdapter = (options: LogAdapterOptions): LogAdapterDefiniti
             const output = await options.execute(query, context)
             return {
                 data: { logs: normalizeLogs(output.logs) },
+                ...(output.nativeCursor ? { nativeCursor: output.nativeCursor } : {}),
                 ...(output.quality ? { quality: output.quality } : {}),
             }
         },
@@ -120,35 +133,91 @@ export const defineLogAdapter = (options: LogAdapterOptions): LogAdapterDefiniti
 const logContract: LogContract = {
     key: (query) => JSON.stringify(query),
     merge(query, contributions) {
-        const logs = new Map<string, LogRecord>()
-        for (const contribution of contributions) {
-            for (const log of requireLogData(contribution.result.data).logs) {
-                if (!logs.has(log.id)) logs.set(log.id, log)
-            }
-        }
+        const context = requirePaginationContext(query)
+        const merged = mergeContinuation({
+            compare: compareLogs,
+            contributions: contributions.map((contribution) => {
+                const index = context.adapters.findIndex(
+                    (adapter) => adapter === contribution.adapter.definition,
+                )
+                if (index < 0) throw new InsightError('INVALID_QUERY', 'Invalid Log contribution')
+                return {
+                    index,
+                    ...(contribution.result.nativeCursor
+                        ? { nativeCursor: contribution.result.nativeCursor }
+                        : {}),
+                    records: requireLogData(contribution.result.data).logs,
+                }
+            }),
+            id: (log) => log.id,
+            ...(query.limit === undefined ? {} : { limit: query.limit }),
+            state: context.state,
+        })
+        const next = merged.state
+            ? encodeContinuation('logs', context.key, merged.state)
+            : undefined
         return {
             contributions: contributions.map(({ result }) => ({
                 fields: logFields(requireLogData(result.data).logs),
                 ...(result.quality ? { quality: result.quality } : {}),
             })),
-            data: {
-                logs: [...logs.values()]
-                    .toSorted(
-                        (left, right) =>
-                            right.timestamp.localeCompare(left.timestamp) ||
-                            left.id.localeCompare(right.id),
-                    )
-                    .slice(0, query.limit),
-            },
+            data: { logs: merged.records },
+            ...(next ? { pagination: { next } } : {}),
         }
     },
     name: 'logs',
     normalize(input, adapters) {
         const logs = logAdapters(adapters)
-        return normalizeLogQuery(input, commonFilters(logs), commonAttributes(logs))
+        const query = normalizeLogQuery(input, commonFilters(logs), commonAttributes(logs))
+        const key = logicalLogKey(query)
+        logPagination.set(query, {
+            adapters: logs,
+            key,
+            state: query.cursor
+                ? decodeContinuation({
+                      adapters: logs.length,
+                      capability: 'logs',
+                      cursor: query.cursor,
+                      query: key,
+                      records: normalizeLogs,
+                  })
+                : initialContinuation(logs.length),
+        })
+        return query
     },
-    plan: (query, adapter) => (isLogAdapter(adapter) ? query : undefined),
+    plan(query, adapter) {
+        if (!isLogAdapter(adapter)) return undefined
+        const context = requirePaginationContext(query)
+        const index = context.adapters.indexOf(adapter)
+        const page = context.state.pages[index]
+        if (index < 0 || !page || !shouldFetchContinuation(page, query.limit)) return undefined
+        return {
+            ...(query.limit === undefined ? {} : { limit: query.limit }),
+            ...(page.nativeCursor ? { nativeCursor: page.nativeCursor } : {}),
+            time: query.time,
+            ...(query.where ? { where: query.where } : {}),
+        }
+    },
 }
+
+interface LogPaginationContext {
+    adapters: readonly LogAdapterDefinition[]
+    key: string
+    state: ContinuationState<LogRecord>
+}
+
+const logPagination = new WeakMap<object, LogPaginationContext>()
+const requirePaginationContext = (query: NormalizedLogQuery): LogPaginationContext => {
+    const context = logPagination.get(query)
+    if (!context) throw new InsightError('INVALID_QUERY', 'Missing Log pagination state')
+    return context
+}
+
+const logicalLogKey = ({ cursor: _cursor, nativeCursor: _native, ...query }: NormalizedLogQuery) =>
+    JSON.stringify(query)
+
+const compareLogs = (left: LogRecord, right: LogRecord): number =>
+    right.timestamp.localeCompare(left.timestamp) || left.id.localeCompare(right.id)
 
 const normalizeLogQuery = (
     input: unknown,
@@ -163,7 +232,11 @@ const normalizeLogQuery = (
     if (query.limit !== undefined && (!Number.isInteger(query.limit) || Number(query.limit) <= 0)) {
         throw new InsightError('INVALID_QUERY', 'Query limit must be a positive integer')
     }
+    if (query.cursor !== undefined && typeof query.cursor !== 'string') {
+        throw new InsightError('INVALID_QUERY', 'Log cursor must be an opaque string')
+    }
     return {
+        ...(typeof query.cursor === 'string' ? { cursor: query.cursor } : {}),
         ...(typeof query.limit === 'number' ? { limit: query.limit } : {}),
         time: normalizeTimeRange({ from: time.from, to: time.to }),
         ...(query.where === undefined
@@ -236,7 +309,7 @@ const normalizeCondition = (
     return filters
 }
 
-const normalizeLogs = (logs: readonly LogRecord[]): readonly LogRecord[] => {
+const normalizeLogs = (logs: unknown): readonly LogRecord[] => {
     if (!Array.isArray(logs))
         throw new InsightError('INVALID_QUERY', 'Log adapter returned invalid data')
     return logs.map((log) => {
@@ -246,24 +319,35 @@ const normalizeLogs = (logs: readonly LogRecord[]): readonly LogRecord[] => {
         if (typeof log.timestamp !== 'string') {
             throw new InsightError('INVALID_QUERY', 'Log records require a timestamp')
         }
+        for (const field of optionalLogStrings) {
+            if (log[field] !== undefined && typeof log[field] !== 'string') {
+                throw new InsightError('INVALID_QUERY', `Log ${field} must be a string`)
+            }
+        }
+        if (log.attributes !== undefined && !isRecord(log.attributes)) {
+            throw new InsightError('INVALID_QUERY', 'Log attributes must be an object')
+        }
         if (log.severity !== undefined && !logSeverities.has(log.severity)) {
             throw new InsightError(
                 'INVALID_QUERY',
-                `Unsupported log severity: ${String(log.severity)}`,
+                `Unsupported log severity: ${JSON.stringify(log.severity)}`,
             )
         }
+        // The required and optional canonical fields are validated above.
+        // eslint-disable-next-line typescript/no-unsafe-type-assertion
+        const record = log as unknown as LogRecord
         return {
-            ...log,
-            ...(typeof log.observedTimestamp === 'string'
+            ...record,
+            ...(typeof record.observedTimestamp === 'string'
                 ? {
                       observedTimestamp: normalizeTimestamp(
-                          log.observedTimestamp,
+                          record.observedTimestamp,
                           'Log observed time',
                       ),
                   }
                 : {}),
-            timestamp: normalizeTimestamp(log.timestamp, 'Log timestamp'),
-        } as LogRecord
+            timestamp: normalizeTimestamp(record.timestamp, 'Log timestamp'),
+        }
     })
 }
 
@@ -271,7 +355,7 @@ const requireLogData = (value: unknown): LogData => {
     if (!isRecord(value) || !Array.isArray(value.logs)) {
         throw new InsightError('INVALID_QUERY', 'Log adapter returned invalid data')
     }
-    return { logs: normalizeLogs(value.logs as readonly LogRecord[]) }
+    return { logs: normalizeLogs(value.logs) }
 }
 
 const logFields = (logs: readonly LogRecord[]): readonly string[] =>
@@ -319,6 +403,14 @@ const requireRecord = (value: unknown, name: string): Record<string, unknown> =>
 const isScalar = (value: unknown): value is LogScalar =>
     value === null || ['boolean', 'number', 'string'].includes(typeof value)
 const logSeverities = new Set<unknown>(['trace', 'debug', 'info', 'warn', 'error', 'fatal'])
+const optionalLogStrings = [
+    'environment',
+    'observedTimestamp',
+    'service',
+    'severityText',
+    'spanId',
+    'traceId',
+] as const
 const logFilterFields = new Set<string>(['environment', 'service', 'severity', 'spanId', 'traceId'])
 const isLogFilterField = (value: string): value is LogFilterField => logFilterFields.has(value)
 const logFilterOperators = new Set<string>(['eq', 'ne', 'in', 'notIn'])

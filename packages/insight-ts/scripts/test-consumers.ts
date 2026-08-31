@@ -40,6 +40,10 @@ const result = await insight.query((q) => ({
   value: q.metrics({ metrics: ['value'], time: { from: '2026-08-01', to: '2026-08-02' } }),
 }))
 if (result.value.data.values.value !== 42 || result.logs.data.logs[0]?.id !== 'log-1' || result.traces.data.traces[0]?.traceId !== 'trace-1') throw new Error('Packed Core runtime failed')
+const nextLogCursor = result.logs.meta.pagination?.next
+if (nextLogCursor) {
+  await insight.query((q) => ({ logs: q.logs({ cursor: nextLogCursor, time: { from: '2026-08-01', to: '2026-08-02' } }) }))
+}
 
 const webOnly = cloudflare({
   accountId: 'account', apiToken: 'token', webAnalytics: { siteTag: 'site' },

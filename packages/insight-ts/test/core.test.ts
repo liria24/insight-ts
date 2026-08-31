@@ -1,3 +1,5 @@
+/* eslint-disable typescript/unbound-method, unicorn/consistent-function-scoping, vitest/require-mock-type-parameters */
+
 import { describe, expect, expectTypeOf, it, vi } from 'vitest'
 
 import {

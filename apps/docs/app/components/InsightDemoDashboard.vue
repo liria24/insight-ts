@@ -249,17 +249,17 @@ const selectMetric = (data: MetricQueryResult, metric: string): MetricQueryResul
                     <DemoOwnedSourceResults :data />
                     <UCard variant="subtle">
                         <p class="text-sm text-muted">
-                            Queried {{ data.execution.sources.length }} Sources at
+                            Queried {{ data.execution.capabilities.length }} capabilities at
                             {{ data.execution.queriedAt }}
                         </p>
                         <div class="mt-3 flex flex-wrap gap-2">
                             <UBadge
-                                v-for="source in data.execution.sources"
-                                :key="source"
+                                v-for="capability in data.execution.capabilities"
+                                :key="capability"
                                 color="neutral"
                                 variant="subtle"
                             >
-                                {{ source }}
+                                {{ capability }}
                             </UBadge>
                         </div>
                     </UCard>

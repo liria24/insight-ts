@@ -735,7 +735,11 @@ const requireMetricData = (value: unknown): MetricData => {
 }
 
 const metricPointKey = (point: { dimensions?: Partial<DimensionValues>; time?: string }): string =>
-    `${point.time ?? ''}\0${JSON.stringify(Object.entries(point.dimensions ?? {}).toSorted())}`
+    `${point.time ?? ''}\0${JSON.stringify(
+        Object.entries(point.dimensions ?? {}).toSorted(([left], [right]) =>
+            left.localeCompare(right),
+        ),
+    )}`
 
 const mergeMetricMeta = (
     contributions: readonly CapabilityContribution[],

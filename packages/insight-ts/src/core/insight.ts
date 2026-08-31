@@ -301,12 +301,6 @@ export const createInsight = <const TOptions extends CreateInsightOptions>(
                     },
                 ]
             })
-            if (plans.length === 0) {
-                throw new InsightError(
-                    'CAPABILITY_UNAVAILABLE',
-                    `No adapter can execute the "${name}" query in Scope "${scope}"`,
-                )
-            }
             const dedupeKey = `${scope}\0${name}\0${queryKey}`
             keys.push(dedupeKey)
             unique.set(dedupeKey, {
@@ -503,6 +497,12 @@ function executionResult(
 function validateExecutionResult(value: unknown): AdapterExecutionResult<unknown, object> {
     if (!isRecord(value) || !Object.hasOwn(value, 'data')) {
         throw new InsightError('INVALID_QUERY', 'Adapter returned an invalid execution result')
+    }
+    if (
+        value.nativeCursor !== undefined &&
+        (typeof value.nativeCursor !== 'string' || value.nativeCursor.length === 0)
+    ) {
+        throw new InsightError('INVALID_QUERY', 'Adapter native cursor must be a non-empty string')
     }
     // The data payload remains contract-owned after the shared envelope check.
     // eslint-disable-next-line typescript/no-unsafe-type-assertion

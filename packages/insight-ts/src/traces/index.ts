@@ -1,11 +1,19 @@
 import { InsightError } from '../core/errors.ts'
+import {
+    decodeContinuation,
+    encodeContinuation,
+    initialContinuation,
+    mergeContinuation,
+    shouldFetchContinuation,
+    type ContinuationState,
+} from '../core/pagination.ts'
 import { normalizeTimeRange, normalizeTimestamp, type TimeRange } from '../core/time.ts'
 import type {
     AdapterExecutionContext,
     CapabilityAdapterDefinition,
     CapabilityContract,
-    CapabilityContribution,
     CapabilitySchema,
+    InsightCursor,
     QueryQuality,
 } from '../core/types.ts'
 
@@ -78,6 +86,7 @@ export interface TraceData {
 }
 
 export interface TraceQuery {
+    cursor?: InsightCursor
     limit?: number
     time: TimeRange
     where?: TraceWhere
@@ -90,12 +99,15 @@ export interface CanonicalTraceFilter {
 }
 
 export interface NormalizedTraceQuery {
+    cursor?: InsightCursor
     limit?: number
+    nativeCursor?: string
     time: TimeRange
     where?: readonly CanonicalTraceFilter[]
 }
 
 export interface TraceAdapterOutput {
+    nativeCursor?: string
     quality?: QueryQuality
     traces: readonly TraceRecord[]
 }
@@ -134,6 +146,7 @@ export const defineTraceAdapter = (options: TraceAdapterOptions): TraceAdapterDe
             const output = await options.execute(query, context)
             return {
                 data: { traces: normalizeTraces(output.traces) },
+                ...(output.nativeCursor ? { nativeCursor: output.nativeCursor } : {}),
                 ...(output.quality ? { quality: output.quality } : {}),
             }
         },
@@ -147,35 +160,94 @@ export const defineTraceAdapter = (options: TraceAdapterOptions): TraceAdapterDe
 const traceContract: TraceContract = {
     key: (query) => JSON.stringify(query),
     merge(query, contributions) {
-        const traces = new Map<string, TraceRecord>()
-        for (const contribution of contributions) {
-            for (const trace of requireTraceData(contribution.result.data).traces) {
-                if (!traces.has(trace.traceId)) traces.set(trace.traceId, trace)
-            }
-        }
+        const context = requirePaginationContext(query)
+        const merged = mergeContinuation({
+            compare: compareTraces,
+            contributions: contributions.map((contribution) => {
+                const index = context.adapters.findIndex(
+                    (adapter) => adapter === contribution.adapter.definition,
+                )
+                if (index < 0) {
+                    throw new InsightError('INVALID_QUERY', 'Invalid Trace contribution')
+                }
+                return {
+                    index,
+                    ...(contribution.result.nativeCursor
+                        ? { nativeCursor: contribution.result.nativeCursor }
+                        : {}),
+                    records: requireTraceData(contribution.result.data).traces,
+                }
+            }),
+            id: (trace) => trace.traceId,
+            ...(query.limit === undefined ? {} : { limit: query.limit }),
+            state: context.state,
+        })
+        const next = merged.state
+            ? encodeContinuation('traces', context.key, merged.state)
+            : undefined
         return {
             contributions: contributions.map(({ result }) => ({
                 fields: traceFields(requireTraceData(result.data).traces),
                 ...(result.quality ? { quality: result.quality } : {}),
             })),
-            data: {
-                traces: [...traces.values()]
-                    .toSorted(
-                        (left, right) =>
-                            right.startTime.localeCompare(left.startTime) ||
-                            left.traceId.localeCompare(right.traceId),
-                    )
-                    .slice(0, query.limit),
-            },
+            data: { traces: merged.records },
+            ...(next ? { pagination: { next } } : {}),
         }
     },
     name: 'traces',
     normalize(input, adapters) {
         const traces = traceAdapters(adapters)
-        return normalizeTraceQuery(input, commonFilters(traces), commonAttributes(traces))
+        const query = normalizeTraceQuery(input, commonFilters(traces), commonAttributes(traces))
+        const key = logicalTraceKey(query)
+        tracePagination.set(query, {
+            adapters: traces,
+            key,
+            state: query.cursor
+                ? decodeContinuation({
+                      adapters: traces.length,
+                      capability: 'traces',
+                      cursor: query.cursor,
+                      query: key,
+                      records: normalizeTraces,
+                  })
+                : initialContinuation(traces.length),
+        })
+        return query
     },
-    plan: (query, adapter) => (isTraceAdapter(adapter) ? query : undefined),
+    plan(query, adapter) {
+        if (!isTraceAdapter(adapter)) return undefined
+        const context = requirePaginationContext(query)
+        const index = context.adapters.indexOf(adapter)
+        const page = context.state.pages[index]
+        if (index < 0 || !page || !shouldFetchContinuation(page, query.limit)) return undefined
+        return {
+            ...(query.limit === undefined ? {} : { limit: query.limit }),
+            ...(page.nativeCursor ? { nativeCursor: page.nativeCursor } : {}),
+            time: query.time,
+            ...(query.where ? { where: query.where } : {}),
+        }
+    },
 }
+
+interface TracePaginationContext {
+    adapters: readonly TraceAdapterDefinition[]
+    key: string
+    state: ContinuationState<TraceRecord>
+}
+
+const tracePagination = new WeakMap<object, TracePaginationContext>()
+const requirePaginationContext = (query: NormalizedTraceQuery): TracePaginationContext => {
+    const context = tracePagination.get(query)
+    if (!context) throw new InsightError('INVALID_QUERY', 'Missing Trace pagination state')
+    return context
+}
+const logicalTraceKey = ({
+    cursor: _cursor,
+    nativeCursor: _native,
+    ...query
+}: NormalizedTraceQuery) => JSON.stringify(query)
+const compareTraces = (left: TraceRecord, right: TraceRecord): number =>
+    right.startTime.localeCompare(left.startTime) || left.traceId.localeCompare(right.traceId)
 
 const normalizeTraceQuery = (
     input: unknown,
@@ -190,7 +262,11 @@ const normalizeTraceQuery = (
     if (query.limit !== undefined && (!Number.isInteger(query.limit) || Number(query.limit) <= 0)) {
         throw new InsightError('INVALID_QUERY', 'Query limit must be a positive integer')
     }
+    if (query.cursor !== undefined && typeof query.cursor !== 'string') {
+        throw new InsightError('INVALID_QUERY', 'Trace cursor must be an opaque string')
+    }
     return {
+        ...(typeof query.cursor === 'string' ? { cursor: query.cursor } : {}),
         ...(typeof query.limit === 'number' ? { limit: query.limit } : {}),
         time: normalizeTimeRange({ from: time.from, to: time.to }),
         ...(query.where === undefined
@@ -277,7 +353,7 @@ const normalizeCondition = (
     return filters
 }
 
-const normalizeTraces = (traces: readonly TraceRecord[]): readonly TraceRecord[] => {
+const normalizeTraces = (traces: unknown): readonly TraceRecord[] => {
     if (!Array.isArray(traces)) {
         throw new InsightError('INVALID_QUERY', 'Trace adapter returned invalid data')
     }
@@ -324,7 +400,10 @@ const normalizeSpan = (span: TraceSpan, traceId: string): TraceSpan => {
     validateStatus(span.status, 'Span')
     validateDuration(span.durationMs, 'Span durationMs')
     if (span.kind !== undefined && !spanKinds.has(span.kind)) {
-        throw new InsightError('INVALID_QUERY', `Unsupported span kind: ${String(span.kind)}`)
+        throw new InsightError(
+            'INVALID_QUERY',
+            `Unsupported span kind: ${JSON.stringify(span.kind)}`,
+        )
     }
     return {
         ...span,
@@ -339,14 +418,14 @@ const requireTraceData = (value: unknown): TraceData => {
     if (!isRecord(value) || !Array.isArray(value.traces)) {
         throw new InsightError('INVALID_QUERY', 'Trace adapter returned invalid data')
     }
-    return { traces: normalizeTraces(value.traces as readonly TraceRecord[]) }
+    return { traces: normalizeTraces(value.traces) }
 }
 
 const validateStatus = (status: unknown, name: string): void => {
     if (status !== undefined && !traceStatuses.has(status)) {
         throw new InsightError(
             'INVALID_QUERY',
-            `Unsupported ${name.toLowerCase()} status: ${String(status)}`,
+            `Unsupported ${name.toLowerCase()} status: ${JSON.stringify(status)}`,
         )
     }
 }

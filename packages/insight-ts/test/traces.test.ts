@@ -1,3 +1,5 @@
+/* eslint-disable vitest/require-mock-type-parameters */
+
 import { describe, expect, expectTypeOf, it, vi } from 'vitest'
 
 import { createInsight, defineProvider } from '../src/core/index.ts'
