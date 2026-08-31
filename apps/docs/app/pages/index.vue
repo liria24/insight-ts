@@ -6,7 +6,6 @@ useHead({ titleTemplate: '%s' })
     <main>
         <LandingHero />
         <LandingCapabilities />
-        <LandingEcosystem />
         <LandingDemo />
         <LandingHistory />
     </main>

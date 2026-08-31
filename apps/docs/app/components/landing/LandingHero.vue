@@ -1,14 +1,23 @@
 <script setup lang="ts">
 const { copied, copy } = useClipboard()
 
-const installCommand = 'bun add insight-ts'
+type packageManager = 'npm' | 'pnpm' | 'bun' | 'yarn'
+const packageManagers: Record<packageManager, { label: string; icon: string; install: string }> = {
+    npm: { label: 'npm', icon: 'simple-icons:npm', install: 'npm i' },
+    pnpm: { label: 'pnpm', icon: 'simple-icons:pnpm', install: 'pnpm add' },
+    bun: { label: 'Bun', icon: 'simple-icons:bun', install: 'bun add' },
+    yarn: { label: 'yarn', icon: 'simple-icons:yarn', install: 'yarn add' },
+}
+const selectPM = ref<packageManager>('npm')
+const displayCommand = computed(() => `${packageManagers[selectPM.value].install} insight-ts`)
+
 const ecosystem = [
-    { name: 'Cloudflare', icon: 'simple-icons:cloudflare', kind: 'Provider' },
-    { name: 'Search Console', icon: 'simple-icons:google', kind: 'Provider' },
-    { name: 'Nitro', icon: 'mingcute:server-2-line', kind: 'Runtime' },
-    { name: 'Nuxt', icon: 'simple-icons:nuxt', kind: 'Framework' },
-    { name: 'Browser', icon: 'mingcute:earth-2-line', kind: 'Client' },
-    { name: 'Vue', icon: 'simple-icons:vuedotjs', kind: 'UI' },
+    {
+        name: 'Cloudflare',
+        icon: 'simple-icons:cloudflare',
+        kind: 'Web Analytics, Analytics Engine',
+    },
+    { name: 'Search Console', icon: 'simple-icons:google', kind: 'Search Metrics' },
 ]
 </script>
 
@@ -38,31 +47,47 @@ const ecosystem = [
                 </p>
 
                 <div class="mt-10 flex flex-col items-center justify-center gap-3 sm:flex-row">
-                    <UButton
-                        :label="installCommand"
-                        :trailing-icon="copied ? 'mingcute:check-line' : 'mingcute:copy-2-line'"
-                        variant="outline"
-                        color="neutral"
-                        size="xl"
-                        :ui="{ label: 'leading-none', trailingIcon: 'size-4.5' }"
-                        class="rounded-full px-5 font-mono"
-                        @click="copy(installCommand)"
-                    />
+                    <div class="relative group">
+                        <UButton
+                            :label="displayCommand"
+                            :trailing-icon="copied ? 'mingcute:check-line' : 'mingcute:copy-2-line'"
+                            variant="outline"
+                            color="neutral"
+                            size="xl"
+                            :ui="{
+                                label: 'text-ellipsis [text-box:trim-both_cap_alphabetic]',
+                                trailingIcon: 'size-4.5',
+                            }"
+                            class="rounded-full px-6 py-3 font-mono"
+                            @click="copy(displayCommand)"
+                        />
+
+                        <div
+                            class="absolute inset-x-0 pt-2 opacity-0 group-hover:opacity-100 transition-opacity"
+                        >
+                            <UButton
+                                v-for="(pm, key) in packageManagers"
+                                :icon="pm.icon"
+                                variant="link"
+                                color="neutral"
+                                @click="selectPM = key"
+                            />
+                        </div>
+                    </div>
+
                     <UButton
                         to="/getting-started/introduction"
                         label="Read the docs"
                         trailing-icon="mingcute:arrow-right-line"
                         color="neutral"
                         size="xl"
-                        :ui="{ label: 'leading-none', trailingIcon: 'size-4.5' }"
-                        class="rounded-full px-5"
+                        :ui="{
+                            label: 'text-ellipsis [text-box:trim-both_cap_alphabetic]',
+                            trailingIcon: 'size-4.5',
+                        }"
+                        class="rounded-full px-6 py-3"
                     />
                 </div>
-
-                <p class="text-dimmed mt-5 text-sm">
-                    Start with one Source. Add Providers, History, events, runtimes, and UI only
-                    when you need them.
-                </p>
             </div>
         </UContainer>
 
@@ -71,12 +96,9 @@ const ecosystem = [
                 <p
                     class="text-dimmed mb-6 text-center text-xs font-medium tracking-[0.2em] uppercase"
                 >
-                    Providers and integrations
+                    Providers
                 </p>
-                <ul
-                    aria-label="Supported Providers and integrations"
-                    class="grid grid-cols-2 gap-x-4 gap-y-6 sm:grid-cols-3 lg:grid-cols-6"
-                >
+                <ul aria-label="Supported Providers" class="grid grid-cols-2 gap-x-4 gap-y-6">
                     <li
                         v-for="item in ecosystem"
                         :key="item.name"
