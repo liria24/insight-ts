@@ -1,9 +1,9 @@
 import { InsightError, ProviderError } from '../../core/errors.ts'
 import {
-    defineMetricSource,
+    defineMetricAdapter,
     type CanonicalWhere,
-    type MetricSourcePoint,
-    type MetricSourceOutput,
+    type MetricAdapterPoint,
+    type MetricAdapterOutput,
     type MetricValues,
 } from '../../metrics/index.ts'
 import { fetchWithRetry } from '../shared/fetch-with-retry.ts'
@@ -79,7 +79,7 @@ export interface GoogleSearchConsoleOptions {
     property: string
 }
 
-export type GoogleSearchConsoleSource = ReturnType<typeof googleSearchConsoleSource>
+export type GoogleSearchConsoleAdapter = ReturnType<typeof googleSearchConsoleAdapter>
 export type GoogleSearchConsoleProvider = ReturnType<typeof googleSearchConsole>
 
 interface SearchAnalyticsRow {
@@ -103,11 +103,11 @@ interface SearchAnalyticsMetadata {
 export function googleSearchConsole(options: GoogleSearchConsoleOptions) {
     return {
         id: 'google-search-console',
-        sources: { searchAnalytics: googleSearchConsoleSource(options) },
+        adapters: { searchAnalytics: googleSearchConsoleAdapter(options) },
     } as const
 }
 
-function googleSearchConsoleSource(options: GoogleSearchConsoleOptions) {
+function googleSearchConsoleAdapter(options: GoogleSearchConsoleOptions) {
     const fetcher = options.fetch ?? globalThis.fetch
     const dataState = options.dataState ?? 'final'
     const maxRows = options.maxRows ?? DEFAULT_MAX_ROWS
@@ -149,7 +149,7 @@ function googleSearchConsoleSource(options: GoogleSearchConsoleOptions) {
     const execute = async (
         query: ResolvedMetricQuery,
         signal?: AbortSignal,
-    ): Promise<MetricSourceOutput> => {
+    ): Promise<MetricAdapterOutput> => {
         validate(query)
         if (!options.auth.getAccessToken) {
             throw new InsightError(
@@ -273,7 +273,7 @@ function googleSearchConsoleSource(options: GoogleSearchConsoleOptions) {
         return googleReport(query, rows, metadata, truncatedByMaxRows ? maxRows : undefined)
     }
 
-    return defineMetricSource({
+    return defineMetricAdapter({
         dimensions: {
             country: { operators: ['eq'], type: 'string' },
             date: { operators: [], type: 'date' },
@@ -384,7 +384,7 @@ function googleReport(
     rows: NormalizedSearchAnalyticsRow[],
     metadata: SearchAnalyticsMetadata | undefined,
     maxRows: number | undefined,
-): MetricSourceOutput {
+): MetricAdapterOutput {
     const exactRange = canRepresentRangeExactly(query)
     const incompleteFrom =
         typeof metadata?.first_incomplete_date === 'string'
@@ -432,7 +432,7 @@ function googleReport(
                   },
               ]),
     ]
-    const meta: Pick<MetricSourceOutput, 'meta' | 'quality'> = {
+    const meta: Pick<MetricAdapterOutput, 'meta' | 'quality'> = {
         meta: {
             ...(incompleteFrom === undefined ? {} : { freshness: { incompleteFrom } }),
             temporal: {
@@ -450,7 +450,7 @@ function googleReport(
     const dimensions = query.dimensions.flatMap((dimension, index) =>
         index === timeIndex ? [] : [[dimension, index] as const],
     )
-    const points: MetricSourcePoint[] = []
+    const points: MetricAdapterPoint[] = []
     let clicks = 0
     let impressions = 0
     let weightedPosition = 0

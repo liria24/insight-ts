@@ -1,11 +1,11 @@
 import { InsightError, ProviderError } from '../../core/errors.ts'
 import type { Event, EventDestination, ProviderDefinition } from '../../core/types.ts'
 import {
-    defineMetricSource,
+    defineMetricAdapter,
     type CanonicalWhere,
     type DimensionValue,
-    type MetricSourceOutput,
-    type MetricSourcePoint,
+    type MetricAdapterOutput,
+    type MetricAdapterPoint,
     type MetricValues,
 } from '../../metrics/index.ts'
 import { fetchWithRetry } from '../shared/fetch-with-retry.ts'
@@ -75,8 +75,8 @@ interface CloudflareAnalyticsEngineOptions {
 }
 
 interface CloudflareAnalyticsEngineResource {
+    adapter?: ReturnType<typeof analyticsEngineAdapter>
     events?: EventDestination
-    source?: ReturnType<typeof analyticsEngineSource>
 }
 
 export interface CloudflareOptions {
@@ -88,21 +88,21 @@ export interface CloudflareOptions {
     }
 }
 
-type CloudflareSources<TOptions extends CloudflareOptions> = (TOptions extends {
+type CloudflareAdapters<TOptions extends CloudflareOptions> = (TOptions extends {
     webAnalytics: Exclude<CloudflareOptions['webAnalytics'], undefined>
 }
     ? { readonly webAnalytics: ReturnType<typeof cloudflareWebAnalytics> }
     : Record<never, never>) &
     (TOptions extends { analyticsEngine: { dataset: string } }
-        ? { readonly analyticsEngine: ReturnType<typeof analyticsEngineSource> }
+        ? { readonly analyticsEngine: ReturnType<typeof analyticsEngineAdapter> }
         : Record<never, never>)
 
 type CloudflareProvider<TOptions extends CloudflareOptions> = ProviderDefinition<
     'cloudflare',
-    CloudflareSources<TOptions>
+    CloudflareAdapters<TOptions>
 > & {
+    readonly adapters: CloudflareAdapters<TOptions>
     readonly id: 'cloudflare'
-    readonly sources: CloudflareSources<TOptions>
 }
 
 function cloudflareWebAnalytics(options: CloudflareWebAnalyticsOptions) {
@@ -110,7 +110,7 @@ function cloudflareWebAnalytics(options: CloudflareWebAnalyticsOptions) {
     const execute = async (
         query: ResolvedMetricQuery,
         signal?: AbortSignal,
-    ): Promise<MetricSourceOutput> => {
+    ): Promise<MetricAdapterOutput> => {
         if (!options.accountId || !options.apiToken) {
             throw new InsightError(
                 'CONFIGURATION_MISSING',
@@ -176,7 +176,7 @@ function cloudflareWebAnalytics(options: CloudflareWebAnalyticsOptions) {
         return webReport(query, rows, errors, nativeLimit)
     }
 
-    return defineMetricSource({
+    return defineMetricAdapter({
         dimensions: {
             browser: { operators: ['eq', 'ne', 'in', 'notIn'], type: 'string' },
             country: { operators: ['eq', 'ne', 'in', 'notIn'], type: 'string' },
@@ -214,7 +214,7 @@ function cloudflareAnalyticsEngine(
 
     const resource: CloudflareAnalyticsEngineResource = {}
     if (options.dataset !== undefined) {
-        resource.source = analyticsEngineSource({
+        resource.adapter = analyticsEngineAdapter({
             ...(options.accountId === undefined ? {} : { accountId: options.accountId }),
             ...(options.apiToken === undefined ? {} : { apiToken: options.apiToken }),
             dataset: options.dataset,
@@ -252,13 +252,13 @@ export function cloudflare<const TOptions extends CloudflareOptions>(
               })
     const provider = {
         id: 'cloudflare',
-        sources: {
+        adapters: {
             ...webAnalytics,
-            ...(engine?.source === undefined ? {} : { analyticsEngine: engine.source }),
+            ...(engine?.adapter === undefined ? {} : { analyticsEngine: engine.adapter }),
         },
         ...(engine?.events === undefined ? {} : { events: engine.events }),
     } as const
-    // Runtime Source construction follows the same option predicates as CloudflareSources.
+    // Runtime adapter construction follows the same option predicates as CloudflareAdapters.
     // eslint-disable-next-line typescript/no-unsafe-type-assertion
     return provider as CloudflareProvider<TOptions>
 }
@@ -303,7 +303,7 @@ interface AnalyticsEngineReadOptions {
     now?: () => Date
 }
 
-function analyticsEngineSource(options: AnalyticsEngineReadOptions) {
+function analyticsEngineAdapter(options: AnalyticsEngineReadOptions) {
     if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(options.dataset)) {
         throw new TypeError('Analytics Engine dataset must be a SQL identifier')
     }
@@ -335,7 +335,7 @@ function analyticsEngineSource(options: AnalyticsEngineReadOptions) {
     const execute = async (
         query: ResolvedMetricQuery,
         signal?: AbortSignal,
-    ): Promise<MetricSourceOutput> => {
+    ): Promise<MetricAdapterOutput> => {
         if (!options.accountId || !options.apiToken) {
             throw new InsightError(
                 'CONFIGURATION_MISSING',
@@ -367,7 +367,7 @@ function analyticsEngineSource(options: AnalyticsEngineReadOptions) {
         return analyticsEngineReport(query, data)
     }
 
-    return defineMetricSource({
+    return defineMetricAdapter({
         dimensions: {
             name: { operators: ['eq'], type: 'string' },
             time: { operators: [], type: 'datetime' },
@@ -406,11 +406,11 @@ function analyticsEngineSql(dataset: string, query: ResolvedMetricQuery): string
     return `SELECT toStartOfInterval(timestamp, INTERVAL '1' ${unit}) AS time, SUM(_sample_interval) AS events, MAX(_sample_interval) AS sampleInterval FROM ${dataset} WHERE ${where} GROUP BY time ORDER BY time ASC LIMIT ${limit} FORMAT JSON`
 }
 
-function analyticsEngineReport(query: ResolvedMetricQuery, data: unknown[]): MetricSourceOutput {
+function analyticsEngineReport(query: ResolvedMetricQuery, data: unknown[]): MetricAdapterOutput {
     const rows = data.map((item) => record(item) ?? {})
     let maxInterval = 1
     let total = 0
-    const points: MetricSourcePoint[] = []
+    const points: MetricAdapterPoint[] = []
     const dimension = query.dimensions[0]
     for (const row of rows) {
         maxInterval = Math.max(maxInterval, number(row.sampleInterval) ?? 1)
@@ -551,7 +551,7 @@ function webReport(
     input: WebAnalyticsRow[],
     errors: GraphQLErrorShape[],
     nativeLimit: number,
-): MetricSourceOutput {
+): MetricAdapterOutput {
     const rows = rollupWebRows(query, input)
     const limited = query.limit === undefined ? rows : rows.slice(0, query.limit)
     let maxInterval = 1
@@ -672,8 +672,8 @@ function sumWebMetrics(metrics: readonly string[], rows: WebAnalyticsRow[]): Met
 
 function reportMeta(
     query: ResolvedMetricQuery,
-    quality: NonNullable<MetricSourceOutput['quality']>,
-): Pick<MetricSourceOutput, 'meta' | 'quality'> {
+    quality: NonNullable<MetricAdapterOutput['quality']>,
+): Pick<MetricAdapterOutput, 'meta' | 'quality'> {
     return {
         quality,
         meta: {

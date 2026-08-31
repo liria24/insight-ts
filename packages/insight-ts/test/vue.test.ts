@@ -51,9 +51,9 @@ const data: MetricQueryResult<'pageViews' | 'visits', 'country'> = {
         values: { pageViews: 2_626, visits: 1_701 },
     },
     meta: {
+        contributions: [],
         quality: { approximate: true, sampled: true, sampleRate: 0.25 },
         queriedAt: '2026-08-29T00:00:00.000Z',
-        source: 'demo.traffic',
         temporal: { bucketTimezone: 'UTC', grain: 'day' },
     },
 }

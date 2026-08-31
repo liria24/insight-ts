@@ -4,17 +4,17 @@ import {
     createInsight,
     defineProvider,
     type ProviderExecutionRequest,
-    type SourceExecutionResult,
+    type AdapterExecutionResult,
 } from '../src/core/index.ts'
 import { createHistory, type HistoryRepository, type HistorySegment } from '../src/history/index.ts'
-import { defineMetricSource, type TimeRange } from '../src/metrics/index.ts'
+import { defineMetricAdapter, type TimeRange } from '../src/metrics/index.ts'
 
 const range: TimeRange = {
     from: '2026-08-01T00:00:00.000Z',
     to: '2026-08-03T00:00:00.000Z',
 }
 
-const metricSource = defineMetricSource({
+const metricSource = defineMetricAdapter({
     dimensions: { service: { operators: ['eq'], type: 'string' } },
     execute: async (query) => ({
         points: [
@@ -75,17 +75,17 @@ describe('Metric History strategy', () => {
         const execute = vi.fn<
             (
                 requests: readonly ProviderExecutionRequest[],
-            ) => Promise<readonly SourceExecutionResult<unknown, object>[]>
+            ) => Promise<readonly AdapterExecutionResult<unknown, object>[]>
         >(
             async (
                 requests: readonly ProviderExecutionRequest[],
-            ): Promise<readonly SourceExecutionResult<unknown, object>[]> =>
+            ): Promise<readonly AdapterExecutionResult<unknown, object>[]> =>
                 Promise.all(requests.map((request) => request.execute())),
         )
         const provider = defineProvider({
             execute,
             id: 'otel',
-            sources: { metrics: metricSource },
+            adapters: { metrics: metricSource },
         })
         const insight = createInsight({
             history: createHistory({ repository, sources: ['otel.metrics'] }),
@@ -97,7 +97,7 @@ describe('Metric History strategy', () => {
         expect(execute).toHaveBeenCalledOnce()
         expect(repository.segments).toHaveLength(1)
         const dashboard = await insight.query((q) => ({
-            requests: q.source.otel.metrics({
+            requests: q.metrics({
                 dimensions: ['service'],
                 metrics: ['requests'],
                 time: { ...range, grain: 'day' },
@@ -116,13 +116,13 @@ describe('Metric History strategy', () => {
         const repository = new MemoryRepository()
         const insight = createInsight({
             history: createHistory({ repository, sources: ['otel.metrics'] }),
-            providers: [defineProvider({ id: 'otel', sources: { metrics: metricSource } })],
+            providers: [defineProvider({ adapters: { metrics: metricSource }, id: 'otel' })],
         })
         await insight.history.sync({ range })
 
         await expect(
             insight.query((q) => ({
-                latency: q.source.otel.metrics({
+                latency: q.metrics({
                     metrics: ['latencyP95'],
                     time: { ...range, grain: 'week' },
                 }),
@@ -140,11 +140,11 @@ describe('Metric History strategy', () => {
                 repository: new MemoryRepository(),
                 sources: ['otel.metrics'],
             }),
-            providers: [defineProvider({ id: 'otel', sources: { metrics: source } })],
+            providers: [defineProvider({ adapters: { metrics: source }, id: 'otel' })],
         })
 
         await insight.query((q) => ({
-            filtered: q.source.otel.metrics({
+            filtered: q.metrics({
                 metrics: ['requests'],
                 time: range,
                 where: { service: 'api' },

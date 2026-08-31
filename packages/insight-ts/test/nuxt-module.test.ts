@@ -82,8 +82,8 @@ describe('Nitro and Nuxt integration', () => {
                 values: { requests: 0 },
             },
             meta: {
+                contributions: [],
                 queriedAt: '2026-08-28T00:00:00.000Z',
-                source: 'app.usage',
                 temporal: { grain: 'day' as const },
             },
             schemaVersion: 1 as const,

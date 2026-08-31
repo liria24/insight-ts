@@ -1,13 +1,13 @@
-import { createInsight, defineProvider, defineSource } from 'insight-ts'
+import { createInsight, defineProvider } from 'insight-ts'
+import { defineMetricAdapter } from 'insight-ts/metrics'
 
-const source = defineSource({
-    execute: ({ value }: { value: number }) => ({ data: value }),
-    key: ({ value }: { value: number }) => String(value),
-    normalize: ({ value }: { value: number }) => ({ value }),
+const adapter = defineMetricAdapter({
+    execute: () => ({ values: { value: 1 } }),
+    metrics: { value: {} },
 })
 
-const core = createInsight({
-    providers: [defineProvider({ id: 'app', sources: { value: source } })],
+Object.assign(globalThis, {
+    __insightBundleFixture: createInsight({
+        providers: [defineProvider({ adapters: { value: adapter }, id: 'fixture' })],
+    }),
 })
-
-Object.assign(globalThis, { __insightBundleFixture: core })

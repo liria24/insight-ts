@@ -1,10 +1,11 @@
 import { InsightError } from '../core/errors.ts'
 import type {
+    AdapterExecutionContext,
+    CapabilityAdapterDefinition,
+    CapabilityContract,
+    CapabilityContribution,
+    CapabilitySchema,
     QueryQuality,
-    SourceDefinition,
-    SourceExecutionContext,
-    SourceResultResolver,
-    sourceResultType,
 } from '../core/types.ts'
 
 export interface TimeRange {
@@ -166,11 +167,11 @@ export interface NormalizedMetricQuery {
     where?: CanonicalWhere
 }
 
-export type MetricSourcePoint = MetricPoint
+export type MetricAdapterPoint = MetricPoint
 
-export interface MetricSourceOutput {
+export interface MetricAdapterOutput {
     meta?: MetricMeta
-    points?: readonly MetricSourcePoint[]
+    points?: readonly MetricAdapterPoint[]
     quality?: QueryQuality
     values: MetricValues
 }
@@ -211,67 +212,71 @@ export interface MetricHistoryStrategy {
     metrics?: readonly string[]
 }
 
-type SelectedMetric<TQuery> = TQuery extends {
-    metrics: readonly (infer TMetric extends string)[]
+interface CanonicalMetricQueryInput {
+    limit?: number
+    time: TimeRange & { grain?: Grain }
+    timezone?: string
+    where?: Readonly<Record<string, unknown>>
 }
-    ? TMetric
-    : never
-type SelectedDimension<TQuery> = TQuery extends {
-    dimensions: readonly (infer TDimension extends string)[]
-}
-    ? TDimension
-    : never
 
-interface MetricSourceResult<
+type MetricCapabilitySchema<
     TMetrics extends MetricDefinitions,
     TDimensions extends DimensionDefinitions,
-> extends SourceResultResolver {
-    readonly data: MetricData<
-        Extract<SelectedMetric<this['query']>, keyof TMetrics & string>,
-        Extract<SelectedDimension<this['query']>, keyof TDimensions & string>
-    >
-}
+> = CapabilitySchema<
+    CanonicalMetricQueryInput,
+    MetricData,
+    MetricMeta,
+    {
+        dimensions: Extract<keyof TDimensions, string>
+        metrics: Extract<keyof TMetrics, string>
+    },
+    'metrics'
+>
 
-export interface MetricSourceDefinition<
+type MetricContract = CapabilityContract<'metrics', NormalizedMetricQuery>
+
+export interface MetricAdapterDefinition<
     TMetrics extends MetricDefinitions = MetricDefinitions,
     TDimensions extends DimensionDefinitions = DimensionDefinitions,
-> extends SourceDefinition<
+> extends CapabilityAdapterDefinition<
+    'metrics',
+    MetricCapabilitySchema<TMetrics, TDimensions>,
     MetricQuery<TMetrics, TDimensions>,
     NormalizedMetricQuery,
     MetricData,
     MetricMeta
 > {
-    readonly [sourceResultType]?: MetricSourceResult<TMetrics, TDimensions>
     dimensions: DimensionDefinitions
     history?: MetricHistoryStrategy
-    metricSource: true
+    metricAdapter: true
     metrics: TMetrics
 }
 
-export interface MetricSourceOptions<
+export interface MetricAdapterOptions<
     TMetrics extends MetricDefinitions,
     TDimensions extends DimensionDefinitions,
 > {
     dimensions?: TDimensions
     execute(
         query: NormalizedMetricQuery,
-        context: SourceExecutionContext,
-    ): Promise<MetricSourceOutput> | MetricSourceOutput
+        context: AdapterExecutionContext,
+    ): Promise<MetricAdapterOutput> | MetricAdapterOutput
     history?: MetricHistoryStrategy
     metrics: TMetrics
 }
 
-export const defineMetricSource = <
+export const defineMetricAdapter = <
     const TMetrics extends MetricDefinitions,
     const TDimensions extends DimensionDefinitions = Record<never, never>,
 >(
-    options: MetricSourceOptions<TMetrics, TDimensions>,
-): MetricSourceDefinition<TMetrics, TDimensions> => {
+    options: MetricAdapterOptions<TMetrics, TDimensions>,
+): MetricAdapterDefinition<TMetrics, TDimensions> => {
     validateMetricDefinitions(options.metrics)
     const dimensions = options.dimensions ?? {}
-    const source: MetricSourceDefinition<TMetrics, TDimensions> = {
+    const adapter: MetricAdapterDefinition<TMetrics, TDimensions> = {
+        contract: metricContract,
         dimensions,
-        async execute(query: NormalizedMetricQuery, context: SourceExecutionContext) {
+        async execute(query: NormalizedMetricQuery, context: AdapterExecutionContext) {
             const output = await options.execute(query, context)
             return {
                 data: metricData(query, output),
@@ -281,12 +286,12 @@ export const defineMetricSource = <
         },
         ...(options.history ? { history: options.history } : {}),
         key: (query: NormalizedMetricQuery) => JSON.stringify(query),
-        metricSource: true as const,
+        metricAdapter: true as const,
         metrics: options.metrics,
         normalize: (input: MetricQuery<TMetrics, TDimensions>) =>
             normalizeMetricQuery(input, options.metrics, dimensions),
     }
-    return source
+    return adapter
 }
 
 const normalizeMetricQuery = (
@@ -526,7 +531,7 @@ const whereOperators = new Set<string>([
 ])
 const isWhereOperator = (value: string): value is WhereOperator => whereOperators.has(value)
 
-const metricData = (query: NormalizedMetricQuery, output: MetricSourceOutput): MetricData => {
+const metricData = (query: NormalizedMetricQuery, output: MetricAdapterOutput): MetricData => {
     const points = (output.points ?? []).map((point) => ({
         ...(point.dimensions ? { dimensions: point.dimensions } : {}),
         ...(point.time ? { time: normalizeTimestamp(point.time, 'Metric point time') } : {}),
@@ -595,3 +600,172 @@ const requireRecord = (value: unknown, name: string): Record<string, unknown> =>
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
     typeof value === 'object' && value !== null && !Array.isArray(value)
+
+const metricContract: MetricContract = {
+    key: (query) => JSON.stringify(query),
+    merge(query, contributions) {
+        const rows = new Map<
+            string,
+            {
+                dimensions?: Partial<DimensionValues>
+                time?: string
+                values: Record<string, number | null>
+            }
+        >()
+        const values: Record<string, number | null> = Object.fromEntries(
+            query.metrics.map((metric) => [metric, null]),
+        )
+        for (const contribution of contributions) {
+            const data = requireMetricData(contribution.result.data)
+            for (const metric of query.metrics) {
+                if (Object.hasOwn(data.values, metric)) values[metric] = data.values[metric] ?? null
+            }
+            for (const point of data.points ?? []) {
+                const key = metricPointKey(point)
+                const row = rows.get(key) ?? {
+                    ...(point.dimensions ? { dimensions: point.dimensions } : {}),
+                    ...(point.time ? { time: point.time } : {}),
+                    values: Object.fromEntries(query.metrics.map((metric) => [metric, null])),
+                }
+                for (const metric of query.metrics) {
+                    if (Object.hasOwn(point.values, metric)) {
+                        row.values[metric] = point.values[metric] ?? null
+                    }
+                }
+                rows.set(key, row)
+            }
+        }
+        const points = [...rows.values()].toSorted((left, right) =>
+            metricPointKey(left).localeCompare(metricPointKey(right)),
+        )
+        return {
+            contributions: contributions.map(({ result }) => ({
+                fields: Object.keys(requireMetricData(result.data).values),
+                ...(result.quality ? { quality: result.quality } : {}),
+            })),
+            data: { ...(points.length > 0 ? { points } : {}), values },
+            ...mergeMetricMeta(contributions),
+        }
+    },
+    name: 'metrics',
+    normalize(input, adapters) {
+        const metrics = metricAdapters(adapters)
+        const query = requireRecord(input, 'Metric query')
+        const selected = stringArray(query.metrics, 'metrics')
+        const owners = new Map<string, MetricAdapterDefinition>()
+        for (const adapter of metrics) {
+            for (const metric of Object.keys(adapter.metrics)) owners.set(metric, adapter)
+        }
+        const contributing = new Set<MetricAdapterDefinition>()
+        for (const metric of selected) {
+            const owner = owners.get(metric)
+            if (!owner) {
+                throw new InsightError('UNSUPPORTED_METRIC', `Unsupported metric: ${metric}`)
+            }
+            contributing.add(owner)
+        }
+        return normalizeMetricQuery(
+            input,
+            Object.fromEntries(metrics.flatMap((adapter) => Object.entries(adapter.metrics))),
+            compatibleDimensions([...contributing]),
+        )
+    },
+    plan(query, adapter) {
+        if (!isMetricAdapter(adapter)) return undefined
+        const metrics = query.metrics.filter((metric) => Object.hasOwn(adapter.metrics, metric))
+        return metrics.length === 0 ? undefined : { ...query, metrics }
+    },
+    validate(adapters) {
+        const owners = new Map<string, MetricAdapterDefinition>()
+        for (const adapter of metricAdapters(adapters)) {
+            for (const metric of Object.keys(adapter.metrics)) {
+                if (owners.has(metric)) {
+                    throw new InsightError(
+                        'INVALID_QUERY',
+                        `Metric "${metric}" has more than one adapter in the Scope`,
+                    )
+                }
+                owners.set(metric, adapter)
+            }
+        }
+    },
+}
+
+const metricAdapters = (adapters: readonly object[]): MetricAdapterDefinition[] => {
+    const metrics = adapters.filter(isMetricAdapter)
+    if (metrics.length !== adapters.length) {
+        throw new InsightError('INVALID_QUERY', 'Metrics contract received an invalid adapter')
+    }
+    return metrics
+}
+
+const isMetricAdapter = (value: object): value is MetricAdapterDefinition =>
+    isRecord(value) &&
+    value.metricAdapter === true &&
+    isRecord(value.metrics) &&
+    isRecord(value.dimensions)
+
+const compatibleDimensions = (
+    adapters: readonly MetricAdapterDefinition[],
+): DimensionDefinitions => {
+    if (adapters.length === 0) return {}
+    const dimensions: Record<string, DimensionInput> = {}
+    for (const [field, definition] of Object.entries(adapters[0]!.dimensions)) {
+        const type = dimensionType(definition)
+        const operators = defaultedOperators(definition)
+        if (
+            adapters.slice(1).every((adapter) => {
+                const candidate = adapter.dimensions[field]
+                return candidate !== undefined && dimensionType(candidate) === type
+            })
+        ) {
+            const common = [...operators].filter((operator) =>
+                adapters
+                    .slice(1)
+                    .every((adapter) =>
+                        defaultedOperators(adapter.dimensions[field]!).has(operator),
+                    ),
+            )
+            dimensions[field] = { operators: common, type }
+        }
+    }
+    return dimensions
+}
+
+const dimensionType = (definition: DimensionInput): DimensionValueType =>
+    typeof definition === 'string' ? definition : definition.type
+
+const defaultedOperators = (definition: DimensionInput): Set<WhereOperator> =>
+    new Set(
+        typeof definition === 'string' || !definition.operators
+            ? defaultOperators(dimensionType(definition))
+            : definition.operators,
+    )
+
+const requireMetricData = (value: unknown): MetricData => {
+    if (!isRecord(value) || !isRecord(value.values)) {
+        throw new InsightError('INVALID_QUERY', 'Metric adapter returned invalid data')
+    }
+    const points = value.points
+    if (points !== undefined && !Array.isArray(points)) {
+        throw new InsightError('INVALID_QUERY', 'Metric adapter returned invalid points')
+    }
+    // Metric adapters construct this value at the canonical boundary.
+    // eslint-disable-next-line typescript/no-unsafe-type-assertion
+    return value as unknown as MetricData
+}
+
+const metricPointKey = (point: { dimensions?: Partial<DimensionValues>; time?: string }): string =>
+    `${point.time ?? ''}\0${JSON.stringify(Object.entries(point.dimensions ?? {}).toSorted())}`
+
+const mergeMetricMeta = (
+    contributions: readonly CapabilityContribution[],
+): { meta?: MetricMeta } => {
+    const metas = contributions.flatMap(({ result }) => (result.meta ? [result.meta] : []))
+    if (metas.length === 0) return {}
+    const first = JSON.stringify(metas[0])
+    if (!metas.every((meta) => JSON.stringify(meta) === first)) return {}
+    // Metric adapters are the only producers accepted by this contract.
+    // eslint-disable-next-line typescript/no-unsafe-type-assertion
+    return { meta: metas[0] as MetricMeta }
+}

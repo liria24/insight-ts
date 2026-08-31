@@ -1,13 +1,8 @@
-import type { ProviderDefinition, SourceDefinition } from './types.ts'
+import type { CapabilityAdapterDefinition, ProviderDefinition } from './types.ts'
 
-export const defineSource = <
-    const TQuery,
-    const TNormalized,
-    TData,
-    const TMeta extends object = Record<never, never>,
->(
-    source: SourceDefinition<TQuery, TNormalized, TData, TMeta>,
-): SourceDefinition<TQuery, TNormalized, TData, TMeta> => source
+export const defineCapabilityAdapter = <const TAdapter extends CapabilityAdapterDefinition>(
+    adapter: TAdapter,
+): TAdapter => adapter
 
 export const defineProvider = <const TProvider extends ProviderDefinition>(
     provider: TProvider,

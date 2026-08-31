@@ -44,6 +44,6 @@ function createData(): MetricQueryResult<'visits'> {
             ],
             values: { visits: 25 },
         },
-        meta: { queriedAt: '2026-08-29T00:00:00.000Z', source: 'test.metrics' },
+        meta: { contributions: [], queriedAt: '2026-08-29T00:00:00.000Z' },
     }
 }

@@ -20,7 +20,7 @@ const data = {
         ],
         values: { views: 1 },
     },
-    meta: { queriedAt: '2026-08-31T00:00:00.000Z', source: 'fixture' },
+    meta: { contributions: [], queriedAt: '2026-08-31T00:00:00.000Z' },
 }
 </script>
 

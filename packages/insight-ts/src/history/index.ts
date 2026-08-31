@@ -19,7 +19,7 @@ import {
     type MetricData,
     type MetricDefinition,
     type MetricMeta,
-    type MetricSourceDefinition,
+    type MetricAdapterDefinition,
     type MetricPoint,
     type NormalizedMetricQuery,
     normalizeTimeRange,
@@ -99,7 +99,7 @@ class HistoryEngine implements HistoryRuntime<HistoryController> {
             if (!source) {
                 throw new InsightError('SOURCE_NOT_FOUND', `Unknown History Source: ${sourceId}`)
             }
-            if (!metricSource(source)?.history) {
+            if (!metricAdapter(source)?.history) {
                 throw new InsightError(
                     'CAPABILITY_UNAVAILABLE',
                     `Source "${sourceId}" does not declare Metric History`,
@@ -110,7 +110,7 @@ class HistoryEngine implements HistoryRuntime<HistoryController> {
 
     handles(source: RuntimeSource, input: unknown): boolean {
         if (!this.#sourceIds.has(source.id)) return false
-        const definition = metricSource(source)
+        const definition = metricAdapter(source)
         if (!definition?.history || !isNormalizedMetricQuery(input)) return false
         const metrics = new Set(definition.history.metrics ?? Object.keys(definition.metrics))
         const dimensions = new Set(definition.history.dimensions ?? [])
@@ -185,7 +185,7 @@ class HistoryEngine implements HistoryRuntime<HistoryController> {
     ): Promise<QueryResult<unknown, object>> {
         if (!this.handles(source, input) || !isNormalizedMetricQuery(input)) return live()
         const query = input
-        const definition = metricSource(source)
+        const definition = metricAdapter(source)
         if (!definition) return invalidHistory(source.id)
         const segments = validSegments(
             await this.#instrument('insight.history.read', { 'insight.source': source.id }, () =>
@@ -224,7 +224,7 @@ class HistoryEngine implements HistoryRuntime<HistoryController> {
                 ...(fidelity.length > 0 ? { fidelity } : {}),
                 ...(quality ? { quality } : {}),
                 queriedAt: this.#context.now().toISOString(),
-                source: source.id,
+                contributions: quality ? [{ quality }] : [],
                 temporal: {
                     ...(query.grain === 'auto' ? {} : { grain: query.grain }),
                     ...(query.timezone ? { bucketTimezone: query.timezone } : {}),
@@ -262,7 +262,7 @@ const historyRequest = (
     range: TimeRange,
     query?: NormalizedMetricQuery,
 ): SourceRequest => {
-    const definition = metricSource(source)
+    const definition = metricAdapter(source)
     if (!definition?.history) return invalidHistory(source.id)
     return {
         query: {
@@ -279,14 +279,14 @@ const historyRequest = (
     }
 }
 
-const metricSource = (source: RuntimeSource): MetricSourceDefinition | undefined => {
+const metricAdapter = (source: RuntimeSource): MetricAdapterDefinition | undefined => {
     const definition = source.definition
-    return isMetricSourceDefinition(definition) ? definition : undefined
+    return isMetricAdapterDefinition(definition) ? definition : undefined
 }
 
-const isMetricSourceDefinition = (value: unknown): value is MetricSourceDefinition =>
+const isMetricAdapterDefinition = (value: unknown): value is MetricAdapterDefinition =>
     isRecord(value) &&
-    value.metricSource === true &&
+    value.metricAdapter === true &&
     isRecord(value.metrics) &&
     isRecord(value.dimensions) &&
     typeof value.normalize === 'function' &&
@@ -346,7 +346,7 @@ const mergeData = (values: readonly MetricData[]): MetricData => {
 
 const materialize = (
     data: MetricData,
-    source: MetricSourceDefinition,
+    source: MetricAdapterDefinition,
     query: NormalizedMetricQuery,
 ): MetricData => {
     const resolve = (metric: string, points: readonly MetricPoint[]): number | null => {
@@ -427,7 +427,7 @@ const aggregate = (
     values: readonly (number | null)[],
     definition: MetricDefinition,
     metric: string,
-    source: MetricSourceDefinition,
+    source: MetricAdapterDefinition,
 ): number | null => {
     const present = values.filter((value): value is number => value !== null)
     if (definition.rollup === 'additive') {
@@ -500,7 +500,7 @@ async function applyReductions(
             data = mapPoints(data, (points) => points.slice(0, reduction.limit))
             transformations.push({ kind: 'truncate', limit: reduction.limit })
         } else if (reduction.kind === 'aggregate') {
-            const definition = metricSource(source)
+            const definition = metricAdapter(source)
             if (!definition) return invalidHistory(source.id)
             data = materialize(data, definition, {
                 dimensions: allDimensions(data),
