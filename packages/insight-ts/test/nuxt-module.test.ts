@@ -1,6 +1,6 @@
 import { createStorage } from 'unstorage'
 import memoryDriver from 'unstorage/drivers/memory'
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 
 import {
     createNitroHistoryRepository,
@@ -14,21 +14,21 @@ import {
 describe('Nitro and Nuxt integration', () => {
     it('only wires History into the generated server runtime when configured', () => {
         expect(
-            createServerRuntimeTemplate({ cloudflareWebAnalytics: false, historySources: [] }),
+            createServerRuntimeTemplate({ cloudflareWebAnalytics: false, history: false }),
         ).not.toContain('insight-ts/history')
         const source = createServerRuntimeTemplate({
             cloudflareWebAnalytics: false,
-            historySources: ['app.usage'],
+            history: { capabilities: ['metrics'] },
         })
         expect(source).toContain("createNitroHistoryRepository(useStorage('insight'))")
-        expect(source).toContain('sources: ["app.usage"]')
+        expect(source).toContain('capabilities: ["metrics"]')
         expect(source).not.toContain('h3')
     })
 
     it('configures Cloudflare from Nuxt runtime config with a typed Source', () => {
         const source = createServerRuntimeTemplate({
             cloudflareWebAnalytics: true,
-            historySources: [],
+            history: false,
         })
         expect(source).toContain('runtimeConfig.cloudflare')
         expect(source).not.toContain('runtimeConfig.insight')
@@ -38,7 +38,6 @@ describe('Nitro and Nuxt integration', () => {
         const types = createServerRuntimeTypeTemplate({
             cloudflareWebAnalytics: true,
             history: false,
-            historySources: [],
         })
         expect(types).toContain('ReturnType<typeof cloudflare<')
         expect(types).toContain('InsightClient<RuntimeConfig>')
@@ -73,6 +72,8 @@ describe('Nitro and Nuxt integration', () => {
         const storage = createStorage({ driver: memoryDriver() })
         const repository = createNitroHistoryRepository(storage)
         const segment = {
+            adapter: 'app.metrics',
+            capability: 'metrics',
             fidelity: { preservation: 'full' as const, transformations: [] },
             id: 'app.usage:one',
             observedAt: '2026-08-28T00:00:00.000Z',
@@ -81,22 +82,30 @@ describe('Nitro and Nuxt integration', () => {
                 points: [],
                 values: { requests: 0 },
             },
-            meta: {
-                contributions: [],
-                queriedAt: '2026-08-28T00:00:00.000Z',
-                temporal: { grain: 'day' as const },
-            },
-            schemaVersion: 1 as const,
-            source: 'app.usage',
+            schemaVersion: 2 as const,
+            scope: 'default',
+            sortKey: 'metrics',
         }
-        await repository.write(segment)
-        await repository.write(segment)
+        const target = {
+            adapter: segment.adapter,
+            capability: segment.capability,
+            scope: segment.scope,
+        }
+        const newer = { ...segment, id: 'app.usage:two', sortKey: 'newer' }
+        await repository.replace({ ...target, range: segment.range }, [segment, newer])
+        await repository.replace({ ...target, range: segment.range }, [segment, newer])
 
-        expect(await repository.coverage({ range: segment.range, source: segment.source })).toEqual(
-            [{ id: segment.id, range: segment.range }],
-        )
-        expect(await repository.read({ range: segment.range, source: segment.source })).toEqual([
-            segment,
+        expect(await repository.coverage({ ...target, range: segment.range })).toEqual([
+            {
+                id: `default:app.metrics:${segment.range.from}:${segment.range.to}`,
+                range: segment.range,
+            },
         ])
+        const getItem = vi.spyOn(storage, 'getItem')
+        expect(await repository.read({ ...target, limit: 1, range: segment.range })).toEqual({
+            next: '1',
+            segments: [newer],
+        })
+        expect(getItem).toHaveBeenCalledOnce()
     })
 })

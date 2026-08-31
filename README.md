@@ -86,6 +86,23 @@ Built-in support currently includes:
 
 Custom adapters use the same scope-aware planning and result merging as built-in Providers.
 
+## History
+
+History preserves configured canonical capabilities with one Scope-aware workflow. Capability
+adapters retain their own identity, pagination, and safe rollup semantics while the engine owns
+coverage, Fidelity, bounded storage, compaction, and expiration.
+
+```ts
+import { createHistory } from 'insight-ts/history'
+
+const insight = createInsight({
+    providers,
+    history: createHistory({ repository, capabilities: ['metrics', 'logs', 'traces'] }),
+})
+
+await insight.history.sync({ range: { from, to } })
+```
+
 ## UI
 
 Insight.ts includes optional Vue components for Metric results.

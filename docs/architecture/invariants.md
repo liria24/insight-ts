@@ -68,6 +68,8 @@
 - Capability contracts own data-specific range clipping, identity, merge, and reduction.
 - Event-like Repository reads are bounded. Repositories do not interpret or silently reduce data
   and expose explicit deletion/replacement operations.
+- Complete empty ranges, policy-reduced data, and missing or provisional coverage remain distinct
+  through range-scoped Fidelity.
 - Provider Quality and range-scoped History Fidelity remain distinct.
 - Nitro Tasks may invoke only `insight.history.sync()` and are explicitly enabled.
 

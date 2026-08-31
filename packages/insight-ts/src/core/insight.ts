@@ -81,7 +81,7 @@ export const createInsight = <const TOptions extends CreateInsightOptions>(
         const keys: string[] = []
         const unique = new Map<string, PreparedAdapterRequest>()
         for (const request of requests) {
-            const query = request.source.definition.normalize(request.query)
+            const query = request.query
             const adapterKey = request.source.definition.key(query)
             if (typeof adapterKey !== 'string') invalidAdapterKey(request.source.id)
             const dedupeKey = `${request.source.scope}\0${request.source.id}\0${adapterKey}`
@@ -130,13 +130,11 @@ export const createInsight = <const TOptions extends CreateInsightOptions>(
     const executeAdapterRaw = async (
         requests: readonly AdapterRequest[],
         execution?: QueryExecutionOptions,
-    ): Promise<readonly QueryResult<unknown, object>[]> => {
+    ): Promise<readonly AdapterExecutionResult<unknown, object>[]> => {
         const prepared = prepareAdapters(requests)
         const values = await executeNative(prepared.unique, execution)
         const results = new Map(
-            prepared.unique.map(
-                ({ dedupeKey }, index) => [dedupeKey, queryResult(values[index]!, now())] as const,
-            ),
+            prepared.unique.map(({ dedupeKey }, index) => [dedupeKey, values[index]!] as const),
         )
         return prepared.keys.map((key) => results.get(key)!)
     }
@@ -169,9 +167,9 @@ export const createInsight = <const TOptions extends CreateInsightOptions>(
             managed.map(async (request) => {
                 const value = await history!.query(request.source, request.query, async () => {
                     const [result] = await executeNative([request], execution)
-                    return queryResult(result!, now())
+                    return result!
                 })
-                resultByKey.set(request.dedupeKey, executionResult(value))
+                resultByKey.set(request.dedupeKey, value)
             }),
         )
         return requests.map(({ dedupeKey }) => resultByKey.get(dedupeKey)!)
@@ -474,23 +472,6 @@ function queryResult(
             ...(quality ? { quality } : {}),
             queriedAt: queriedAt.toISOString(),
         },
-    }
-}
-
-function executionResult(
-    result: QueryResult<unknown, object>,
-): AdapterExecutionResult<unknown, object> {
-    const {
-        contributions: _contributions,
-        pagination: _pagination,
-        quality,
-        queriedAt: _queriedAt,
-        ...meta
-    } = result.meta
-    return {
-        data: result.data,
-        ...(Object.keys(meta).length > 0 ? { meta } : {}),
-        ...(quality ? { quality } : {}),
     }
 }
 

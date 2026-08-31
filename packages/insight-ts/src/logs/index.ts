@@ -12,7 +12,10 @@ import type {
     AdapterExecutionContext,
     CapabilityAdapterDefinition,
     CapabilityContract,
+    CapabilityContribution,
     CapabilitySchema,
+    HistoryFidelityBand,
+    HistoryMaterializer,
     InsightCursor,
     QueryQuality,
 } from '../core/types.ts'
@@ -58,6 +61,10 @@ export interface LogData {
     logs: readonly LogRecord[]
 }
 
+export interface LogMeta {
+    fidelity?: readonly HistoryFidelityBand[]
+}
+
 export interface LogQuery {
     cursor?: InsightCursor
     limit?: number
@@ -85,7 +92,7 @@ export interface LogAdapterOutput {
     quality?: QueryQuality
 }
 
-type LogCapabilitySchema = CapabilitySchema<LogQuery, LogData>
+type LogCapabilitySchema = CapabilitySchema<LogQuery, LogData, LogMeta>
 type LogContract = CapabilityContract<'logs', NormalizedLogQuery>
 
 export interface LogAdapterDefinition extends CapabilityAdapterDefinition<
@@ -93,7 +100,8 @@ export interface LogAdapterDefinition extends CapabilityAdapterDefinition<
     LogCapabilitySchema,
     LogQuery,
     NormalizedLogQuery,
-    LogData
+    LogData,
+    LogMeta
 > {
     attributes: true | readonly string[]
     filters: readonly LogFilterField[]
@@ -126,6 +134,7 @@ export const defineLogAdapter = (options: LogAdapterOptions): LogAdapterDefiniti
         filters,
         key: (query) => JSON.stringify(query),
         logAdapter: true,
+        materialize: logHistoryMaterializer,
         normalize: (query) => normalizeLogQuery(query, filters, attributes),
     }
 }
@@ -162,6 +171,7 @@ const logContract: LogContract = {
                 ...(result.quality ? { quality: result.quality } : {}),
             })),
             data: { logs: merged.records },
+            ...mergeLogMeta(contributions),
             ...(next ? { pagination: { next } } : {}),
         }
     },
@@ -218,6 +228,70 @@ const logicalLogKey = ({ cursor: _cursor, nativeCursor: _native, ...query }: Nor
 
 const compareLogs = (left: LogRecord, right: LogRecord): number =>
     right.timestamp.localeCompare(left.timestamp) || left.id.localeCompare(right.id)
+
+const logHistoryMaterializer: HistoryMaterializer<NormalizedLogQuery, LogData, LogMeta> = {
+    capture: (time) => ({ limit: historyPageSize, time: normalizeTimeRange(time) }),
+    continue: (query, nativeCursor) => ({ ...query, nativeCursor }),
+    cursor: (query) => query.nativeCursor,
+    itemId(item) {
+        const [log] = normalizeLogs([item])
+        return log!.id
+    },
+    items: ({ logs }) => normalizeLogs(logs),
+    limit: (query) => query.limit,
+    materialize(query, items) {
+        const logs = normalizeLogs(items)
+            .filter(
+                (log) =>
+                    log.timestamp >= query.time.from &&
+                    log.timestamp < query.time.to &&
+                    matchesLogWhere(log, query.where),
+            )
+            .toSorted(compareLogs)
+            .slice(0, query.limit)
+        return { data: { logs } }
+    },
+    range: (query) => query.time,
+    read: 'bounded',
+    sortKey(item) {
+        const [log] = normalizeLogs([item])
+        return log!.timestamp
+    },
+}
+
+const historyPageSize = 1000
+
+const matchesLogWhere = (
+    log: LogRecord,
+    where: readonly CanonicalLogFilter[] | undefined,
+): boolean =>
+    (where ?? []).every((filter) => {
+        const value = filter.field.startsWith('attributes.')
+            ? log.attributes?.[filter.field.slice('attributes.'.length)]
+            : Reflect.get(log, filter.field)
+        if (filter.operator === 'eq') return value === filter.value
+        if (filter.operator === 'ne') return value !== filter.value
+        const selected = Array.isArray(filter.value) ? filter.value : [filter.value]
+        const includes = selected.some((item) => item === value)
+        return filter.operator === 'in' ? includes : !includes
+    })
+
+const mergeLogMeta = (contributions: readonly CapabilityContribution[]): { meta?: LogMeta } => {
+    const fidelity = contributions.flatMap(({ result }) => {
+        if (!isRecord(result.meta) || !Array.isArray(result.meta.fidelity)) return []
+        return result.meta.fidelity.filter(isHistoryFidelityBand)
+    })
+    return fidelity.length > 0 ? { meta: { fidelity } } : {}
+}
+
+const isHistoryFidelityBand = (value: unknown): value is HistoryFidelityBand =>
+    isRecord(value) &&
+    typeof value.preservation === 'string' &&
+    ['full', 'reduced', 'not-preserved'].includes(value.preservation) &&
+    Array.isArray(value.transformations) &&
+    isRecord(value.range) &&
+    typeof value.range.from === 'string' &&
+    typeof value.range.to === 'string'
 
 const normalizeLogQuery = (
     input: unknown,

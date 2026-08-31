@@ -75,6 +75,25 @@ Insight.ts currently includes support for:
 Use `defineMetricAdapter()`, `defineLogAdapter()`, `defineTraceAdapter()`, and `defineProvider()`
 for application-specific canonical data.
 
+## History
+
+One optional History workflow preserves Metrics, Logs, Traces, and future materializable
+capabilities beyond native Provider retention.
+
+```ts
+import { createHistory } from 'insight-ts/history'
+
+const insight = createInsight({
+    providers,
+    history: createHistory({ repository, capabilities: ['metrics', 'logs', 'traces'] }),
+})
+
+await insight.history.sync({ range: { from, to } })
+```
+
+History exposes range-scoped Fidelity, bounded event pagination, compaction, and expiration. It is
+not a persistent query-result cache.
+
 ## Vue UI
 
 Optional Metric components render data you have already queried.

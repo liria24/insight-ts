@@ -1,3 +1,5 @@
+import type { TimeRange } from './time.ts'
+
 export type Awaitable<T> = Promise<T> | T
 
 export interface Warning {
@@ -12,6 +14,21 @@ export interface QueryQuality {
     sampleRate?: number
     thresholded?: boolean
     warnings?: readonly Warning[]
+}
+
+export type HistoryTransformation =
+    | { kind: 'sample'; rate: number }
+    | { id: string; kind: 'filter' }
+    | { kind: 'truncate'; limit: number }
+    | { id: string; kind: 'custom' }
+
+export interface HistoryFidelity {
+    preservation: 'full' | 'reduced' | 'not-preserved'
+    transformations: readonly HistoryTransformation[]
+}
+
+export interface HistoryFidelityBand extends HistoryFidelity {
+    range: TimeRange
 }
 
 declare const cursorBrand: unique symbol
@@ -121,7 +138,25 @@ export interface CapabilityAdapterDefinition<
         context: AdapterExecutionContext,
     ): Awaitable<AdapterExecutionResult<TData, TMeta>>
     key(query: TNormalized): string
+    materialize?: HistoryMaterializer<TNormalized, TData, TMeta>
     normalize(query: TQuery): TNormalized
+}
+
+export interface HistoryMaterializer<
+    TQuery = unknown,
+    TData = unknown,
+    TMeta extends object = object,
+> {
+    capture(range: TimeRange): TQuery
+    continue?(query: TQuery, nativeCursor: string): TQuery
+    cursor?(query: TQuery): string | undefined
+    itemId(item: unknown, index: number): string
+    items(data: TData): readonly unknown[]
+    limit?(query: TQuery): number | undefined
+    materialize(query: TQuery, items: readonly unknown[]): AdapterExecutionResult<TData, TMeta>
+    range(query: TQuery): TimeRange | undefined
+    read: 'all' | 'bounded'
+    sortKey(item: unknown): string
 }
 
 export type CapabilityAdapters = Readonly<Record<string, unknown>>
@@ -234,7 +269,7 @@ export interface HistoryRuntimeContext {
     execute(
         requests: readonly AdapterRequest[],
         options?: QueryExecutionOptions,
-    ): Promise<readonly QueryResult<unknown, object>[]>
+    ): Promise<readonly AdapterExecutionResult<unknown, object>[]>
     instrumentation?: Instrumentation
     now(): Date
     sources: readonly RuntimeAdapter[]
@@ -245,8 +280,8 @@ export type HistoryRuntime<TController extends object = object> = TController & 
     query(
         source: RuntimeAdapter,
         query: unknown,
-        live: () => Promise<QueryResult<unknown, object>>,
-    ): Promise<QueryResult<unknown, object>>
+        live: () => Promise<AdapterExecutionResult<unknown, object>>,
+    ): Promise<AdapterExecutionResult<unknown, object>>
 }
 
 export interface HistoryExtension<TController extends object = object> {

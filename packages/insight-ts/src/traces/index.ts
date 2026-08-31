@@ -12,7 +12,10 @@ import type {
     AdapterExecutionContext,
     CapabilityAdapterDefinition,
     CapabilityContract,
+    CapabilityContribution,
     CapabilitySchema,
+    HistoryFidelityBand,
+    HistoryMaterializer,
     InsightCursor,
     QueryQuality,
 } from '../core/types.ts'
@@ -85,6 +88,10 @@ export interface TraceData {
     traces: readonly TraceRecord[]
 }
 
+export interface TraceMeta {
+    fidelity?: readonly HistoryFidelityBand[]
+}
+
 export interface TraceQuery {
     cursor?: InsightCursor
     limit?: number
@@ -112,7 +119,7 @@ export interface TraceAdapterOutput {
     traces: readonly TraceRecord[]
 }
 
-type TraceCapabilitySchema = CapabilitySchema<TraceQuery, TraceData>
+type TraceCapabilitySchema = CapabilitySchema<TraceQuery, TraceData, TraceMeta>
 type TraceContract = CapabilityContract<'traces', NormalizedTraceQuery>
 
 export interface TraceAdapterDefinition extends CapabilityAdapterDefinition<
@@ -120,7 +127,8 @@ export interface TraceAdapterDefinition extends CapabilityAdapterDefinition<
     TraceCapabilitySchema,
     TraceQuery,
     NormalizedTraceQuery,
-    TraceData
+    TraceData,
+    TraceMeta
 > {
     attributes: true | readonly string[]
     filters: readonly TraceFilterField[]
@@ -152,6 +160,7 @@ export const defineTraceAdapter = (options: TraceAdapterOptions): TraceAdapterDe
         },
         filters,
         key: (query) => JSON.stringify(query),
+        materialize: traceHistoryMaterializer,
         normalize: (query) => normalizeTraceQuery(query, filters, attributes),
         traceAdapter: true,
     }
@@ -191,6 +200,7 @@ const traceContract: TraceContract = {
                 ...(result.quality ? { quality: result.quality } : {}),
             })),
             data: { traces: merged.records },
+            ...mergeTraceMeta(contributions),
             ...(next ? { pagination: { next } } : {}),
         }
     },
@@ -248,6 +258,77 @@ const logicalTraceKey = ({
 }: NormalizedTraceQuery) => JSON.stringify(query)
 const compareTraces = (left: TraceRecord, right: TraceRecord): number =>
     right.startTime.localeCompare(left.startTime) || left.traceId.localeCompare(right.traceId)
+
+const traceHistoryMaterializer: HistoryMaterializer<NormalizedTraceQuery, TraceData, TraceMeta> = {
+    capture: (time) => ({ limit: historyPageSize, time: normalizeTimeRange(time) }),
+    continue: (query, nativeCursor) => ({ ...query, nativeCursor }),
+    cursor: (query) => query.nativeCursor,
+    itemId(item) {
+        const [trace] = normalizeTraces([item])
+        return trace!.traceId
+    },
+    items: ({ traces }) => normalizeTraces(traces),
+    limit: (query) => query.limit,
+    materialize(query, items) {
+        const traces = normalizeTraces(items)
+            .filter(
+                (trace) =>
+                    trace.startTime >= query.time.from &&
+                    trace.startTime < query.time.to &&
+                    matchesTraceWhere(trace, query.where),
+            )
+            .toSorted(compareTraces)
+            .slice(0, query.limit)
+        return { data: { traces } }
+    },
+    range: (query) => query.time,
+    read: 'bounded',
+    sortKey(item) {
+        const [trace] = normalizeTraces([item])
+        return trace!.startTime
+    },
+}
+
+const historyPageSize = 1000
+
+const matchesTraceWhere = (
+    trace: TraceRecord,
+    where: readonly CanonicalTraceFilter[] | undefined,
+): boolean =>
+    (where ?? []).every((filter) => {
+        const value = filter.field.startsWith('attributes.')
+            ? trace.attributes?.[filter.field.slice('attributes.'.length)]
+            : Reflect.get(trace, filter.field)
+        if (filter.operator === 'eq') return value === filter.value
+        if (filter.operator === 'ne') return value !== filter.value
+        if (filter.operator === 'in' || filter.operator === 'notIn') {
+            const selected = Array.isArray(filter.value) ? filter.value : [filter.value]
+            const includes = selected.some((item) => item === value)
+            return filter.operator === 'in' ? includes : !includes
+        }
+        if (typeof value !== 'number' || typeof filter.value !== 'number') return false
+        if (filter.operator === 'gt') return value > filter.value
+        if (filter.operator === 'gte') return value >= filter.value
+        if (filter.operator === 'lt') return value < filter.value
+        return value <= filter.value
+    })
+
+const mergeTraceMeta = (contributions: readonly CapabilityContribution[]): { meta?: TraceMeta } => {
+    const fidelity = contributions.flatMap(({ result }) => {
+        if (!isRecord(result.meta) || !Array.isArray(result.meta.fidelity)) return []
+        return result.meta.fidelity.filter(isHistoryFidelityBand)
+    })
+    return fidelity.length > 0 ? { meta: { fidelity } } : {}
+}
+
+const isHistoryFidelityBand = (value: unknown): value is HistoryFidelityBand =>
+    isRecord(value) &&
+    typeof value.preservation === 'string' &&
+    ['full', 'reduced', 'not-preserved'].includes(value.preservation) &&
+    Array.isArray(value.transformations) &&
+    isRecord(value.range) &&
+    typeof value.range.from === 'string' &&
+    typeof value.range.to === 'string'
 
 const normalizeTraceQuery = (
     input: unknown,

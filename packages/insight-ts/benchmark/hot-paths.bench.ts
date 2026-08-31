@@ -3,9 +3,10 @@ import { bench, describe } from 'vitest'
 import { createInsight, defineProvider } from '../src/core/index.ts'
 import {
     createHistory,
-    type HistoryCoverage,
+    type HistoryReadQuery,
     type HistoryRepository,
     type HistorySegment,
+    type HistoryTarget,
 } from '../src/history/index.ts'
 import { defineMetricAdapter, type TimeRange } from '../src/metrics/index.ts'
 import { cloudflare as createCloudflare } from '../src/providers/cloudflare/index.ts'
@@ -126,35 +127,47 @@ const historySource = defineMetricAdapter({
 })
 
 class BenchmarkRepository implements HistoryRepository {
-    segment?: HistorySegment
+    segments: HistorySegment[] = []
 
-    async coverage(_query: { range: TimeRange; source: string }): Promise<HistoryCoverage[]> {
-        return []
+    async coverage(query: HistoryTarget & { range: TimeRange }) {
+        return this.segments.filter((segment) => matches(segment, query))
     }
 
-    async read(_query: { range: TimeRange; source: string }): Promise<HistorySegment[]> {
-        return this.segment ? [this.segment] : []
+    async delete(query: HistoryTarget & { range: TimeRange }) {
+        this.segments = this.segments.filter((segment) => !matches(segment, query))
     }
 
-    async write(segment: HistorySegment): Promise<void> {
-        this.segment = segment
+    async read(query: HistoryReadQuery) {
+        return { segments: this.segments.filter((segment) => matches(segment, query)) }
+    }
+
+    async replace(
+        query: HistoryTarget & { range: TimeRange },
+        segments: readonly HistorySegment[],
+    ) {
+        await this.delete(query)
+        this.segments.push(...segments)
     }
 }
+
+const matches = (segment: HistorySegment, query: HistoryTarget & { range: TimeRange }) =>
+    segment.adapter === query.adapter &&
+    segment.capability === query.capability &&
+    segment.scope === query.scope &&
+    segment.range.from < query.range.to &&
+    query.range.from < segment.range.to
 
 const repository = new BenchmarkRepository()
 const history = createInsight({
     history: createHistory({
-        reductions: {
-            'app.metrics': [{ transformations: [{ grain: 'day', kind: 'aggregate' }] }],
-        },
+        capabilities: ['metrics'],
         repository,
-        sources: ['app.metrics'],
     }),
     providers: [defineProvider({ adapters: { metrics: historySource }, id: 'app' })],
 })
 
 describe('History', () => {
-    bench('reduce, materialize, and read a covered range', async () => {
+    bench('materialize and read a covered range', async () => {
         await history.history.sync({ range: time })
         await history.query((q) => ({
             report: q.metrics({
