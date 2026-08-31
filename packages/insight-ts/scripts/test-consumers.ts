@@ -25,18 +25,21 @@ import { cloudflare } from 'insight-ts/cloudflare'
 import { googleSearchConsole } from 'insight-ts/google-search-console'
 import { defineLogAdapter } from 'insight-ts/logs'
 import { defineMetricAdapter } from 'insight-ts/metrics'
+import { defineTraceAdapter } from 'insight-ts/traces'
 
 const value = defineMetricAdapter({
   execute: () => ({ values: { value: 42 } }),
   metrics: { value: {} },
 })
 const logs = defineLogAdapter({ execute: () => ({ logs: [{ id: 'log-1', timestamp: '2026-08-01' }] }) })
-const insight = createInsight({ providers: [defineProvider({ adapters: { logs, value }, id: 'app' })] })
+const traces = defineTraceAdapter({ execute: () => ({ traces: [{ startTime: '2026-08-01', traceId: 'trace-1' }] }) })
+const insight = createInsight({ providers: [defineProvider({ adapters: { logs, traces, value }, id: 'app' })] })
 const result = await insight.query((q) => ({
   logs: q.logs({ time: { from: '2026-08-01', to: '2026-08-02' } }),
+  traces: q.traces({ time: { from: '2026-08-01', to: '2026-08-02' } }),
   value: q.metrics({ metrics: ['value'], time: { from: '2026-08-01', to: '2026-08-02' } }),
 }))
-if (result.value.data.values.value !== 42 || result.logs.data.logs[0]?.id !== 'log-1') throw new Error('Packed Core runtime failed')
+if (result.value.data.values.value !== 42 || result.logs.data.logs[0]?.id !== 'log-1' || result.traces.data.traces[0]?.traceId !== 'trace-1') throw new Error('Packed Core runtime failed')
 
 const webOnly = cloudflare({
   accountId: 'account', apiToken: 'token', webAnalytics: { siteTag: 'site' },

@@ -82,7 +82,7 @@ Built-in support currently includes:
 - **Cloudflare Web Analytics** — page views, visits, dimensions, filters, and quality metadata
 - **Cloudflare Analytics Engine** — Metric queries, event delivery, or both
 - **Google Search Console** — Search Analytics metrics with bounded native pagination and data-state metadata
-- **Application-defined adapters** — canonical Metric and Log adapters through focused entrypoints and custom Providers through `defineProvider()`
+- **Application-defined adapters** — canonical Metric, Log, and Trace adapters through focused entrypoints and custom Providers through `defineProvider()`
 
 Custom adapters use the same scope-aware planning and result merging as built-in Providers.
 

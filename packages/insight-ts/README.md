@@ -72,8 +72,8 @@ Insight.ts currently includes support for:
 - Cloudflare Analytics Engine
 - Google Search Console with bounded native pagination
 
-Use `defineMetricAdapter()`, `defineLogAdapter()`, and `defineProvider()` for application-specific
-canonical data.
+Use `defineMetricAdapter()`, `defineLogAdapter()`, `defineTraceAdapter()`, and `defineProvider()`
+for application-specific canonical data.
 
 ## Vue UI
 

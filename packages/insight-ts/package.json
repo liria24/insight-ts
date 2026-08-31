@@ -61,6 +61,10 @@
             "types": "./dist/opentelemetry.d.ts",
             "import": "./dist/opentelemetry.js"
         },
+        "./traces": {
+            "types": "./dist/traces.d.ts",
+            "import": "./dist/traces.js"
+        },
         "./ui-core": {
             "types": "./dist/ui-core.d.ts",
             "import": "./dist/ui-core.js"
