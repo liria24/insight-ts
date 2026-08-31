@@ -22,6 +22,17 @@ Use this skill for work in this repository that changes Insight.ts behavior or p
 7. Preserve report source, temporal, freshness, and quality metadata.
 8. Resolve sources explicitly; never select configuration order or silently merge providers.
 
+## Git and pull requests
+
+- Start ordinary work branches from `main`, open a reviewable GitHub PR, and squash merge by
+  default.
+- Use a descriptive Conventional Commits PR title (`feat:`, `fix:`, `perf:`, `refactor:`, `docs:`,
+  or `chore:`) that is suitable as the commit message left on `main` after squashing.
+- Target `main` unless the work is an explicit stacked PR. For a stack, branch the first PR from
+  `main` and each later PR from its immediate predecessor.
+- After a preceding PR is squash merged, rebase or retarget later branches as needed and verify
+  that each PR contains only its own change.
+
 ## Dependency boundaries
 
 - Core imports no Provider implementation, History Engine, Integration, UI framework, DOM API, or
