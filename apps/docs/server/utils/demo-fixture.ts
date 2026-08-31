@@ -331,7 +331,7 @@ export async function executeDemoQuery(
         funnel: result.funnel,
         logs: result.logs,
         observability: { series: result.observabilitySeries, summary: result.observabilitySummary },
-        online: Math.max(0, Math.round(result.recentTraffic.data.visits?.value ?? 0)),
+        online: Math.max(0, Math.round(result.recentTraffic.data.values.visits ?? 0)),
         product: {
             revenue: result.productRevenue,
             series: result.productSeries,

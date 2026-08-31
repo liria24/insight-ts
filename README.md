@@ -54,7 +54,7 @@ const dashboard = await insight.query((q) => ({
     }),
 }))
 
-console.log(dashboard.traffic.data.pageViews.value)
+console.log(dashboard.traffic.data.values.pageViews)
 ```
 
 The configured Source accessor, query fields, selected metrics and dimensions, result data, and metadata stay typed throughout the query without `as const` or explicit generics.

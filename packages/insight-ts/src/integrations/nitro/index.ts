@@ -1,7 +1,7 @@
 import type { HistoryCoverage, HistoryRepository, HistorySegment } from '../../history/index.ts'
 
 const mount = 'insight'
-const prefix = 'history:v2'
+const prefix = 'history:v1'
 
 export interface NitroStorage {
     getItem(key: string): Promise<unknown>
@@ -88,7 +88,7 @@ const isHistorySegment = (value: unknown): value is HistorySegment => {
         typeof value.id === 'string' &&
         typeof value.source === 'string' &&
         typeof value.observedAt === 'string' &&
-        value.schemaVersion === 2 &&
+        value.schemaVersion === 1 &&
         typeof value.range.from === 'string' &&
         typeof value.range.to === 'string' &&
         (value.fidelity.preservation === 'full' || value.fidelity.preservation === 'reduced') &&

@@ -4,6 +4,7 @@ import type {
     HistoryFidelityBand,
     MetricData,
     MetricMeta,
+    MetricPoint,
 } from '../metrics/index.ts'
 
 export type MetricQueryResult<
@@ -41,11 +42,7 @@ export interface ChartSeries {
     values: readonly SeriesValue[]
 }
 
-export interface MetricSeriesPoint {
-    dimensions?: Readonly<Record<string, DimensionValue | undefined>>
-    time: string
-    values: Readonly<Record<string, number | null>>
-}
+export type MetricSeriesPoint = MetricPoint & { time: string }
 
 export interface MetricTableRow {
     dimensions: Readonly<Record<string, DimensionValue | undefined>>
@@ -116,10 +113,9 @@ export const tableCellValue = (
 export const createStatModel = (
     result: MetricQueryResult,
 ): { metric: string; value: number | null } | undefined => {
-    const metric = Object.keys(result.data)[0]
+    const metric = Object.keys(result.data.values)[0]
     if (!metric) return undefined
-    const datum = result.data[metric]
-    return datum ? { metric, value: datum.value } : undefined
+    return { metric, value: result.data.values[metric] ?? null }
 }
 
 export const createDataNotices = (quality: QueryQuality | undefined): DataNotice[] => {
@@ -159,7 +155,7 @@ export const createSeriesModel = (
         yAxis?: YAxisOptions
     },
 ): SeriesModel => {
-    const metrics = Object.keys(result.data)
+    const metrics = Object.keys(result.data.values)
     const points = seriesPoints(result.data)
     const series = metrics.map((metric, index) => ({
         color: options.colors[index % options.colors.length] ?? 'currentColor',
@@ -196,7 +192,7 @@ export const createSeriesModel = (
 }
 
 export const createBreakdownModel = (result: MetricQueryResult): BreakdownModel => {
-    const metrics = Object.keys(result.data)
+    const metrics = Object.keys(result.data.values)
     const rows = breakdownRows(result.data, metrics)
     const dimensions = [...new Set(rows.flatMap(({ dimensions: values }) => Object.keys(values)))]
     return { dimensions, metrics, rows }
@@ -251,40 +247,24 @@ export const formatSeriesPointTime = (
     return point ? formatTime(point.time, locale, timezone, options) : ''
 }
 
-export const seriesPoints = (data: MetricData): MetricSeriesPoint[] => {
-    const byKey = new Map<string, MetricSeriesPoint>()
-    for (const [metric, datum] of Object.entries(data)) {
-        for (const point of datum.points ?? []) {
-            if (!point.time) continue
-            const key = JSON.stringify([point.time, point.dimensions ?? {}])
-            const current = byKey.get(key) ?? {
-                ...(point.dimensions ? { dimensions: point.dimensions } : {}),
-                time: point.time,
-                values: {},
-            }
-            byKey.set(key, {
-                ...current,
-                values: { ...current.values, [metric]: point.value },
-            })
-        }
-    }
-    return [...byKey.values()].toSorted((left, right) => left.time.localeCompare(right.time))
-}
+export const seriesPoints = (data: MetricData): MetricSeriesPoint[] =>
+    (data.points ?? [])
+        .filter((point): point is MetricSeriesPoint => point.time !== undefined)
+        .toSorted((left, right) => left.time.localeCompare(right.time))
 
 const breakdownRows = (data: MetricData, metrics: readonly string[]): MetricTableRow[] => {
-    const rows = new Map<string, MetricTableRow>()
-    for (const metric of metrics) {
-        for (const point of data[metric]?.points ?? []) {
-            if (!point.dimensions) continue
-            const key = JSON.stringify(point.dimensions)
-            const current = rows.get(key) ?? { dimensions: point.dimensions, metrics: {} }
-            rows.set(key, {
-                ...current,
-                metrics: { ...current.metrics, [metric]: point.value },
-            })
-        }
-    }
-    return [...rows.values()]
+    return (data.points ?? []).flatMap((point) =>
+        point.dimensions
+            ? [
+                  {
+                      dimensions: point.dimensions,
+                      metrics: Object.fromEntries(
+                          metrics.map((metric) => [metric, point.values[metric] ?? null]),
+                      ),
+                  },
+              ]
+            : [],
+    )
 }
 
 const formatTime = (

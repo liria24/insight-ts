@@ -133,21 +133,16 @@ export type DimensionValues<TDimension extends string = string> = Readonly<
     Record<TDimension, DimensionValue>
 >
 
-export interface MetricPoint<TDimension extends string = string> {
+export interface MetricPoint<TMetric extends string = string, TDimension extends string = string> {
     dimensions?: Partial<DimensionValues<TDimension>>
     time?: string
-    value: number | null
+    values: MetricValues<TMetric>
 }
 
-export interface MetricDatum<TDimension extends string = string> {
-    points?: readonly MetricPoint<TDimension>[]
-    value: number | null
+export interface MetricData<TMetric extends string = string, TDimension extends string = string> {
+    readonly points?: readonly MetricPoint<TMetric, TDimension>[]
+    readonly values: MetricValues<TMetric>
 }
-
-export type MetricData<
-    TMetric extends string = string,
-    TDimension extends string = string,
-> = Readonly<Record<TMetric, MetricDatum<TDimension>>>
 
 export interface MetricQuery<
     TMetrics extends MetricDefinitions = MetricDefinitions,
@@ -171,11 +166,7 @@ export interface NormalizedMetricQuery {
     where?: CanonicalWhere
 }
 
-export interface MetricSourcePoint {
-    dimensions?: Readonly<Record<string, DimensionValue>>
-    time?: string
-    values: MetricValues
-}
+export type MetricSourcePoint = MetricPoint
 
 export interface MetricSourceOutput {
     meta?: MetricMeta
@@ -536,26 +527,28 @@ const whereOperators = new Set<string>([
 const isWhereOperator = (value: string): value is WhereOperator => whereOperators.has(value)
 
 const metricData = (query: NormalizedMetricQuery, output: MetricSourceOutput): MetricData => {
-    const points = output.points ?? []
-    return Object.fromEntries(
-        query.metrics.map((metric) => {
-            const selectedPoints = points.map((point) => ({
-                ...(point.dimensions ? { dimensions: point.dimensions } : {}),
-                ...(point.time
-                    ? { time: normalizeTimestamp(point.time, 'Metric point time') }
-                    : {}),
-                value: finiteOrNull(point.values[metric], `Metric "${metric}" point`),
-            }))
-            return [
-                metric,
-                {
-                    ...(selectedPoints.length > 0 ? { points: selectedPoints } : {}),
-                    value: finiteOrNull(output.values[metric], `Metric "${metric}" value`),
-                },
-            ]
-        }),
-    )
+    const points = (output.points ?? []).map((point) => ({
+        ...(point.dimensions ? { dimensions: point.dimensions } : {}),
+        ...(point.time ? { time: normalizeTimestamp(point.time, 'Metric point time') } : {}),
+        values: selectedMetricValues(query.metrics, point.values, 'point'),
+    }))
+    return {
+        ...(points.length > 0 ? { points } : {}),
+        values: selectedMetricValues(query.metrics, output.values, 'value'),
+    }
 }
+
+const selectedMetricValues = (
+    metrics: readonly string[],
+    values: MetricValues,
+    location: 'point' | 'value',
+): MetricValues =>
+    Object.fromEntries(
+        metrics.map((metric) => [
+            metric,
+            finiteOrNull(values[metric], `Metric "${metric}" ${location}`),
+        ]),
+    )
 
 export const normalizeTimeRange = (range: TimeRange): TimeRange => {
     const from = new Date(range.from)

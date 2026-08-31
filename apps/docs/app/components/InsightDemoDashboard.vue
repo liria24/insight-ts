@@ -28,7 +28,21 @@ const statUi = {
 } as const
 
 const selectMetric = (data: MetricQueryResult, metric: string): MetricQueryResult => ({
-    data: data.data[metric] ? { [metric]: data.data[metric] } : {},
+    data: {
+        ...(data.data.points
+            ? {
+                  points: data.data.points.map((point) => ({
+                      ...point,
+                      values: Object.hasOwn(point.values, metric)
+                          ? { [metric]: point.values[metric] ?? null }
+                          : {},
+                  })),
+              }
+            : {}),
+        values: Object.hasOwn(data.data.values, metric)
+            ? { [metric]: data.data.values[metric] ?? null }
+            : {},
+    },
     meta: data.meta,
 })
 </script>

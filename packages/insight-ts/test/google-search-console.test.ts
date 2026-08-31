@@ -86,15 +86,15 @@ describe('Google Search Console Source', () => {
 
         expect(getAccessToken).toHaveBeenCalledOnce()
         expect(fetcher).toHaveBeenCalledOnce()
-        expect(dashboard.search.data).toMatchObject({
-            averagePosition: { value: 3 },
-            clicks: { value: 4 },
-            ctr: { value: 0.5 },
-            impressions: { value: 8 },
+        expect(dashboard.search.data.values).toEqual({
+            averagePosition: 3,
+            clicks: 4,
+            ctr: 0.5,
+            impressions: 8,
         })
-        expect(dashboard.search.data.clicks.points?.[0]).toMatchObject({
+        expect(dashboard.search.data.points?.[0]).toMatchObject({
             dimensions: { query: 'insight ts' },
-            value: 4,
+            values: { averagePosition: 3, clicks: 4, ctr: 0.5, impressions: 8 },
         })
         expect(dashboard.search.meta).toMatchObject({
             quality: { partial: true },

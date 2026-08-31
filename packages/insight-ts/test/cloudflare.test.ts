@@ -85,18 +85,14 @@ describe('Cloudflare Sources', () => {
         }))
 
         expect(dashboard.traffic.data).toEqual({
-            pageViews: {
-                points: [
-                    { dimensions: { path: '/docs' }, time: '2026-08-01T10:00:00.000Z', value: 12 },
-                ],
-                value: 12,
-            },
-            visits: {
-                points: [
-                    { dimensions: { path: '/docs' }, time: '2026-08-01T10:00:00.000Z', value: 8 },
-                ],
-                value: 8,
-            },
+            points: [
+                {
+                    dimensions: { path: '/docs' },
+                    time: '2026-08-01T10:00:00.000Z',
+                    values: { pageViews: 12, visits: 8 },
+                },
+            ],
+            values: { pageViews: 12, visits: 8 },
         })
         expect(dashboard.traffic.meta.quality).toMatchObject({
             approximate: true,

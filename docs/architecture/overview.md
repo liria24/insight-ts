@@ -39,6 +39,9 @@ scale with compatible request groups, never rows, points, metrics, or dimension 
 and product Sources do not adopt OTel semantics; observability Sources use OTel semantic
 conventions and UCUM units where applicable without using OTel as storage or query shape.
 
+Metric results are row-major: scalar values live in `data.values`, while each optional
+`data.points` row shares its time and dimensions across the selected Metric values.
+
 Built-in Provider factories are their canonical consumer API and preserve the exact configured
 Source map. Provider IDs use strict ASCII kebab-case; the query DSL derives a camelCase accessor
 once when `createInsight()` initializes. Custom Provider authors use the root authoring helpers.

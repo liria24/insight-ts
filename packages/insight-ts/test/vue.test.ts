@@ -36,20 +36,19 @@ interface Events {
 
 const data: MetricQueryResult<'pageViews' | 'visits', 'country'> = {
     data: {
-        pageViews: {
-            points: [
-                { dimensions: { country: 'JP' }, time: '2026-08-26T00:00:00.000Z', value: 1_240 },
-                { dimensions: { country: 'US' }, time: '2026-08-27T00:00:00.000Z', value: 1_386 },
-            ],
-            value: 2_626,
-        },
-        visits: {
-            points: [
-                { dimensions: { country: 'JP' }, time: '2026-08-26T00:00:00.000Z', value: 800 },
-                { dimensions: { country: 'US' }, time: '2026-08-27T00:00:00.000Z', value: 901 },
-            ],
-            value: 1_701,
-        },
+        points: [
+            {
+                dimensions: { country: 'JP' },
+                time: '2026-08-26T00:00:00.000Z',
+                values: { pageViews: 1_240, visits: 800 },
+            },
+            {
+                dimensions: { country: 'US' },
+                time: '2026-08-27T00:00:00.000Z',
+                values: { pageViews: 1_386, visits: 901 },
+            },
+        ],
+        values: { pageViews: 2_626, visits: 1_701 },
     },
     meta: {
         quality: { approximate: true, sampled: true, sampleRate: 0.25 },

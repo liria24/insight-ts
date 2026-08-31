@@ -37,7 +37,7 @@ export interface HistorySegment extends HistoryCoverage {
     fidelity: HistoryFidelity
     meta: QueryResult<MetricData, MetricMeta>['meta']
     observedAt: string
-    schemaVersion: 2
+    schemaVersion: 1
     source: string
 }
 
@@ -169,7 +169,7 @@ class HistoryEngine implements HistoryRuntime<HistoryController> {
                             observedAt: this.#context.now().toISOString(),
                             ...(isProvisional(result, plan.range) ? { provisional: true } : {}),
                             range: plan.range,
-                            schemaVersion: 2,
+                            schemaVersion: 1,
                             source: plan.source.id,
                         }),
                 )
@@ -312,18 +312,13 @@ const requireMetricData = (value: unknown, source: string): MetricData => {
 
 const isMetricData = (value: unknown): value is MetricData =>
     isRecord(value) &&
-    Object.values(value).every(
-        (datum) =>
-            isRecord(datum) &&
-            (datum.value === null ||
-                (typeof datum.value === 'number' && Number.isFinite(datum.value))) &&
-            (datum.points === undefined ||
-                (Array.isArray(datum.points) && datum.points.every(isMetricPoint))),
-    )
+    isMetricValues(value.values) &&
+    (value.points === undefined ||
+        (Array.isArray(value.points) && value.points.every(isMetricPoint)))
 
 const isMetricPoint = (value: unknown): value is MetricPoint =>
     isRecord(value) &&
-    (value.value === null || (typeof value.value === 'number' && Number.isFinite(value.value))) &&
+    isMetricValues(value.values) &&
     (value.time === undefined || typeof value.time === 'string') &&
     (value.dimensions === undefined ||
         (isRecord(value.dimensions) &&
@@ -335,20 +330,18 @@ const isMetricPoint = (value: unknown): value is MetricPoint =>
                     typeof dimension === 'string',
             )))
 
-const mergeData = (values: readonly MetricData[]): MetricData => {
-    const metrics = new Set(values.flatMap((value) => Object.keys(value)))
-    return Object.fromEntries(
-        [...metrics].map((metric) => {
-            const data = values.flatMap((value) => (value[metric] ? [value[metric]] : []))
-            return [
-                metric,
-                {
-                    points: data.flatMap(({ points }) => points ?? []),
-                    value: data.at(-1)?.value ?? null,
-                },
-            ]
-        }),
+const isMetricValues = (value: unknown): value is MetricData['values'] =>
+    isRecord(value) &&
+    Object.values(value).every(
+        (metric) => metric === null || (typeof metric === 'number' && Number.isFinite(metric)),
     )
+
+const mergeData = (values: readonly MetricData[]): MetricData => {
+    const points = values.flatMap((value) => value.points ?? [])
+    return {
+        ...(points.length > 0 ? { points } : {}),
+        values: Object.assign({}, ...values.map((value) => value.values)),
+    }
 }
 
 const materialize = (
@@ -356,82 +349,78 @@ const materialize = (
     source: MetricSourceDefinition,
     query: NormalizedMetricQuery,
 ): MetricData => {
-    const cache = new Map<string, MetricData[string]>()
-    const resolve = (metric: string): MetricData[string] => {
-        const existing = cache.get(metric)
-        if (existing) return existing
+    const resolve = (metric: string, points: readonly MetricPoint[]): number | null => {
         const definition = source.metrics[metric]
         if (!definition) {
             throw new InsightError('HISTORY_CORRUPT', `Unknown stored metric "${metric}"`)
         }
         if (definition.aggregation?.kind === 'ratio') {
-            const numerator = resolve(definition.aggregation.numerator)
-            const denominator = resolve(definition.aggregation.denominator)
-            const denominatorPoints = new Map(
-                (denominator.points ?? []).map((point) => [pointKey(point), point.value]),
+            return ratio(
+                resolve(definition.aggregation.numerator, points),
+                resolve(definition.aggregation.denominator, points),
             )
-            const result = {
-                points: (numerator.points ?? []).map((point) => ({
-                    ...point,
-                    value: ratio(point.value, denominatorPoints.get(pointKey(point))),
-                })),
-                value: ratio(numerator.value, denominator.value),
-            }
-            cache.set(metric, result)
-            return result
         }
-        const points = data[metric]?.points ?? []
-        const groups = new Map<string, MetricPoint[]>()
-        for (const point of points) {
-            const normalized: MetricPoint = {
-                ...(query.dimensions.length > 0
-                    ? {
-                          dimensions: Object.fromEntries(
-                              query.dimensions.map((dimension) => [
-                                  dimension,
-                                  point.dimensions?.[dimension] ?? null,
-                              ]),
-                          ),
-                      }
-                    : {}),
-                ...(query.grain === 'auto' || !point.time
-                    ? {}
-                    : { time: bucketStart(point.time, query.grain) }),
-                value: point.value,
-            }
-            const key = pointKey(normalized)
-            const group = groups.get(key) ?? []
-            group.push(normalized)
-            groups.set(key, group)
-        }
-        const outputPoints = [...groups.values()]
-            .map((group) => ({
-                ...group[0],
-                value: aggregate(
-                    group.map(({ value }) => value),
-                    definition,
-                    metric,
-                    source,
-                ),
-            }))
-            .toSorted((left, right) => pointKey(left).localeCompare(pointKey(right)))
-        const limited = query.limit ? outputPoints.slice(0, query.limit) : outputPoints
-        const result = {
-            ...(limited.length > 0 ? { points: limited } : {}),
-            value:
-                points.length > 0
-                    ? aggregate(
-                          points.map(({ value }) => value),
-                          definition,
-                          metric,
-                          source,
-                      )
-                    : (data[metric]?.value ?? null),
-        }
-        cache.set(metric, result)
-        return result
+        return aggregate(
+            points.map((point) => point.values[metric] ?? null),
+            definition,
+            metric,
+            source,
+        )
     }
-    return Object.fromEntries(query.metrics.map((metric) => [metric, resolve(metric)]))
+    const groups = new Map<string, MetricPoint[]>()
+    for (const point of data.points ?? []) {
+        const normalized: MetricPoint = {
+            ...(query.dimensions.length > 0
+                ? {
+                      dimensions: Object.fromEntries(
+                          query.dimensions.map((dimension) => [
+                              dimension,
+                              point.dimensions?.[dimension] ?? null,
+                          ]),
+                      ),
+                  }
+                : {}),
+            ...(query.grain === 'auto' || !point.time
+                ? {}
+                : { time: bucketStart(point.time, query.grain) }),
+            values: point.values,
+        }
+        const key = pointKey(normalized)
+        const group = groups.get(key) ?? []
+        group.push(normalized)
+        groups.set(key, group)
+    }
+    const outputPoints = [...groups.values()]
+        .map((group) => ({
+            ...(group[0]?.dimensions ? { dimensions: group[0].dimensions } : {}),
+            ...(group[0]?.time ? { time: group[0].time } : {}),
+            values: Object.fromEntries(
+                query.metrics.map((metric) => [metric, resolve(metric, group)]),
+            ),
+        }))
+        .toSorted((left, right) => pointKey(left).localeCompare(pointKey(right)))
+    const limited = query.limit ? outputPoints.slice(0, query.limit) : outputPoints
+    const scalar = (metric: string): number | null => {
+        const definition = source.metrics[metric]
+        if (!definition) {
+            throw new InsightError('HISTORY_CORRUPT', `Unknown stored metric "${metric}"`)
+        }
+        return definition.aggregation?.kind === 'ratio'
+            ? ratio(
+                  scalar(definition.aggregation.numerator),
+                  scalar(definition.aggregation.denominator),
+              )
+            : (data.values[metric] ?? null)
+    }
+    return {
+        ...(limited.length > 0 ? { points: limited } : {}),
+        values: Object.fromEntries(
+            query.metrics.map((metric) => [
+                metric,
+                data.points?.length ? resolve(metric, data.points) : scalar(metric),
+            ]),
+        ),
+    }
 }
 
 const aggregate = (
@@ -516,7 +505,7 @@ async function applyReductions(
             data = materialize(data, definition, {
                 dimensions: allDimensions(data),
                 grain: reduction.grain,
-                metrics: Object.keys(data),
+                metrics: Object.keys(data.values),
                 time: storedRange(data),
                 timezone: 'UTC',
             })
@@ -538,27 +527,14 @@ async function applyReductions(
 const mapPoints = (
     data: MetricData,
     transform: (points: readonly MetricPoint[]) => readonly MetricPoint[],
-): MetricData =>
-    Object.fromEntries(
-        Object.entries(data).map(([metric, datum]) => [
-            metric,
-            { ...datum, ...(datum.points ? { points: transform(datum.points) } : {}) },
-        ]),
-    )
+): MetricData => (data.points ? { ...data, points: transform(data.points) } : data)
 
 const allDimensions = (data: MetricData): string[] => [
-    ...new Set(
-        Object.values(data).flatMap(({ points }) =>
-            (points ?? []).flatMap(({ dimensions }) => Object.keys(dimensions ?? {})),
-        ),
-    ),
+    ...new Set((data.points ?? []).flatMap(({ dimensions }) => Object.keys(dimensions ?? {}))),
 ]
 
 const storedRange = (data: MetricData): TimeRange => {
-    const times = Object.values(data)
-        .flatMap(({ points }) => points ?? [])
-        .flatMap(({ time }) => (time ? [time] : []))
-        .toSorted()
+    const times = (data.points ?? []).flatMap(({ time }) => (time ? [time] : [])).toSorted()
     const from = times[0] ?? new Date(0).toISOString()
     const last = times.at(-1) ?? from
     return { from, to: new Date(new Date(last).valueOf() + 1).toISOString() }
@@ -630,7 +606,7 @@ const isProvisional = (result: QueryResult<unknown, object>, range: TimeRange): 
 const validSegments = (segments: readonly HistorySegment[], source: string): HistorySegment[] =>
     segments.map((segment) => {
         if (
-            segment.schemaVersion !== 2 ||
+            segment.schemaVersion !== 1 ||
             segment.source !== source ||
             !segment.fidelity ||
             !isRecord(segment.data) ||

@@ -61,6 +61,40 @@ describe('Metrics', () => {
     })
 })
 
+const materializationCases = [1, 5, 10].flatMap((metricCount) =>
+    [100, 10_000].map((pointCount) => {
+        const names = Array.from({ length: metricCount }, (_, index) => `metric${index}`)
+        const values = Object.fromEntries(names.map((metric, index) => [metric, index]))
+        const source = defineMetricSource({
+            execute: () => ({
+                points: Array.from({ length: pointCount }, (_, index) => ({
+                    time: new Date(Date.parse(time.from) + index * 60_000).toISOString(),
+                    values,
+                })),
+                values,
+            }),
+            metrics: Object.fromEntries(names.map((metric) => [metric, {}])),
+        })
+        return {
+            metricCount,
+            pointCount,
+            query: source.normalize({ metrics: names, time }),
+            source,
+        }
+    }),
+)
+
+describe('Metric materialization', () => {
+    for (const fixture of materializationCases) {
+        bench(`${fixture.metricCount} metrics x ${fixture.pointCount} points`, async () => {
+            await fixture.source.execute(fixture.query, {
+                provider: 'benchmark',
+                source: 'benchmark.metrics',
+            })
+        })
+    }
+})
+
 const historyPoints = Array.from({ length: 24 * 7 }, (_, index) => ({
     dimensions: { service: index % 2 === 0 ? 'api' : 'worker' },
     time: new Date(Date.parse(time.from) + index * 3_600_000).toISOString(),
@@ -129,19 +163,14 @@ describe('History', () => {
 })
 
 const uiResult = {
-    data: Object.fromEntries(
-        ['requests', 'errors', 'latency'].map((metric, metricIndex) => [
-            metric,
-            {
-                points: Array.from({ length: 500 }, (_, index) => ({
-                    dimensions: { service: index % 2 === 0 ? 'api' : 'worker' },
-                    time: new Date(Date.parse(time.from) + index * 60_000).toISOString(),
-                    value: index + metricIndex,
-                })),
-                value: 500 + metricIndex,
-            },
-        ]),
-    ),
+    data: {
+        points: Array.from({ length: 500 }, (_, index) => ({
+            dimensions: { service: index % 2 === 0 ? 'api' : 'worker' },
+            time: new Date(Date.parse(time.from) + index * 60_000).toISOString(),
+            values: { errors: index + 1, latency: index + 2, requests: index },
+        })),
+        values: { errors: 501, latency: 502, requests: 500 },
+    },
     meta: { queriedAt: time.to, source: 'app.metrics' },
 }
 
