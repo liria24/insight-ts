@@ -9,6 +9,7 @@ import {
 } from '../src/history/index.ts'
 import { defineMetricSource, type TimeRange } from '../src/metrics/index.ts'
 import { cloudflare as createCloudflare } from '../src/providers/cloudflare/index.ts'
+import { googleSearchConsole } from '../src/providers/google-search-console/index.ts'
 import { createBreakdownModel, createSeriesModel } from '../src/ui-core/index.ts'
 
 const time = {
@@ -213,12 +214,40 @@ const cloudflareQuery = cloudflare.normalize({
     time,
     where: { country: { in: ['JP', 'US'] } },
 })
+const searchConsolePayload = JSON.stringify({
+    rows: Array.from({ length: 25_000 }, (_, index) => ({
+        clicks: 1,
+        ctr: 0.5,
+        impressions: 2,
+        keys: ['2026-01-01', `query-${index}`, `/page-${index}`],
+        position: 3,
+    })),
+})
+const searchConsole = googleSearchConsole({
+    auth: { getAccessToken: async () => 'token' },
+    fetch: async () =>
+        new Response(searchConsolePayload, { headers: { 'content-type': 'application/json' } }),
+    property: 'sc-domain:example.com',
+}).sources.searchAnalytics
+const searchConsoleQuery = searchConsole.normalize({
+    dimensions: ['date', 'query', 'page'],
+    limit: 25_000,
+    metrics: ['clicks', 'impressions', 'ctr', 'averagePosition'],
+    time,
+})
 
 describe('Provider normalization', () => {
     bench('translate and normalize a Cloudflare response', async () => {
         await cloudflare.execute(cloudflareQuery, {
             provider: 'cloudflare',
             source: 'cloudflare.webAnalytics',
+        })
+    })
+
+    bench('normalize 25,000 Search Console multi-dimension rows', async () => {
+        await searchConsole.execute(searchConsoleQuery, {
+            provider: 'google-search-console',
+            source: 'google-search-console.searchAnalytics',
         })
     })
 })

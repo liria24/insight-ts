@@ -70,7 +70,7 @@ Insight.ts currently includes support for:
 
 - Cloudflare Web Analytics
 - Cloudflare Analytics Engine
-- Google Search Console
+- Google Search Console with bounded native pagination
 
 Use `defineSource()` and `defineProvider()` for application-specific or third-party data.
 

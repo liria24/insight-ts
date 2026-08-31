@@ -130,4 +130,95 @@ describe('Google Search Console Source', () => {
             })
         void rejectsContains
     })
+
+    it('normalizes 25,000 multi-dimension rows once and reuses date conversion', async () => {
+        const formatToParts = vi.spyOn(Intl.DateTimeFormat.prototype, 'formatToParts')
+        const rows = Array.from({ length: 25_000 }, (_, index) => ({
+            clicks: 1,
+            ctr: 0.5,
+            impressions: 2,
+            keys: ['2026-08-01', `query-${index}`, `/page-${index}`],
+            position: 3,
+        }))
+        const fetcher = vi.fn<(input: RequestInfo | URL, init?: RequestInit) => Promise<Response>>(
+            async () => Response.json({ rows }),
+        )
+        const source = googleSearchConsole({
+            auth: { getAccessToken: async () => 'token' },
+            fetch: fetcher,
+            property: 'sc-domain:example.com',
+        }).sources.searchAnalytics
+
+        const result = await source.execute(
+            source.normalize({
+                dimensions: ['date', 'query', 'page'],
+                limit: 25_000,
+                metrics: ['clicks', 'impressions', 'ctr', 'averagePosition'],
+                time,
+            }),
+            { provider: 'google-search-console', source: 'google-search-console.searchAnalytics' },
+        )
+
+        expect(fetcher).toHaveBeenCalledOnce()
+        expect(formatToParts.mock.calls.length).toBeLessThan(20)
+        expect(result.data.points).toHaveLength(25_000)
+        expect(result.data.values).toEqual({
+            averagePosition: 3,
+            clicks: 25_000,
+            ctr: 0.5,
+            impressions: 50_000,
+        })
+        formatToParts.mockRestore()
+    })
+
+    it('caps unbounded pagination with visible quality metadata', async () => {
+        expect(() =>
+            googleSearchConsole({
+                auth: { getAccessToken: async () => 'token' },
+                maxRows: 0,
+                property: 'sc-domain:example.com',
+            }),
+        ).toThrow('maxRows must be a positive safe integer')
+
+        const fetcher = vi.fn<(input: RequestInfo | URL, init?: RequestInit) => Promise<Response>>(
+            async () =>
+                Response.json({
+                    rows: [
+                        {
+                            clicks: 1,
+                            ctr: 0.5,
+                            impressions: 2,
+                            keys: ['2026-08-01', 'first'],
+                            position: 1,
+                        },
+                        {
+                            clicks: 2,
+                            ctr: 0.5,
+                            impressions: 4,
+                            keys: ['2026-08-01', 'second'],
+                            position: 2,
+                        },
+                    ],
+                }),
+        )
+        const source = googleSearchConsole({
+            auth: { getAccessToken: async () => 'token' },
+            fetch: fetcher,
+            maxRows: 2,
+            property: 'sc-domain:example.com',
+        }).sources.searchAnalytics
+        const result = await source.execute(
+            source.normalize({ dimensions: ['query'], metrics: ['clicks'], time }),
+            {
+                provider: 'google-search-console',
+                source: 'google-search-console.searchAnalytics',
+            },
+        )
+
+        expect(fetcher).toHaveBeenCalledOnce()
+        expect(result.data.values.clicks).toBe(3)
+        expect(result.quality?.warnings).toContainEqual(
+            expect.objectContaining({ code: 'google-search-console-max-rows' }),
+        )
+    })
 })

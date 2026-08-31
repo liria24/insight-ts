@@ -5,6 +5,7 @@ import {
     type CanonicalWhere,
     type DimensionValue,
     type MetricSourceOutput,
+    type MetricSourcePoint,
     type MetricValues,
 } from '../../metrics/index.ts'
 import { fetchWithRetry } from '../shared/fetch-with-retry.ts'
@@ -407,7 +408,22 @@ function analyticsEngineSql(dataset: string, query: ResolvedMetricQuery): string
 
 function analyticsEngineReport(query: ResolvedMetricQuery, data: unknown[]): MetricSourceOutput {
     const rows = data.map((item) => record(item) ?? {})
-    const maxInterval = Math.max(1, ...rows.map((row) => number(row.sampleInterval) ?? 1))
+    let maxInterval = 1
+    let total = 0
+    const points: MetricSourcePoint[] = []
+    const dimension = query.dimensions[0]
+    for (const row of rows) {
+        maxInterval = Math.max(maxInterval, number(row.sampleInterval) ?? 1)
+        total += number(row.events) ?? 0
+        if (dimension === 'time') {
+            points.push({ time: text(row.time), values: { events: number(row.events) } })
+        } else if (dimension === 'name') {
+            points.push({
+                dimensions: { name: typeof row.name === 'string' ? row.name : null },
+                values: { events: number(row.events) },
+            })
+        }
+    }
     const meta = reportMeta(
         query,
         maxInterval > 1 ? { approximate: true, sampled: true, sampleRate: 1 / maxInterval } : {},
@@ -415,24 +431,7 @@ function analyticsEngineReport(query: ResolvedMetricQuery, data: unknown[]): Met
     if (query.dimensions.length === 0) {
         return { ...meta, values: { events: number(rows[0]?.events) } }
     }
-    if (query.dimensions[0] === 'time') {
-        return {
-            ...meta,
-            values: { events: rows.reduce((total, row) => total + (number(row.events) ?? 0), 0) },
-            points: rows.map((row) => ({
-                time: text(row.time),
-                values: { events: number(row.events) },
-            })),
-        }
-    }
-    return {
-        ...meta,
-        values: { events: rows.reduce((total, row) => total + (number(row.events) ?? 0), 0) },
-        points: rows.map((row) => ({
-            dimensions: { name: typeof row.name === 'string' ? row.name : null },
-            values: { events: number(row.events) },
-        })),
-    }
+    return { ...meta, points, values: { events: total } }
 }
 
 function validateWebQuery(query: ResolvedMetricQuery): void {
@@ -555,7 +554,10 @@ function webReport(
 ): MetricSourceOutput {
     const rows = rollupWebRows(query, input)
     const limited = query.limit === undefined ? rows : rows.slice(0, query.limit)
-    const maxInterval = Math.max(1, ...input.map((row) => number(row.avg?.sampleInterval) ?? 1))
+    let maxInterval = 1
+    for (const row of input) {
+        maxInterval = Math.max(maxInterval, number(row.avg?.sampleInterval) ?? 1)
+    }
     const partial = errors.length > 0 || input.length === nativeLimit
     const warnings = [
         ...errors.map((error) => ({
@@ -582,22 +584,22 @@ function webReport(
     if (query.dimensions.length === 0) {
         return { ...meta, values: sumWebMetrics(query.metrics, limited) }
     }
+    const hasTimeDimension = query.dimensions.includes('time')
+    const dimensions = query.dimensions.filter((dimension) => dimension !== 'time')
     return {
         ...meta,
         points: limited.map((row) => ({
-            ...(query.dimensions.includes('time') ? { time: text(row.dimensions?.time) } : {}),
-            ...(query.dimensions.some((dimension) => dimension !== 'time')
-                ? {
+            ...(hasTimeDimension ? { time: text(row.dimensions?.time) } : {}),
+            ...(dimensions.length === 0
+                ? {}
+                : {
                       dimensions: Object.fromEntries(
-                          query.dimensions
-                              .filter((dimension) => dimension !== 'time')
-                              .map((dimension) => [
-                                  dimension,
-                                  dimensionValue(row.dimensions?.[dimension]),
-                              ]),
+                          dimensions.map((dimension) => [
+                              dimension,
+                              dimensionValue(row.dimensions?.[dimension]),
+                          ]),
                       ),
-                  }
-                : {}),
+                  }),
             values: webMetricValues(query.metrics, row),
         })),
         values: sumWebMetrics(query.metrics, limited),
@@ -657,18 +659,14 @@ function webMetricValues(metrics: readonly string[], row: WebAnalyticsRow): Metr
 }
 
 function sumWebMetrics(metrics: readonly string[], rows: WebAnalyticsRow[]): MetricValues {
+    let pageViews = 0
+    let visits = 0
+    for (const row of rows) {
+        pageViews += number(row.count) ?? 0
+        visits += number(row.sum?.visits) ?? 0
+    }
     return Object.fromEntries(
-        metrics.map((metric) => [
-            metric,
-            rows.reduce(
-                (total, row) =>
-                    total +
-                    (metric === 'pageViews'
-                        ? (number(row.count) ?? 0)
-                        : (number(row.sum?.visits) ?? 0)),
-                0,
-            ),
-        ]),
+        metrics.map((metric) => [metric, metric === 'pageViews' ? pageViews : visits]),
     )
 }
 

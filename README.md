@@ -81,7 +81,7 @@ Built-in support currently includes:
 
 - **Cloudflare Web Analytics** — page views, visits, dimensions, filters, and quality metadata
 - **Cloudflare Analytics Engine** — Metric queries, event delivery, or both
-- **Google Search Console** — Search Analytics metrics with native pagination and data-state metadata
+- **Google Search Console** — Search Analytics metrics with bounded native pagination and data-state metadata
 - **Application-defined Sources** — arbitrary typed query and result contracts through `defineSource()` and `defineProvider()`
 
 Custom Sources use the same query execution and type inference as built-in Providers.

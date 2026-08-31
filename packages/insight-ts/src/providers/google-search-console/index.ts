@@ -2,6 +2,7 @@ import { InsightError, ProviderError } from '../../core/errors.ts'
 import {
     defineMetricSource,
     type CanonicalWhere,
+    type MetricSourcePoint,
     type MetricSourceOutput,
     type MetricValues,
 } from '../../metrics/index.ts'
@@ -10,6 +11,7 @@ import { resolvedMetricQuery, type ResolvedMetricQuery } from '../shared/types.t
 
 const SEARCH_ANALYTICS_ENDPOINT = 'https://www.googleapis.com/webmasters/v3/sites'
 const PAGE_SIZE = 25_000
+const DEFAULT_MAX_ROWS = 250_000
 const SEARCH_CONSOLE_TIMEZONE = 'America/Los_Angeles'
 const searchConsoleDateFormatter = new Intl.DateTimeFormat('en-CA', {
     day: '2-digit',
@@ -73,6 +75,7 @@ export interface GoogleSearchConsoleOptions {
     }
     dataState?: DataState
     fetch?: Fetch
+    maxRows?: number
     property: string
 }
 
@@ -80,11 +83,16 @@ export type GoogleSearchConsoleSource = ReturnType<typeof googleSearchConsoleSou
 export type GoogleSearchConsoleProvider = ReturnType<typeof googleSearchConsole>
 
 interface SearchAnalyticsRow {
-    clicks?: unknown
-    ctr?: unknown
-    impressions?: unknown
-    keys?: unknown
-    position?: unknown
+    clicks: number
+    ctr: number
+    impressions: number
+    keys?: readonly string[]
+    position: number
+}
+
+interface NormalizedSearchAnalyticsRow extends SearchAnalyticsRow {
+    keys: readonly string[]
+    time?: string
 }
 
 interface SearchAnalyticsMetadata {
@@ -102,6 +110,10 @@ export function googleSearchConsole(options: GoogleSearchConsoleOptions) {
 function googleSearchConsoleSource(options: GoogleSearchConsoleOptions) {
     const fetcher = options.fetch ?? globalThis.fetch
     const dataState = options.dataState ?? 'final'
+    const maxRows = options.maxRows ?? DEFAULT_MAX_ROWS
+    if (!Number.isSafeInteger(maxRows) || maxRows <= 0) {
+        throw new TypeError('Google Search Console maxRows must be a positive safe integer')
+    }
 
     const validate = (query: ResolvedMetricQuery): void => {
         for (const metric of query.metrics) {
@@ -150,11 +162,21 @@ function googleSearchConsoleSource(options: GoogleSearchConsoleOptions) {
             throw new TypeError('Google Search Console access token cannot be empty')
         }
 
-        const rows: SearchAnalyticsRow[] = []
+        const rows: NormalizedSearchAnalyticsRow[] = []
+        const timeIndex = query.dimensions.findIndex((dimension) =>
+            ['date', 'hour'].includes(dimension),
+        )
+        const timeDimension = query.dimensions[timeIndex]
+        const timeCache = new Map<string, { iso: string; millis: number }>()
+        const from = new Date(query.range.from).getTime()
+        const to = new Date(query.range.to).getTime()
         let metadata: SearchAnalyticsMetadata | undefined
         let startRow = 0
+        let fetchedRows = 0
+        let truncatedByMaxRows = false
         while (true) {
-            const remaining = query.limit === undefined ? PAGE_SIZE : query.limit - rows.length
+            const requestedRows = Math.min(query.limit ?? maxRows, maxRows)
+            const remaining = requestedRows - fetchedRows
             if (remaining <= 0) break
             const rowLimit = Math.min(PAGE_SIZE, remaining)
             const body = {
@@ -204,14 +226,51 @@ function googleSearchConsoleSource(options: GoogleSearchConsoleOptions) {
                 )
             }
             const page = Array.isArray(responseRows) ? responseRows : []
-            rows.push(...page)
+            fetchedRows += page.length
+            for (const row of page) {
+                const keys = row.keys ?? []
+                let time: { iso: string; millis: number } | undefined
+                if (timeIndex !== -1) {
+                    const key = keys[timeIndex] ?? ''
+                    time = timeCache.get(key)
+                    if (time === undefined) {
+                        const date =
+                            timeDimension === 'date'
+                                ? searchConsoleDayStart(key)
+                                : Number.isFinite(new Date(key).getTime())
+                                  ? new Date(key)
+                                  : undefined
+                        if (date === undefined) {
+                            throw new GoogleSearchConsoleApiError(
+                                'Google Search Console returned an invalid date dimension',
+                                502,
+                            )
+                        }
+                        time = { iso: date.toISOString(), millis: date.getTime() }
+                        timeCache.set(key, time)
+                    }
+                    if (time.millis < from || time.millis >= to) continue
+                }
+                rows.push({
+                    clicks: row.clicks,
+                    ctr: row.ctr,
+                    impressions: row.impressions,
+                    keys,
+                    position: row.position,
+                    ...(time === undefined ? {} : { time: time.iso }),
+                })
+            }
             const responseMetadata = record(record(payload)?.metadata)
             if (responseMetadata !== undefined) metadata = responseMetadata
             if (page.length < rowLimit) break
+            if (fetchedRows === maxRows && (query.limit === undefined || query.limit > maxRows)) {
+                truncatedByMaxRows = true
+                break
+            }
             startRow += page.length
         }
 
-        return googleReport(query, rows, metadata)
+        return googleReport(query, rows, metadata, truncatedByMaxRows ? maxRows : undefined)
     }
 
     return defineMetricSource({
@@ -322,10 +381,10 @@ function flattenAndFilter(filter: CanonicalWhere): Extract<CanonicalWhere, { fie
 
 function googleReport(
     query: ResolvedMetricQuery,
-    rows: SearchAnalyticsRow[],
+    rows: NormalizedSearchAnalyticsRow[],
     metadata: SearchAnalyticsMetadata | undefined,
+    maxRows: number | undefined,
 ): MetricSourceOutput {
-    const normalizedRows = trimRowsToRange(query, rows)
     const exactRange = canRepresentRangeExactly(query)
     const incompleteFrom =
         typeof metadata?.first_incomplete_date === 'string'
@@ -364,6 +423,14 @@ function googleReport(
                           'Search Console exposes whole Pacific calendar days; the requested instant range was expanded to overlapping source days',
                   },
               ]),
+        ...(maxRows === undefined
+            ? []
+            : [
+                  {
+                      code: 'google-search-console-max-rows',
+                      message: `Search Console reached the configured maxRows limit of ${maxRows}; results may be incomplete`,
+                  },
+              ]),
     ]
     const meta: Pick<MetricSourceOutput, 'meta' | 'quality'> = {
         meta: {
@@ -377,68 +444,50 @@ function googleReport(
         quality: { ...(exactRange ? {} : { approximate: true }), partial: true, warnings },
     }
 
-    if (query.dimensions.length === 0) {
-        return {
-            ...meta,
-            values: aggregateGoogleMetrics(query.metrics, normalizedRows),
-        }
-    }
     const timeIndex = query.dimensions.findIndex((dimension) =>
         ['date', 'hour'].includes(dimension),
     )
+    const dimensions = query.dimensions.flatMap((dimension, index) =>
+        index === timeIndex ? [] : [[dimension, index] as const],
+    )
+    const points: MetricSourcePoint[] = []
+    let clicks = 0
+    let impressions = 0
+    let weightedPosition = 0
+    for (const row of rows) {
+        clicks += row.clicks
+        impressions += row.impressions
+        weightedPosition += row.position * row.impressions
+        if (query.dimensions.length !== 0) {
+            points.push({
+                ...(row.time === undefined ? {} : { time: row.time }),
+                ...(dimensions.length === 0
+                    ? {}
+                    : {
+                          dimensions: Object.fromEntries(
+                              dimensions.map(([dimension, index]) => [
+                                  dimension,
+                                  row.keys[index] ?? null,
+                              ]),
+                          ),
+                      }),
+                values: googleMetricValues(query.metrics, row),
+            })
+        }
+    }
+    const values = Object.fromEntries(
+        query.metrics.map((metric) => {
+            if (metric === 'clicks') return [metric, clicks]
+            if (metric === 'impressions') return [metric, impressions]
+            if (metric === 'ctr') return [metric, impressions === 0 ? null : clicks / impressions]
+            return [metric, impressions === 0 ? null : weightedPosition / impressions]
+        }),
+    )
     return {
         ...meta,
-        points: normalizedRows.map((row) => ({
-            ...(timeIndex === -1
-                ? {}
-                : {
-                      time:
-                          query.dimensions[timeIndex] === 'date'
-                              ? (searchConsoleDayStart(
-                                    rowKeys(row)[timeIndex] ?? '',
-                                )?.toISOString() ?? '')
-                              : new Date(rowKeys(row)[timeIndex] ?? '').toISOString(),
-                  }),
-            ...(query.dimensions.some((_, index) => index !== timeIndex)
-                ? {
-                      dimensions: Object.fromEntries(
-                          query.dimensions.flatMap((dimension, index) =>
-                              index === timeIndex ? [] : [[dimension, rowKeys(row)[index] ?? null]],
-                          ),
-                      ),
-                  }
-                : {}),
-            values: googleMetricValues(query.metrics, row),
-        })),
-        values: aggregateGoogleMetrics(query.metrics, normalizedRows),
+        ...(query.dimensions.length === 0 ? {} : { points }),
+        values,
     }
-}
-
-function trimRowsToRange(
-    query: ResolvedMetricQuery,
-    rows: SearchAnalyticsRow[],
-): SearchAnalyticsRow[] {
-    const hourIndex = query.dimensions.indexOf('hour')
-    const dateIndex = query.dimensions.indexOf('date')
-    if (dateIndex === -1 && hourIndex === -1) return rows
-    const from = new Date(query.range.from).getTime()
-    const to = new Date(query.range.to).getTime()
-    return rows.filter((row) => {
-        const key = rowKeys(row)[hourIndex === -1 ? dateIndex : hourIndex] ?? ''
-        const start =
-            hourIndex === -1
-                ? searchConsoleDayStart(key)
-                : Number.isFinite(new Date(key).getTime())
-                  ? new Date(key)
-                  : undefined
-        if (!start) {
-            throw new GoogleSearchConsoleApiError(
-                'Google Search Console returned an invalid date dimension',
-                502,
-            )
-        }
-        return start.getTime() >= from && start.getTime() < to
-    })
 }
 
 function canRepresentRangeExactly(query: ResolvedMetricQuery): boolean {
@@ -457,32 +506,6 @@ function googleMetricValues(metrics: readonly string[], row: SearchAnalyticsRow)
             return [metric, number(row.ctr)]
         }),
     )
-}
-
-function aggregateGoogleMetrics(
-    metrics: readonly string[],
-    rows: SearchAnalyticsRow[],
-): MetricValues {
-    const clicks = rows.reduce((total, row) => total + (number(row.clicks) ?? 0), 0)
-    const impressions = rows.reduce((total, row) => total + (number(row.impressions) ?? 0), 0)
-    const weightedPosition = rows.reduce(
-        (total, row) => total + (number(row.position) ?? 0) * (number(row.impressions) ?? 0),
-        0,
-    )
-    return Object.fromEntries(
-        metrics.map((metric) => {
-            if (metric === 'clicks') return [metric, clicks]
-            if (metric === 'impressions') return [metric, impressions]
-            if (metric === 'ctr') return [metric, impressions === 0 ? null : clicks / impressions]
-            return [metric, impressions === 0 ? null : weightedPosition / impressions]
-        }),
-    )
-}
-
-function rowKeys(row: SearchAnalyticsRow): string[] {
-    return Array.isArray(row.keys)
-        ? row.keys.map((key) => (typeof key === 'string' ? key : String(key)))
-        : []
 }
 
 async function readJson(response: Response): Promise<unknown> {
