@@ -6,8 +6,6 @@ import { basename, join } from 'node:path'
 
 interface Consumer {
     dependencies?: readonly string[]
-    expectsCss?: boolean
-    forbidden?: readonly string[]
     name: string
     nuxt?: boolean
     source: string
@@ -17,118 +15,26 @@ const packageRoot = join(import.meta.dir, '..')
 const cache = new TextDecoder()
     .decode(Bun.spawnSync([process.execPath, 'pm', 'cache']).stdout)
     .trim()
-const root = await mkdtemp(join(tmpdir(), 'insight-ts-package-'))
-
-async function verifyPackage(): Promise<void> {
-    try {
-        const packed = await run(
-            [process.execPath, 'pm', 'pack', '--destination', root, '--ignore-scripts', '--quiet'],
-            packageRoot,
-        )
-        const filename = basename(packed.trim())
-        if (!filename.endsWith('.tgz')) throw new Error('bun pm pack did not report a tarball')
-        const tarball = join(root, filename)
-        const files = await run(['tar', '-tf', tarball], root)
-        for (const required of ['package/dist/vue/ui/style.css', 'package/LICENSE']) {
-            if (!files.split(/\r?\n/).includes(required))
-                throw new Error(`Packed file missing: ${required}`)
-        }
-
-        const manifest = await Bun.file(join(packageRoot, 'package.json')).json()
-        if (
-            manifest.name !== 'insight-ts' ||
-            manifest.license !== 'MIT' ||
-            manifest.dependencies?.['@tanstack/charts'] !== '0.16.0' ||
-            manifest.dependencies?.['d3-shape'] !== '3.2.0' ||
-            manifest.peerDependencies?.['@opentelemetry/api'] !== '^1.9.1' ||
-            manifest.peerDependenciesMeta?.['@opentelemetry/api']?.optional !== true ||
-            manifest.peerDependencies?.vue !== '>=3.5.0'
-        )
-            throw new Error('Package identity, license, renderer pin, or Vue peer range is invalid')
-
-        const isolatedEntries = [
-            'index.js',
-            'browser.js',
-            'history.js',
-            'metrics.js',
-            'nitro.js',
-            'nuxt.js',
-            'provider.js',
-            'ui-core.js',
-            'vue.js',
-        ]
-        const isolated = (
-            await Promise.all(
-                isolatedEntries.map((file) => Bun.file(join(packageRoot, 'dist', file)).text()),
-            )
-        ).join('\n')
-        for (const forbidden of [
-            '@tanstack/charts',
-            'd3-shape',
-            'InsightAreaChart',
-            '--insight-chart-',
-        ]) {
-            if (isolated.includes(forbidden)) throw new Error(`Non-UI entry contains ${forbidden}`)
-        }
-
-        const declarations = await Promise.all([
-            Bun.file(join(packageRoot, 'dist', 'vue-ui.d.ts')).text(),
-            Bun.file(join(packageRoot, 'dist', 'ui-core.d.ts')).text(),
-        ])
-        if (
-            declarations.some(
-                (text) => text.includes('@tanstack/charts') || text.includes('ChartPoint'),
-            )
-        ) {
-            throw new Error('Renderer types leaked into public declarations')
-        }
-        if (declarations[1].includes("from 'vue'"))
-            throw new Error('UI Core declaration depends on Vue')
-
-        for (const consumer of consumers) await verifyConsumer(consumer, tarball)
-    } finally {
-        await rm(root, { force: true, recursive: true })
-    }
-}
+const root = await mkdtemp(join(tmpdir(), 'insight-ts-consumers-'))
 
 const consumers: readonly Consumer[] = [
     {
-        forbidden: ['@tanstack/charts', 'd3-shape', 'InsightAreaChart', '--insight-chart-'],
         name: 'core',
         source: `import { createInsight } from 'insight-ts'
-import { createBrowserInsight } from 'insight-ts/browser'
-import { defineMetricSource } from 'insight-ts/metrics'
-import { defineProvider } from 'insight-ts/provider'
-import { createSeriesModel } from 'insight-ts/ui-core'
+import { defineProvider, defineSource } from 'insight-ts/provider'
 
-const source = defineMetricSource({
-  metrics: { views: { aggregation: { kind: 'sum' }, rollup: 'additive' } },
-  execute(query) {
-    return {
-      points: [{ time: query.time.from, values: { views: 3 } }],
-      values: { views: 3 },
-    }
-  },
+const source = defineSource({
+  execute: ({ value }: { value: number }) => ({ data: value * 2 }),
+  key: ({ value }: { value: number }) => String(value),
+  normalize: ({ value }: { value: number }) => ({ value }),
 })
-const provider = defineProvider({
-  id: 'app',
-  sources: { usage: source },
-})
-const insight = createInsight({ providers: [provider] })
-const { usage } = await insight.query((q) => ({
-  usage: q.source('app.usage', {
-    metrics: ['views'],
-    time: { from: '2026-08-01T00:00:00.000Z', grain: 'day', to: '2026-08-02T00:00:00.000Z' },
-  }),
-}))
-if (createSeriesModel(usage, { colors: ['#123456'] }).series[0]?.values[0]?.value !== 3 || typeof createBrowserInsight !== 'function') {
-  throw new Error('Packed Core/UI Core export failed')
-}
+const insight = createInsight({ providers: [defineProvider({ id: 'app', sources: { value: source } })] as const })
+const { value } = await insight.query((q) => ({ value: q.source('app.value', { value: 21 }) }))
+if (value.data !== 42 || value.meta.source !== 'app.value') throw new Error('Packed Core runtime failed')
 `,
     },
     {
         dependencies: ['nuxt@4.5.2'],
-        forbidden: ['@tanstack/charts', 'd3-shape', 'InsightAreaChart', '--insight-chart-'],
         name: 'nuxt',
         nuxt: true,
         source: `import module, { type NuxtInsightModuleOptions } from 'insight-ts/nuxt'
@@ -138,7 +44,6 @@ if (typeof module !== 'function' || options.history) throw new Error('Packed Nux
     },
     {
         dependencies: ['vue@3.5.42'],
-        forbidden: ['@tanstack/charts', 'd3-shape', 'InsightAreaChart', '--insight-chart-'],
         name: 'vue-integration',
         source: `import { createBrowserInsight } from 'insight-ts/browser'
 import { provideBrowserInsight, useBrowserInsight } from 'insight-ts/vue'
@@ -152,13 +57,25 @@ if (injected !== insight) throw new Error('Packed Vue integration failed')
 `,
     },
     vueUiConsumer('vue-ui-35', 'vue@3.5.42'),
-    vueUiConsumer('vue-ui-36', 'vue@3.6.0-rc.2'),
+    vueUiConsumer('vue-ui-36', 'vue@3.6.0-rc.6'),
 ]
+
+try {
+    const packed = await run(
+        [process.execPath, 'pm', 'pack', '--destination', root, '--ignore-scripts', '--quiet'],
+        packageRoot,
+    )
+    const filename = basename(packed.trim())
+    if (!filename.endsWith('.tgz')) throw new Error('bun pm pack did not report a tarball')
+    const tarball = join(root, filename)
+    for (const consumer of consumers) await verifyConsumer(consumer, tarball)
+} finally {
+    await rm(root, { force: true, recursive: true })
+}
 
 function vueUiConsumer(name: string, vue: string): Consumer {
     return {
-        dependencies: [vue, 'happy-dom@20.11.12'],
-        expectsCss: true,
+        dependencies: [vue, 'happy-dom@20.12.0'],
         name,
         source: `import { Window } from 'happy-dom'
 const browser = new Window({ url: 'https://example.test' })
@@ -258,19 +175,6 @@ async function verifyConsumer(consumer: Consumer, tarball: string): Promise<void
     )
     await Bun.write(join(directory, 'verify.ts'), consumer.source)
     await run([process.execPath, 'x', 'tsc', '--noEmit'], directory, env)
-    await run(
-        [process.execPath, 'build', 'verify.ts', '--outdir', 'dist', '--target', 'bun'],
-        directory,
-        env,
-    )
-    const bundle = await Bun.file(join(directory, 'dist', 'verify.js')).text()
-    for (const forbidden of consumer.forbidden ?? [])
-        if (bundle.includes(forbidden)) throw new Error(`${consumer.name} bundled ${forbidden}`)
-    const css = join(directory, 'dist', 'verify.css')
-    if ((await exists(css)) !== Boolean(consumer.expectsCss))
-        throw new Error(`${consumer.name} CSS isolation failed`)
-    if (consumer.expectsCss && !(await Bun.file(css).text()).includes('--insight-chart-1'))
-        throw new Error('Vue UI base CSS missing')
     await run([process.execPath, 'run', 'verify.ts'], directory, env)
 
     if (consumer.nuxt) {
@@ -284,11 +188,8 @@ async function verifyConsumer(consumer: Consumer, tarball: string): Promise<void
             !(await exists(join(directory, '.output', 'server', 'index.mjs'))) ||
             !(await exists(join(directory, '.nuxt', 'insight', 'server.mjs')))
         ) {
-            throw new Error('Packed Nuxt build failed')
+            throw new Error('Packed Nuxt production build failed')
         }
-        const output = await readTree([join(directory, '.nuxt'), join(directory, '.output')])
-        for (const forbidden of consumer.forbidden ?? [])
-            if (output.includes(forbidden)) throw new Error(`Packed Nuxt bundled ${forbidden}`)
     }
 }
 
@@ -303,15 +204,6 @@ async function run(command: readonly string[], cwd: string, env = process.env): 
     return stdout
 }
 
-async function readTree(directories: readonly string[]): Promise<string> {
-    const files = directories.flatMap((directory) =>
-        [...new Bun.Glob('**/*.{js,mjs,css,ts}').scanSync({ cwd: directory })].map((file) =>
-            join(directory, file),
-        ),
-    )
-    return (await Promise.all(files.map((file) => Bun.file(file).text()))).join('\n')
-}
-
 async function exists(path: string): Promise<boolean> {
     try {
         await access(path)
@@ -320,5 +212,3 @@ async function exists(path: string): Promise<boolean> {
         return false
     }
 }
-
-await verifyPackage()

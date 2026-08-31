@@ -1,0 +1,37 @@
+{
+    "$schema": "https://unpkg.com/knip@6/schema.json",
+    "ignoreExportsUsedInFile": true,
+    "workspaces": {
+        ".": {
+            "entry": ["*.config.ts"],
+            "project": ["*.config.ts"]
+        },
+        "apps/docs": {
+            "entry": [
+                "app/**/*.{css,ts,vue}!",
+                "server/**/*.ts!",
+                "shared/**/*.ts!",
+                "test/**/*.ts"
+            ],
+            "ignoreDependencies": ["vue-tsc", "wrangler"],
+            "project": ["**/*.{css,ts,vue}!"]
+        },
+        "packages/insight-ts": {
+            "entry": [
+                "benchmark/**/*.bench.ts",
+                "scripts/*.ts",
+                "test/**/*.test.ts",
+                "test/fixtures/**/*.{ts,vue}"
+            ],
+            "ignoreDependencies": ["@arethetypeswrong/cli"],
+            "ignoreIssues": { "package.json": ["optionalPeerDependencies"] },
+            "project": [
+                "benchmark/**/*.ts",
+                "scripts/**/*.ts",
+                "src/**/*.{ts,vue}!",
+                "test/**/*.{ts,vue}",
+                "*.config.ts"
+            ]
+        }
+    }
+}

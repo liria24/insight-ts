@@ -17,10 +17,11 @@
         "docus": "^5.13.0",
         "insight-ts": "workspace:*",
         "nuxt": "^4.5.2",
-        "tailwindcss": "^4.3.3"
+        "tailwindcss": "^4.3.3",
+        "ufo": "^1.6.4"
     },
     "devDependencies": {
-        "typescript": "^6.0.3",
+        "typescript": "6.0.3",
         "vue-tsc": "^3.3.11",
         "wrangler": "^4.127.1"
     }

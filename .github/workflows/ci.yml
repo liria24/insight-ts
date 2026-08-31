@@ -23,4 +23,19 @@ jobs:
               with:
                   bun-version: 1.4.0
             - run: bun ci
-            - run: bun run check
+            - name: Format
+              run: bun run format:check
+            - name: Lint
+              run: bun run lint
+            - name: Workspace consistency
+              run: bun run workspace:check
+            - name: Unused code and dependencies
+              run: bun run unused
+            - name: Typecheck
+              run: bun run typecheck
+            - name: Test
+              run: bun run test
+            - name: Build, publint, and ATTW
+              run: bun run build
+            - name: Packed consumer contracts
+              run: bun run test:consumers

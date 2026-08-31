@@ -132,8 +132,23 @@ This repository is a Bun workspace containing the SDK, documentation site, tests
 ```sh
 bun ci
 bun run check
+bun run bundle:size
+bun run bench
 bun run docs:dev
 ```
+
+`bun run check` runs Oxfmt, Oxlint, Sherif, Knip (full and production modes),
+typechecking, Vitest, the package build with publint/ATTW, and packed consumer contracts. Consumer
+bundle sizes and Bencher benchmarks run in separate informational workflows so size or performance
+changes do not duplicate correctness gates or fail CI by themselves. `taze` remains available through
+`bun run deps:update` for manual dependency updates; Renovate handles scheduled updates.
+
+Bencher reads Vitest's JSON benchmark output directly. To enable its GitHub reports, set the
+`BENCHER_PROJECT` repository variable and the `BENCHER_API_KEY` repository secret.
+
+`main` is the only development trunk. Normal changes use a short-lived branch, pull request, and
+squash merge. Uppt alone owns temporary `release/v*` branches and the existing release PR, tag,
+GitHub Release, and npm OIDC staged-publishing flow.
 
 Repository structure:
 
