@@ -46,13 +46,9 @@ async function measure(packageRoot: string): Promise<BundleReport> {
         const temporary = join(root, 'tmp')
         await mkdir(consumer, { recursive: true })
         await mkdir(temporary, { recursive: true })
-        await cp(
-            join(import.meta.dir, '..', 'test', 'fixtures', 'bundle'),
-            join(consumer, 'fixtures'),
-            {
-                recursive: true,
-            },
-        )
+        await cp(join(packageRoot, 'test', 'fixtures', 'bundle'), join(consumer, 'fixtures'), {
+            recursive: true,
+        })
         await Bun.write(
             join(consumer, 'package.json'),
             JSON.stringify({ name: 'insight-ts-bundle-consumer', private: true, type: 'module' }),
