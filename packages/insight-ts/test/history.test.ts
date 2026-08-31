@@ -105,7 +105,7 @@ describe('Metric History strategy', () => {
         }))
 
         expect(execute).toHaveBeenCalledOnce()
-        expect(dashboard.requests.data.requests).toMatchObject({ value: 5 })
+        expect(dashboard.requests.data.values.requests).toBe(5)
         expect(dashboard.requests.meta.fidelity).toEqual([
             expect.objectContaining({ preservation: 'full', range }),
         ])

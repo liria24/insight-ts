@@ -30,6 +30,8 @@
 ## Metrics and filters
 
 - Metric semantics are optional helpers, not Core semantics.
+- Metric data is row-major with shared point time and dimensions; Provider output is normalized
+  once at the Metric boundary.
 - Metric values are `number | null`; semantic units and aggregation never encode presentation.
 - Aggregations are structured. Ratios name supporting metrics; unsafe percentile and other
   non-additive rollups are rejected.

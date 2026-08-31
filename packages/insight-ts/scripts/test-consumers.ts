@@ -53,14 +53,15 @@ async function verifyPublishedTypes() {
       where: { country: { in: ['JP'] } },
     }),
   }))
-  const pageViews: number | null = traffic.data.pageViews.value
-  const path: DimensionValue | undefined = traffic.data.pageViews.points?.[0]?.dimensions?.path
+  const pageViews: number | null = traffic.data.values.pageViews
+  const pointPageViews: number | null = traffic.data.points?.[0]?.values.pageViews ?? null
+  const path: DimensionValue | undefined = traffic.data.points?.[0]?.dimensions?.path
   // @ts-expect-error only selected dimensions exist in point data
-  traffic.data.pageViews.points?.[0]?.dimensions?.country
+  traffic.data.points?.[0]?.dimensions?.country
   const sourceId: 'cloudflare.webAnalytics' = traffic.meta.source
-  void pageViews; void path; void sourceId
+  void pageViews; void pointPageViews; void path; void sourceId
   // @ts-expect-error only selected metrics exist in the result
-  traffic.data.visits
+  traffic.data.values.visits
   // @ts-expect-error an unconfigured Source is absent
   cloudflareInsight.query((q) => ({ invalid: q.source.cloudflare.analyticsEngine({}) }))
   // @ts-expect-error unsupported metric
@@ -138,13 +139,13 @@ const {
   InsightQualityNotice, InsightSparkline, InsightStat,
 } = await import('insight-ts/vue/ui')
 const data = {
-  data: { visits: {
-    value: 12,
+  data: {
     points: [
-      { dimensions: { country: 'JP' }, time: '2026-08-26T00:00:00.000Z', value: 9 },
-      { dimensions: { country: 'US' }, time: '2026-08-31T00:00:00.000Z', value: 12 },
+      { dimensions: { country: 'JP' }, time: '2026-08-26T00:00:00.000Z', values: { visits: 9 } },
+      { dimensions: { country: 'US' }, time: '2026-08-31T00:00:00.000Z', values: { visits: 12 } },
     ],
-  } },
+    values: { visits: 12 },
+  },
   meta: {
     quality: { sampled: true, sampleRate: 0.5 },
     queriedAt: '2026-08-28T00:00:00.000Z',

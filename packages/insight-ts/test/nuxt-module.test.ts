@@ -78,14 +78,15 @@ describe('Nitro and Nuxt integration', () => {
             observedAt: '2026-08-28T00:00:00.000Z',
             range: { from: '2026-08-01T00:00:00.000Z', to: '2026-09-01T00:00:00.000Z' },
             data: {
-                requests: { points: [], value: 0 },
+                points: [],
+                values: { requests: 0 },
             },
             meta: {
                 queriedAt: '2026-08-28T00:00:00.000Z',
                 source: 'app.usage',
                 temporal: { grain: 'day' as const },
             },
-            schemaVersion: 2 as const,
+            schemaVersion: 1 as const,
             source: 'app.usage',
         }
         await repository.write(segment)

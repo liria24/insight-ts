@@ -8,15 +8,21 @@ const now = new Date('2026-08-21T12:00:00.000Z')
 describe('Demo analytics range', () => {
     it('renders direct MDC examples with literal data on every UI page', async () => {
         const pages = {
-            '2.stat.md': { fixture: 'value: 4140', tag: 'insight-stat' },
-            '3.line-chart.md': { fixture: 'value: 4140', tag: 'insight-line-chart' },
-            '4.area-chart.md': { fixture: 'value: 4140', tag: 'insight-area-chart' },
+            '2.stat.md': { fixture: 'values: { pageViews: 4140 }', tag: 'insight-stat' },
+            '3.line-chart.md': {
+                fixture: 'values: { pageViews: 4140 }',
+                tag: 'insight-line-chart',
+            },
+            '4.area-chart.md': {
+                fixture: 'values: { pageViews: 4140 }',
+                tag: 'insight-area-chart',
+            },
             '5.breakdown-table.md': {
-                fixture: 'value: 4140',
+                fixture: 'values: { pageViews: 4140 }',
                 tag: 'insight-breakdown-table',
             },
-            '6.bar-chart.md': { fixture: 'value: 4140', tag: 'insight-bar-chart' },
-            '7.sparkline.md': { fixture: 'value: 4140', tag: 'insight-sparkline' },
+            '6.bar-chart.md': { fixture: 'values: { pageViews: 4140 }', tag: 'insight-bar-chart' },
+            '7.sparkline.md': { fixture: 'values: { pageViews: 4140 }', tag: 'insight-sparkline' },
             '8.quality-notice.md': {
                 fixture: 'sampleRate: 0.25',
                 tag: 'insight-quality-notice',
@@ -97,7 +103,7 @@ describe('Demo analytics range', () => {
     it('resolves presets and executes deterministic demo Sources through insight.query', async () => {
         const query = resolveDemoReportQuery({ range: '7d' }, now)
         const result = await createDemoFixture(query, now)
-        const pageViews = result.analytics.trafficSeries.data.pageViews.points ?? []
+        const pageViews = result.analytics.trafficSeries.data.points ?? []
 
         expect(query).toEqual({
             grain: 'day',
@@ -108,7 +114,7 @@ describe('Demo analytics range', () => {
         })
         expect(pageViews).toHaveLength(7)
         expect(result.online).toBeGreaterThan(0)
-        expect(result.analytics.trafficSummary.data.pageViews.value).toBe(1421)
+        expect(result.analytics.trafficSummary.data.values.pageViews).toBe(1421)
         expect(result.execution.sources).toContain('demo.logs')
         expect(result.logs.data.entries).toHaveLength(3)
         expect(result.trace.data.spans).toHaveLength(4)

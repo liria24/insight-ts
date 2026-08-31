@@ -99,6 +99,10 @@ describe('generic Source query execution', () => {
         expectTypeOf(dashboard.trace.data.edges).toEqualTypeOf<readonly [readonly ['root', 'db']]>()
         expectTypeOf(dashboard.billing.data.currency).toEqualTypeOf<'JPY'>()
         expectTypeOf(dashboard.metrics.data).toEqualTypeOf<MetricData<'requests', never>>()
+        expectTypeOf(dashboard.metrics.data.values.requests).toEqualTypeOf<number | null>()
+        expectTypeOf<
+            NonNullable<typeof dashboard.metrics.data.points>[number]['values']['requests']
+        >().toEqualTypeOf<number | null>()
         expect(dashboard).toMatchObject({
             billing: { data: { customer: 'acme' }, meta: { source: 'demo.billing' } },
             logs: { data: { nextCursor: 'page-2' }, meta: { source: 'demo.logs' } },
@@ -226,6 +230,44 @@ describe('Source accessors', () => {
 })
 
 describe('Metric where DSL', () => {
+    it('materializes Provider rows once in the canonical row-major shape', async () => {
+        const dimensions = { country: 'JP' }
+        const source = defineMetricSource({
+            dimensions: { country: 'string' },
+            execute: () => ({
+                points: [
+                    {
+                        dimensions,
+                        time: '2026-08-01T10:00:00Z',
+                        values: { errors: 1, requests: 7 },
+                    },
+                ],
+                values: { errors: 1, requests: 7 },
+            }),
+            metrics: { errors: {}, requests: {} },
+        })
+        const result = await source.execute(
+            source.normalize({
+                dimensions: ['country'],
+                metrics: ['requests', 'errors'],
+                time: range,
+            }),
+            { provider: 'demo', source: 'demo.metrics' },
+        )
+
+        expect(result.data).toEqual({
+            points: [
+                {
+                    dimensions: { country: 'JP' },
+                    time: '2026-08-01T10:00:00.000Z',
+                    values: { errors: 1, requests: 7 },
+                },
+            ],
+            values: { errors: 1, requests: 7 },
+        })
+        expect(result.data.points?.[0]?.dimensions).toBe(dimensions)
+    })
+
     it('canonicalizes equivalent shorthand and operator forms to the same key', () => {
         const shorthand = metricSource.normalize({
             metrics: ['requests'],
