@@ -2,6 +2,8 @@ import { describe, expect, expectTypeOf, it, vi } from 'vitest'
 
 import {
     createInsight,
+    defineProvider,
+    defineSource,
     type DataOf,
     type EventDestination,
     type EventProperties,
@@ -11,7 +13,6 @@ import {
     type QueryOf,
     type SourceExecutionResult,
 } from '../src/core/index.ts'
-import { defineProvider, defineSource } from '../src/core/provider.ts'
 import { defineMetricSource, type MetricData } from '../src/metrics/index.ts'
 
 const range = {
@@ -84,14 +85,14 @@ describe('generic Source query execution', () => {
                         trace: traceSource,
                     },
                 }),
-            ] as const,
+            ],
         })
         const dashboard = await insight.query((q) => ({
-            billing: q.source('demo.billing', { customer: ' acme ' }),
-            funnel: q.source('demo.funnel', { window: '7d' }),
-            logs: q.source('demo.logs', {}),
-            metrics: q.source('demo.metrics', { metrics: ['requests'], time: range }),
-            trace: q.source('demo.trace', { traceId: ' trace-1 ' }),
+            billing: q.source.demo.billing({ customer: ' acme ' }),
+            funnel: q.source.demo.funnel({ window: '7d' }),
+            logs: q.source.demo.logs({}),
+            metrics: q.source.demo.metrics({ metrics: ['requests'], time: range }),
+            trace: q.source.demo.trace({ traceId: ' trace-1 ' }),
         }))
 
         expectTypeOf(dashboard.logs.data.entries[0]!.message).toEqualTypeOf<string>()
@@ -132,8 +133,8 @@ describe('generic Source query execution', () => {
         })
 
         const result = await insight.query((q) => ({
-            first: q.source('batched.logs', {}),
-            second: q.source('batched.logs', { cursor: '' }),
+            first: q.source.batched.logs({}),
+            second: q.source.batched.logs({ cursor: '' }),
         }))
 
         expect(execute).toHaveBeenCalledOnce()
@@ -155,12 +156,73 @@ describe('generic Source query execution', () => {
         controller.abort(new Error('stop'))
 
         await expect(
-            insight.query((q) => ({ logs: q.source('abort.logs', {}) }), {
+            insight.query((q) => ({ logs: q.source.abort.logs({}) }), {
                 signal: controller.signal,
             }),
         ).rejects.toThrow('stop')
         expect(execute).not.toHaveBeenCalled()
     })
+})
+
+describe('Source accessors', () => {
+    it('maps canonical Provider ids once and keeps prototype-sensitive names safe', async () => {
+        const insight = createInsight({
+            providers: [
+                defineProvider({
+                    id: 'google-search-console',
+                    sources: { searchAnalytics: logsSource },
+                }),
+                defineProvider({ id: 'provider-2', sources: { logs: logsSource } }),
+                defineProvider({ id: 'to-string', sources: { constructor: logsSource } }),
+            ],
+        })
+
+        const result = await insight.query((q) => ({
+            numeric: q.source.provider2.logs({}),
+            prototype: q.source.toString.constructor({}),
+            search: q.source.googleSearchConsole.searchAnalytics({}),
+        }))
+
+        expect(result.numeric.meta.source).toBe('provider-2.logs')
+        expect(result.prototype.meta.source).toBe('to-string.constructor')
+        expect(result.search.meta.source).toBe('google-search-console.searchAnalytics')
+    })
+
+    it.each([
+        'my.provider',
+        'my#provider',
+        'my provider',
+        'my_provider',
+        '-my-provider',
+        'my-provider-',
+        'my--provider',
+        '123-provider',
+        'プロバイダ',
+    ])('rejects invalid Provider id %s', (id) => {
+        expect(() => createInsight({ providers: [{ id, sources: { logs: logsSource } }] })).toThrow(
+            'strict ASCII kebab-case',
+        )
+    })
+
+    it('rejects accessor collisions', () => {
+        expect(() =>
+            createInsight({
+                providers: [
+                    { id: 'foo-1', sources: { logs: logsSource } },
+                    { id: 'foo1', sources: { logs: logsSource } },
+                ],
+            }),
+        ).toThrow('both map to accessor "foo1"')
+    })
+
+    it.each(['Search', 'search-source', 'search.source', 'search source', '検索', '1search'])(
+        'rejects invalid Source key %s',
+        (key) => {
+            expect(() =>
+                createInsight({ providers: [{ id: 'app', sources: { [key]: logsSource } }] }),
+            ).toThrow('lower-camel-case ASCII identifier')
+        },
+    )
 })
 
 describe('Metric where DSL', () => {
@@ -230,7 +292,7 @@ describe('events and instrumentation', () => {
         expectTypeOf<SearchProperties>().toEqualTypeOf<{ readonly resultCount: number }>()
         const insight = createInsight(options)
 
-        await insight.query((q) => ({ secret: q.source('events.logs', { cursor: 'private' }) }))
+        await insight.query((q) => ({ secret: q.source.events.logs({ cursor: 'private' }) }))
         await insight.track('search', { resultCount: 4 })
 
         expect(track).toHaveBeenCalledWith(

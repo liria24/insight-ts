@@ -60,7 +60,7 @@ const principles = [
                     <pre
                         class="m-0 overflow-x-auto bg-default/70 p-5 font-mono text-sm leading-7 sm:p-7"
                     ><code><span class="text-dimmed">const</span> dashboard = <span class="text-dimmed">await</span> insight.query((q) => ({
-    traffic: q.source(<span class="text-highlighted">'cloudflare.webAnalytics'</span>, {
+    traffic: q.source.cloudflare.webAnalytics({
         metrics: [<span class="text-highlighted">'pageViews'</span>, <span class="text-highlighted">'visits'</span>],
         time: { ...range, grain: <span class="text-highlighted">'day'</span> },
     }),

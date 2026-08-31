@@ -20,17 +20,65 @@ const root = await mkdtemp(join(tmpdir(), 'insight-ts-consumers-'))
 const consumers: readonly Consumer[] = [
     {
         name: 'core',
-        source: `import { createInsight } from 'insight-ts'
-import { defineProvider, defineSource } from 'insight-ts/provider'
+        source: `import { createInsight, defineProvider, defineSource } from 'insight-ts'
+import { cloudflare } from 'insight-ts/cloudflare'
+import { googleSearchConsole } from 'insight-ts/google-search-console'
+import type { DimensionValue } from 'insight-ts/metrics'
 
 const source = defineSource({
   execute: ({ value }: { value: number }) => ({ data: value * 2 }),
   key: ({ value }: { value: number }) => String(value),
   normalize: ({ value }: { value: number }) => ({ value }),
 })
-const insight = createInsight({ providers: [defineProvider({ id: 'app', sources: { value: source } })] as const })
-const { value } = await insight.query((q) => ({ value: q.source('app.value', { value: 21 }) }))
+const insight = createInsight({ providers: [defineProvider({ id: 'app', sources: { value: source } })] })
+const { value } = await insight.query((q) => ({ value: q.source.app.value({ value: 21 }) }))
 if (value.data !== 42 || value.meta.source !== 'app.value') throw new Error('Packed Core runtime failed')
+
+const webOnly = cloudflare({
+  accountId: 'account', apiToken: 'token', webAnalytics: { siteTag: 'site' },
+})
+const cloudflareInsight = createInsight({ providers: [webOnly] })
+const fullCloudflare = createInsight({ providers: [cloudflare({
+  analyticsEngine: { dataset: 'events' }, webAnalytics: { siteTag: 'site' },
+})] })
+const searchInsight = createInsight({ providers: [googleSearchConsole({
+  auth: { getAccessToken: async () => 'token' }, property: 'sc-domain:example.com',
+})] })
+
+async function verifyPublishedTypes() {
+  const { traffic } = await cloudflareInsight.query((q) => ({
+    traffic: q.source.cloudflare.webAnalytics({
+      dimensions: ['path'], metrics: ['pageViews'],
+      time: { from: '2026-08-01T00:00:00.000Z', to: '2026-08-02T00:00:00.000Z' },
+      where: { country: { in: ['JP'] } },
+    }),
+  }))
+  const pageViews: number | null = traffic.data.pageViews.value
+  const path: DimensionValue | undefined = traffic.data.pageViews.points?.[0]?.dimensions?.path
+  // @ts-expect-error only selected dimensions exist in point data
+  traffic.data.pageViews.points?.[0]?.dimensions?.country
+  const sourceId: 'cloudflare.webAnalytics' = traffic.meta.source
+  void pageViews; void path; void sourceId
+  // @ts-expect-error only selected metrics exist in the result
+  traffic.data.visits
+  // @ts-expect-error an unconfigured Source is absent
+  cloudflareInsight.query((q) => ({ invalid: q.source.cloudflare.analyticsEngine({}) }))
+  // @ts-expect-error unsupported metric
+  cloudflareInsight.query((q) => ({ invalid: q.source.cloudflare.webAnalytics({ metrics: ['clicks'], time: { from: '', to: '' } }) }))
+  // @ts-expect-error unsupported dimension
+  cloudflareInsight.query((q) => ({ invalid: q.source.cloudflare.webAnalytics({ dimensions: ['query'], metrics: ['visits'], time: { from: '', to: '' } }) }))
+
+  fullCloudflare.query((q) => ({
+    events: q.source.cloudflare.analyticsEngine({ metrics: ['events'], time: { from: '', to: '' } }),
+    traffic: q.source.cloudflare.webAnalytics({ metrics: ['visits'], time: { from: '', to: '' } }),
+  }))
+  const { search } = await searchInsight.query((q) => ({
+    search: q.source.googleSearchConsole.searchAnalytics({ metrics: ['clicks'], time: { from: '', to: '' } }),
+  }))
+  const searchSource: 'google-search-console.searchAnalytics' = search.meta.source
+  void searchSource
+}
+void verifyPublishedTypes
 `,
     },
     {

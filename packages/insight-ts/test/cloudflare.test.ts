@@ -1,12 +1,7 @@
 import { describe, expect, it, vi } from 'vitest'
 
 import { createInsight, ProviderError } from '../src/core/index.ts'
-import {
-    CloudflareApiError,
-    cloudflare,
-    cloudflareAnalyticsEngine,
-    cloudflareWebAnalytics,
-} from '../src/providers/cloudflare/index.ts'
+import { CloudflareApiError, cloudflare } from '../src/providers/cloudflare/index.ts'
 
 const time = {
     from: '2026-08-01T00:00:00.000Z',
@@ -17,12 +12,11 @@ const time = {
 describe('Cloudflare Sources', () => {
     it('exposes Sources and rejects missing credentials before network I/O', async () => {
         const fetcher = vi.fn<(input: RequestInfo | URL, init?: RequestInit) => Promise<Response>>()
-        const source = cloudflareWebAnalytics({
+        const source = cloudflare({
             accountId: '',
             apiToken: '',
-            fetch: fetcher,
-            siteTag: 'site',
-        })
+            webAnalytics: { fetch: fetcher, siteTag: 'site' },
+        }).sources.webAnalytics
         const query = source.normalize({ metrics: ['visits'], time })
 
         await expect(
@@ -72,20 +66,17 @@ describe('Cloudflare Sources', () => {
                 })
             },
         )
-        const provider = {
-            id: 'cloudflare',
-            sources: {
-                webAnalytics: cloudflareWebAnalytics({
-                    accountId: 'account',
-                    apiToken: 'token',
-                    fetch: fetcher,
-                    siteTag: 'site',
-                }),
+        const provider = cloudflare({
+            accountId: 'account',
+            apiToken: 'token',
+            webAnalytics: {
+                fetch: fetcher,
+                siteTag: 'site',
             },
-        } as const
-        const insight = createInsight({ providers: [provider] as const })
+        })
+        const insight = createInsight({ providers: [provider] })
         const dashboard = await insight.query((q) => ({
-            traffic: q.source('cloudflare.webAnalytics', {
+            traffic: q.source.cloudflare.webAnalytics({
                 dimensions: ['path'],
                 metrics: ['pageViews', 'visits'],
                 time,
@@ -121,12 +112,11 @@ describe('Cloudflare Sources', () => {
                 return Response.json({ data: { viewer: { accounts: [{ rows: [] }] } } })
             },
         )
-        const source = cloudflareWebAnalytics({
+        const source = cloudflare({
             accountId: 'account',
             apiToken: 'token',
-            fetch: fetcher,
-            siteTag: 'site',
-        })
+            webAnalytics: { fetch: fetcher, siteTag: 'site' },
+        }).sources.webAnalytics
         const controller = new AbortController()
         const query = source.normalize({ metrics: ['visits'], time })
         await source.execute(query, {
@@ -146,9 +136,9 @@ describe('Cloudflare Sources', () => {
     it('keeps Analytics Engine event and query capabilities independent', () => {
         const writeDataPoint =
             vi.fn<(point: { blobs?: string[]; doubles?: number[]; indexes?: string[] }) => void>()
-        const resource = cloudflareAnalyticsEngine({ binding: { writeDataPoint } })
-        expect(resource.events).toBeDefined()
-        expect(resource.source).toBeUndefined()
+        const provider = cloudflare({ analyticsEngine: { binding: { writeDataPoint } } })
+        expect(provider.events).toBeDefined()
+        expect(Object.hasOwn(provider.sources, 'analyticsEngine')).toBe(false)
         expect(new CloudflareApiError('Unavailable', 503)).toBeInstanceOf(ProviderError)
     })
 })

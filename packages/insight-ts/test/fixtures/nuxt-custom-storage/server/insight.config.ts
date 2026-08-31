@@ -1,4 +1,4 @@
-import { defineProvider } from '../../../../src/core/provider.ts'
+import { defineProvider } from '../../../../src/core/index.ts'
 import { defineNuxtInsightConfig } from '../../../../src/integrations/nuxt/index.ts'
 import { defineMetricSource } from '../../../../src/metrics/index.ts'
 

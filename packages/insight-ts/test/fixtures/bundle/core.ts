@@ -1,5 +1,4 @@
-import { createInsight } from 'insight-ts'
-import { defineProvider, defineSource } from 'insight-ts/provider'
+import { createInsight, defineProvider, defineSource } from 'insight-ts'
 
 const source = defineSource({
     execute: ({ value }: { value: number }) => ({ data: value }),
@@ -8,7 +7,7 @@ const source = defineSource({
 })
 
 const core = createInsight({
-    providers: [defineProvider({ id: 'app', sources: { value: source } })] as const,
+    providers: [defineProvider({ id: 'app', sources: { value: source } })],
 })
 
 Object.assign(globalThis, { __insightBundleFixture: core })

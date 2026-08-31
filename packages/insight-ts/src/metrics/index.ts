@@ -3,6 +3,7 @@ import type {
     QueryQuality,
     SourceDefinition,
     SourceExecutionContext,
+    SourceResultResolver,
     sourceResultType,
 } from '../core/types.ts'
 
@@ -230,6 +231,16 @@ type SelectedDimension<TQuery> = TQuery extends {
     ? TDimension
     : never
 
+interface MetricSourceResult<
+    TMetrics extends MetricDefinitions,
+    TDimensions extends DimensionDefinitions,
+> extends SourceResultResolver {
+    readonly data: MetricData<
+        Extract<SelectedMetric<this['query']>, keyof TMetrics & string>,
+        Extract<SelectedDimension<this['query']>, keyof TDimensions & string>
+    >
+}
+
 export interface MetricSourceDefinition<
     TMetrics extends MetricDefinitions = MetricDefinitions,
     TDimensions extends DimensionDefinitions = DimensionDefinitions,
@@ -239,12 +250,7 @@ export interface MetricSourceDefinition<
     MetricData,
     MetricMeta
 > {
-    readonly [sourceResultType]?: <const TQuery extends MetricQuery<TMetrics, TDimensions>>(
-        query: TQuery,
-    ) => MetricData<
-        Extract<SelectedMetric<TQuery>, keyof TMetrics & string>,
-        Extract<SelectedDimension<TQuery>, keyof TDimensions & string>
-    >
+    readonly [sourceResultType]?: MetricSourceResult<TMetrics, TDimensions>
     dimensions: DimensionDefinitions
     history?: MetricHistoryStrategy
     metricSource: true

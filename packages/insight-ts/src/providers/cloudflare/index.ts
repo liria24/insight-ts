@@ -4,7 +4,6 @@ import {
     defineMetricSource,
     type CanonicalWhere,
     type DimensionValue,
-    type MetricSourceDefinition,
     type MetricSourceOutput,
     type MetricValues,
 } from '../../metrics/index.ts'
@@ -53,7 +52,7 @@ export class CloudflareApiError extends ProviderError {
     }
 }
 
-export interface CloudflareWebAnalyticsOptions {
+interface CloudflareWebAnalyticsOptions {
     accountId: string
     apiToken: string
     fetch?: Fetch
@@ -65,10 +64,7 @@ export interface CloudflareAnalyticsEngineBinding {
     writeDataPoint(point: { blobs?: string[]; doubles?: number[]; indexes?: string[] }): void
 }
 
-export type CloudflareAnalyticsEngineEvent = Event
-export type CloudflareAnalyticsEngineSink = EventDestination
-
-export interface CloudflareAnalyticsEngineOptions {
+interface CloudflareAnalyticsEngineOptions {
     accountId?: string
     apiToken?: string
     binding?: CloudflareAnalyticsEngineBinding
@@ -77,9 +73,9 @@ export interface CloudflareAnalyticsEngineOptions {
     now?: () => Date
 }
 
-export interface CloudflareAnalyticsEngineResource {
-    events?: CloudflareAnalyticsEngineSink
-    source?: CloudflareSource
+interface CloudflareAnalyticsEngineResource {
+    events?: EventDestination
+    source?: ReturnType<typeof analyticsEngineSource>
 }
 
 export interface CloudflareOptions {
@@ -91,13 +87,24 @@ export interface CloudflareOptions {
     }
 }
 
-export type CloudflareSource = MetricSourceDefinition
-export type CloudflareProvider = ProviderDefinition<
-    'cloudflare',
-    Readonly<Record<string, CloudflareSource>>
->
+type CloudflareSources<TOptions extends CloudflareOptions> = (TOptions extends {
+    webAnalytics: Exclude<CloudflareOptions['webAnalytics'], undefined>
+}
+    ? { readonly webAnalytics: ReturnType<typeof cloudflareWebAnalytics> }
+    : Record<never, never>) &
+    (TOptions extends { analyticsEngine: { dataset: string } }
+        ? { readonly analyticsEngine: ReturnType<typeof analyticsEngineSource> }
+        : Record<never, never>)
 
-export function cloudflareWebAnalytics(options: CloudflareWebAnalyticsOptions) {
+type CloudflareProvider<TOptions extends CloudflareOptions> = ProviderDefinition<
+    'cloudflare',
+    CloudflareSources<TOptions>
+> & {
+    readonly id: 'cloudflare'
+    readonly sources: CloudflareSources<TOptions>
+}
+
+function cloudflareWebAnalytics(options: CloudflareWebAnalyticsOptions) {
     const fetcher = options.fetch ?? globalThis.fetch
     const execute = async (
         query: ResolvedMetricQuery,
@@ -197,7 +204,7 @@ export function cloudflareWebAnalytics(options: CloudflareWebAnalyticsOptions) {
     })
 }
 
-export function cloudflareAnalyticsEngine(
+function cloudflareAnalyticsEngine(
     options: CloudflareAnalyticsEngineOptions,
 ): CloudflareAnalyticsEngineResource {
     if (options.dataset === undefined && options.binding === undefined) {
@@ -220,16 +227,20 @@ export function cloudflareAnalyticsEngine(
     return resource
 }
 
-export function cloudflare(options: CloudflareOptions): CloudflareProvider {
-    const sources: Record<string, CloudflareSource> = {}
-    if (options.webAnalytics !== undefined) {
-        sources.webAnalytics = cloudflareWebAnalytics({
-            accountId: options.accountId ?? '',
-            apiToken: options.apiToken ?? '',
-            siteTag: options.webAnalytics.siteTag ?? '',
-            ...options.webAnalytics,
-        })
-    }
+export function cloudflare<const TOptions extends CloudflareOptions>(
+    options: TOptions,
+): CloudflareProvider<TOptions> {
+    const webAnalytics =
+        options.webAnalytics === undefined
+            ? {}
+            : {
+                  webAnalytics: cloudflareWebAnalytics({
+                      accountId: options.accountId ?? '',
+                      apiToken: options.apiToken ?? '',
+                      siteTag: options.webAnalytics.siteTag ?? '',
+                      ...options.webAnalytics,
+                  }),
+              }
     const engine =
         options.analyticsEngine === undefined
             ? undefined
@@ -238,22 +249,23 @@ export function cloudflare(options: CloudflareOptions): CloudflareProvider {
                   ...(options.apiToken === undefined ? {} : { apiToken: options.apiToken }),
                   ...options.analyticsEngine,
               })
-    if (engine?.source !== undefined) {
-        sources.analyticsEngine = engine.source
-    }
-    return {
+    const provider = {
         id: 'cloudflare',
-        sources,
+        sources: {
+            ...webAnalytics,
+            ...(engine?.source === undefined ? {} : { analyticsEngine: engine.source }),
+        },
         ...(engine?.events === undefined ? {} : { events: engine.events }),
-    }
+    } as const
+    // Runtime Source construction follows the same option predicates as CloudflareSources.
+    // eslint-disable-next-line typescript/no-unsafe-type-assertion
+    return provider as CloudflareProvider<TOptions>
 }
 
-function analyticsEngineSink(
-    binding: CloudflareAnalyticsEngineBinding,
-): CloudflareAnalyticsEngineSink {
+function analyticsEngineSink(binding: CloudflareAnalyticsEngineBinding): EventDestination {
     const encoder = new TextEncoder()
     return {
-        track(event: CloudflareAnalyticsEngineEvent): void {
+        track(event: Event): void {
             if (event.name.length === 0) {
                 throw new TypeError('Analytics event name cannot be empty')
             }
@@ -290,7 +302,7 @@ interface AnalyticsEngineReadOptions {
     now?: () => Date
 }
 
-function analyticsEngineSource(options: AnalyticsEngineReadOptions): CloudflareSource {
+function analyticsEngineSource(options: AnalyticsEngineReadOptions) {
     if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(options.dataset)) {
         throw new TypeError('Analytics Engine dataset must be a SQL identifier')
     }

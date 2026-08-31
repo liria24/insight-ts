@@ -94,9 +94,9 @@ interface SearchAnalyticsMetadata {
 
 export function googleSearchConsole(options: GoogleSearchConsoleOptions) {
     return {
-        id: 'googleSearchConsole',
+        id: 'google-search-console',
         sources: { searchAnalytics: googleSearchConsoleSource(options) },
-    }
+    } as const
 }
 
 function googleSearchConsoleSource(options: GoogleSearchConsoleOptions) {
@@ -253,7 +253,7 @@ function googleSearchConsoleSource(options: GoogleSearchConsoleOptions) {
         execute: (query, { signal }) =>
             execute(
                 resolvedMetricQuery(
-                    'googleSearchConsole.searchAnalytics',
+                    'google-search-console.searchAnalytics',
                     query,
                     query.grain === 'hour' ? 'hour' : 'date',
                 ),

@@ -36,7 +36,6 @@ export default defineConfig({
         nitro: 'src/integrations/nitro/index.ts',
         nuxt: 'src/integrations/nuxt/index.ts',
         opentelemetry: 'src/integrations/opentelemetry/index.ts',
-        provider: 'src/core/provider.ts',
         'ui-core': 'src/ui-core/index.ts',
         vue: 'src/integrations/vue/index.ts',
         'vue-ui': 'src/integrations/vue/ui/index.ts',
