@@ -1,19 +1,10 @@
 <script setup lang="ts">
-import { codeToHtml } from 'shiki'
-
-const code = `await insight.query((q) => ({
-    traffic: q.source.cloudflare.webAnalytics({
-        metrics: ['pageViews', 'visits'],
-        time: { from: lastMonth, to: today, grain: 'day' },
-    }),
-}))`
-const html = await codeToHtml(code, {
-    lang: 'typescript',
-    themes: {
-        light: 'vitesse-light',
-        dark: 'vitesse-dark',
-    },
-})
+const inferredTypes = [
+    { label: 'source', value: "'cloudflare.webAnalytics'" },
+    { label: 'query', value: "MetricQuery<'pageViews' | 'visits'>" },
+    { label: 'metrics', value: "'pageViews' | 'visits'" },
+    { label: 'result', value: "QueryResult<MetricData<'pageViews' | 'visits'>>" },
+]
 
 const principles = [
     {
@@ -39,7 +30,7 @@ const principles = [
 <template>
     <section class="border-b border-default py-20 sm:py-28">
         <UContainer>
-            <div class="grid items-center gap-12 lg:grid-cols-[0.85fr_1.15fr] lg:gap-20">
+            <div class="grid items-start gap-12 lg:grid-cols-[0.85fr_1.15fr] lg:gap-20">
                 <div class="lg:sticky lg:top-28">
                     <p class="text-dimmed text-sm font-medium tracking-wide uppercase">
                         Typed capability
@@ -61,12 +52,36 @@ const principles = [
 
                 <div class="overflow-hidden rounded-2xl border border-default bg-muted/30">
                     <div class="flex items-center gap-2 border-b border-default px-5 py-3">
-                        <span class="text-dimmed font-mono text-xs">traffic.ts</span>
+                        <span class="size-2 rounded-full bg-muted" />
+                        <span class="size-2 rounded-full bg-muted" />
+                        <span class="size-2 rounded-full bg-muted" />
+                        <span class="text-dimmed ml-2 font-mono text-xs">traffic.ts</span>
                     </div>
-                    <div
-                        class="[&_.shiki]:bg-transparent! [&_.shiki]:[--shiki-dark-bg:transparent]! [&_.shiki]:[--shiki-light-bg:transparent]! m-0 overflow-x-auto px-5 py-3 font-mono text-sm leading-7 sm:px-7 sm:py-5"
-                        v-html="html"
-                    />
+                    <pre
+                        class="m-0 overflow-x-auto bg-default/70 p-5 font-mono text-sm leading-7 sm:p-7"
+                    ><code><span class="text-dimmed">const</span> dashboard = <span class="text-dimmed">await</span> insight.query((q) => ({
+    traffic: q.source.cloudflare.webAnalytics({
+        metrics: [<span class="text-highlighted">'pageViews'</span>, <span class="text-highlighted">'visits'</span>],
+        time: { ...range, grain: <span class="text-highlighted">'day'</span> },
+    }),
+}))</code></pre>
+
+                    <dl class="divide-y divide-default border-t border-default">
+                        <div
+                            v-for="item in inferredTypes"
+                            :key="item.label"
+                            class="grid gap-1 px-5 py-3 sm:grid-cols-[7rem_1fr] sm:items-center sm:px-7"
+                        >
+                            <dt class="text-dimmed text-xs font-medium tracking-wide uppercase">
+                                {{ item.label }}
+                            </dt>
+                            <dd
+                                class="text-highlighted overflow-x-auto font-mono text-xs sm:text-sm"
+                            >
+                                {{ item.value }}
+                            </dd>
+                        </div>
+                    </dl>
                 </div>
             </div>
 
