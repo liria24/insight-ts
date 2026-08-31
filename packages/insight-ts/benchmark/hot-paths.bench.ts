@@ -1,7 +1,6 @@
 import { bench, describe } from 'vitest'
 
-import { createInsight } from '../src/core/index.ts'
-import { defineProvider, defineSource } from '../src/core/provider.ts'
+import { createInsight, defineProvider, defineSource } from '../src/core/index.ts'
 import {
     createHistory,
     type HistoryCoverage,
@@ -9,7 +8,7 @@ import {
     type HistorySegment,
 } from '../src/history/index.ts'
 import { defineMetricSource, type TimeRange } from '../src/metrics/index.ts'
-import { cloudflareWebAnalytics } from '../src/providers/cloudflare/index.ts'
+import { cloudflare as createCloudflare } from '../src/providers/cloudflare/index.ts'
 import { createBreakdownModel, createSeriesModel } from '../src/ui-core/index.ts'
 
 const time = {
@@ -24,15 +23,15 @@ const coreSource = defineSource({
     normalize: ({ value }: { value: number }) => ({ value }),
 })
 const core = createInsight({
-    providers: [defineProvider({ id: 'app', sources: { value: coreSource } })] as const,
+    providers: [defineProvider({ id: 'app', sources: { value: coreSource } })],
 })
 
 describe('Core query', () => {
     bench('normalize, deduplicate, and execute a selection', async () => {
         await core.query((q) => ({
-            first: q.source('app.value', { value: 1 }),
-            second: q.source('app.value', { value: 1 }),
-            third: q.source('app.value', { value: 2 }),
+            first: q.source.app.value({ value: 1 }),
+            second: q.source.app.value({ value: 1 }),
+            third: q.source.app.value({ value: 2 }),
         }))
     })
 })
@@ -113,14 +112,14 @@ const history = createInsight({
         repository,
         sources: ['app.metrics'],
     }),
-    providers: [defineProvider({ id: 'app', sources: { metrics: historySource } })] as const,
+    providers: [defineProvider({ id: 'app', sources: { metrics: historySource } })],
 })
 
 describe('History', () => {
     bench('reduce, materialize, and read a covered range', async () => {
         await history.history.sync({ range: time })
         await history.query((q) => ({
-            report: q.source('app.metrics', {
+            report: q.source.app.metrics({
                 dimensions: ['service'],
                 metrics: ['errorRate', 'requests'],
                 time: { ...time, grain: 'day' },
@@ -153,30 +152,32 @@ describe('UI Core', () => {
     })
 })
 
-const cloudflare = cloudflareWebAnalytics({
+const cloudflare = createCloudflare({
     accountId: 'account',
     apiToken: 'token',
-    fetch: async () =>
-        Response.json({
-            data: {
-                viewer: {
-                    accounts: [
-                        {
-                            rows: [
-                                {
-                                    avg: { sampleInterval: 1 },
-                                    count: 10,
-                                    dimensions: { country: 'JP' },
-                                    sum: { visits: 8 },
-                                },
-                            ],
-                        },
-                    ],
+    webAnalytics: {
+        fetch: async () =>
+            Response.json({
+                data: {
+                    viewer: {
+                        accounts: [
+                            {
+                                rows: [
+                                    {
+                                        avg: { sampleInterval: 1 },
+                                        count: 10,
+                                        dimensions: { country: 'JP' },
+                                        sum: { visits: 8 },
+                                    },
+                                ],
+                            },
+                        ],
+                    },
                 },
-            },
-        }),
-    siteTag: 'site',
-})
+            }),
+        siteTag: 'site',
+    },
+}).sources.webAnalytics
 const cloudflareQuery = cloudflare.normalize({
     dimensions: ['country'],
     metrics: ['pageViews', 'visits'],

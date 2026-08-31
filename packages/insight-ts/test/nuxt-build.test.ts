@@ -37,7 +37,7 @@ describe('Nuxt bundle isolation', () => {
                     join(generated, 'insight', 'server-runtime.d.ts'),
                     'utf8',
                 )
-                expect(runtimeTypes.includes("ProviderDefinition<'cloudflare'")).toBe(
+                expect(runtimeTypes.includes('ReturnType<typeof cloudflare<')).toBe(
                     scenario === 'nuxt-no-ui',
                 )
                 expect(runtimeTypes).toContain('InsightClient<RuntimeConfig>')

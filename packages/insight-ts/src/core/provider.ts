@@ -12,13 +12,3 @@ export const defineSource = <
 export const defineProvider = <const TProvider extends ProviderDefinition>(
     provider: TProvider,
 ): TProvider => provider
-
-export type {
-    EventDestination,
-    ProviderDefinition,
-    ProviderExecutionContext,
-    ProviderExecutionRequest,
-    SourceDefinition,
-    SourceExecutionContext,
-    SourceExecutionResult,
-} from './types.ts'

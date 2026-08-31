@@ -14,7 +14,9 @@
 
 ## Source and query behavior
 
-- Source IDs are `${providerId}.${sourceKey}` and are selected explicitly with `q.source()`.
+- Provider IDs use strict ASCII kebab-case and Source keys use lower-camel-case ASCII identifiers.
+- Queries select Sources through `q.source.<providerAccessor>.<sourceKey>()`. The accessor registry
+  is built once without Proxy; `${providerId}.${sourceKey}` remains the canonical internal ID.
 - `normalize()` is pure, deterministic, and I/O-free; `key()` is the exact Source-owned dedupe key.
 - Core does not inspect query objects, filter ASTs, dimensions, grains, cursors, or result data.
 - `insight.query()` is lazy: only descriptors returned by the selection callback execute.

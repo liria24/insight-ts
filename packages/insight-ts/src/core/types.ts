@@ -42,6 +42,11 @@ export interface SourceExecutionContext {
 export declare const sourceResultType: unique symbol
 export declare const sourceDefinitionType: unique symbol
 
+export interface SourceResultResolver {
+    readonly data: unknown
+    readonly query: unknown
+}
+
 export interface SourceDefinition<
     TQuery = unknown,
     TNormalized = TQuery,
@@ -202,6 +207,10 @@ export interface CreateInsightOptions<
 
 type ProviderUnion<TProviders extends readonly ProviderDefinition[]> = TProviders[number]
 
+type ProviderAccessor<TId extends string> = TId extends `${infer THead}-${infer TTail}`
+    ? `${THead}${Capitalize<ProviderAccessor<TTail>>}`
+    : TId
+
 export type SourceId<TProviders extends readonly ProviderDefinition[]> =
     ProviderUnion<TProviders> extends infer TProvider
         ? TProvider extends {
@@ -246,8 +255,8 @@ export type MetaOf<TSource> =
 
 type DataForQuery<TSource, TQuery> = TSource extends object
     ? typeof sourceResultType extends keyof TSource
-        ? NonNullable<TSource[typeof sourceResultType]> extends (query: TQuery) => infer TData
-            ? TData
+        ? NonNullable<TSource[typeof sourceResultType]> extends SourceResultResolver
+            ? (NonNullable<TSource[typeof sourceResultType]> & { readonly query: TQuery })['data']
             : DataOf<TSource>
         : DataOf<TSource>
     : DataOf<TSource>
@@ -273,20 +282,36 @@ type TrackArguments<
     ? []
     : [properties: EventProperties<TSchema, TName>]
 
+type SourceQueryAccessor<TSource, TSourceId extends string> = <
+    const TQuery extends QueryOf<TSource>,
+>(
+    query: TQuery,
+) => QueryDescriptor<QueryResult<DataForQuery<TSource, TQuery>, MetaOf<TSource>, TSourceId>>
+
+type ProviderSourceAccessors<TProvider> = TProvider extends {
+    id: infer TId extends string
+    sources?: infer TSources extends SourceDefinitions
+}
+    ? {
+          readonly [TKey in Extract<keyof TSources, string>]: SourceQueryAccessor<
+              TSources[TKey],
+              `${TId}.${TKey}`
+          >
+      }
+    : never
+
+type QuerySourceAccessors<TProviders extends readonly ProviderDefinition[]> = {
+    readonly [
+        TProvider in ProviderUnion<TProviders> as TProvider extends {
+            id: infer TId extends string
+        }
+            ? ProviderAccessor<TId>
+            : never
+    ]: ProviderSourceAccessors<TProvider>
+}
+
 export interface QueryBuilder<TProviders extends readonly ProviderDefinition[]> {
-    source<
-        TSource extends SourceId<TProviders>,
-        const TQuery extends QueryOf<SourceFor<TProviders, TSource>>,
-    >(
-        source: TSource,
-        query: TQuery,
-    ): QueryDescriptor<
-        QueryResult<
-            DataForQuery<SourceFor<TProviders, TSource>, TQuery>,
-            MetaOf<SourceFor<TProviders, TSource>>,
-            TSource
-        >
-    >
+    source: QuerySourceAccessors<TProviders>
 }
 
 export type InsightClient<TOptions extends CreateInsightOptions> = {

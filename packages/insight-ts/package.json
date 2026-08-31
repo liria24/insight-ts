@@ -57,10 +57,6 @@
             "types": "./dist/opentelemetry.d.ts",
             "import": "./dist/opentelemetry.js"
         },
-        "./provider": {
-            "types": "./dist/provider.d.ts",
-            "import": "./dist/provider.js"
-        },
         "./ui-core": {
             "types": "./dist/ui-core.d.ts",
             "import": "./dist/ui-core.js"

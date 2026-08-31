@@ -1,4 +1,5 @@
 export { createInsight } from './insight.ts'
+export { defineProvider, defineSource } from './provider.ts'
 export { InsightError, ProviderError } from './errors.ts'
 export type { InsightErrorCode } from './errors.ts'
 export type {

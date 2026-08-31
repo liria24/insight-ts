@@ -31,12 +31,14 @@ interface PreparedRequest extends SourceRequest {
     dedupeKey: string
 }
 
+type RuntimeSourceAccessor = (query: unknown) => Descriptor
+type RuntimeSourceAccessors = Record<string, Record<string, RuntimeSourceAccessor>>
+
 export const createInsight = <const TOptions extends CreateInsightOptions>(
     options: TOptions,
 ): InsightClient<TOptions> => {
     const now = options.now ?? (() => new Date())
-    const sources = runtimeSources(options.providers)
-    const byId = new Map(sources.map((source) => [source.id, source]))
+    const { accessors, sources } = runtimeSources(options.providers)
 
     const instrument = <T>(
         name: string,
@@ -155,23 +157,12 @@ export const createInsight = <const TOptions extends CreateInsightOptions>(
     const client = {
         ...(history ? { history } : {}),
         async query(
-            select: (builder: { source(source: string, query: unknown): Descriptor }) => unknown,
+            select: (builder: { source: RuntimeSourceAccessors }) => unknown,
             execution: QueryExecutionOptions = {},
         ) {
             return instrument('insight.query', {}, async (span) => {
                 execution.signal?.throwIfAborted()
-                const selection = select({
-                    source(sourceId, query) {
-                        const source = byId.get(sourceId)
-                        if (!source) {
-                            throw new InsightError(
-                                'SOURCE_NOT_FOUND',
-                                `Unknown Source: ${sourceId}`,
-                            )
-                        }
-                        return { [descriptor]: true, query, source }
-                    },
-                })
+                const selection = select({ source: accessors })
                 const entries = selectionEntries(selection)
                 span.setAttribute('insight.query.count', entries.length)
                 const values = await executeSelection(
@@ -237,34 +228,63 @@ export const createInsight = <const TOptions extends CreateInsightOptions>(
     }
 }
 
-function runtimeSources(providers: readonly ProviderDefinition[]): RuntimeSource[] {
-    const providerIds = providers.map(({ id }) => id)
-    if (new Set(providerIds).size !== providerIds.length) {
-        throw new InsightError('INVALID_QUERY', 'Provider ids must be unique')
-    }
-    const sources = providers.flatMap((provider) => {
-        if (!provider.id || provider.id.includes('.')) {
+function runtimeSources(providers: readonly ProviderDefinition[]): {
+    accessors: RuntimeSourceAccessors
+    sources: RuntimeSource[]
+} {
+    // Object.create(null) is intentionally used for prototype-safe generated accessors.
+    // eslint-disable-next-line typescript/no-unsafe-type-assertion
+    const accessors = Object.create(null) as RuntimeSourceAccessors
+    const accessorOwners = new Map<string, string>()
+    const providerIds = new Set<string>()
+    const sources: RuntimeSource[] = []
+    for (const provider of providers) {
+        if (!/^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$/.test(provider.id)) {
             throw new InsightError(
                 'INVALID_QUERY',
-                'Provider ids must be non-empty and cannot contain a dot',
+                `Provider id "${provider.id}" must use strict ASCII kebab-case`,
             )
         }
-        return Object.entries(provider.sources ?? {}).map(([key, value]) => {
-            if (!key || key.includes('.')) {
+        if (providerIds.has(provider.id)) {
+            throw new InsightError('INVALID_QUERY', `Provider id "${provider.id}" is duplicated`)
+        }
+        providerIds.add(provider.id)
+
+        const accessor = providerAccessor(provider.id)
+        const owner = accessorOwners.get(accessor)
+        if (owner !== undefined) {
+            throw new InsightError(
+                'INVALID_QUERY',
+                `Provider ids "${owner}" and "${provider.id}" both map to accessor "${accessor}"`,
+            )
+        }
+        accessorOwners.set(accessor, provider.id)
+        // Object.create(null) is intentionally used for prototype-safe generated accessors.
+        // eslint-disable-next-line typescript/no-unsafe-type-assertion
+        const providerAccessors = Object.create(null) as Record<string, RuntimeSourceAccessor>
+        Object.defineProperty(accessors, accessor, { enumerable: true, value: providerAccessors })
+
+        for (const [key, value] of Object.entries(provider.sources ?? {})) {
+            if (!/^[a-z][A-Za-z0-9]*$/.test(key)) {
                 throw new InsightError(
                     'INVALID_QUERY',
-                    'Source keys must be non-empty and cannot contain a dot',
+                    `Source key "${key}" for Provider "${provider.id}" must be a lower-camel-case ASCII identifier`,
                 )
             }
             const definition = sourceDefinition(value, key)
-            return { definition, id: `${provider.id}.${key}`, key, provider }
-        })
-    })
-    const ids = sources.map(({ id }) => id)
-    if (new Set(ids).size !== ids.length) {
-        throw new InsightError('INVALID_QUERY', 'Source ids must be unique')
+            const source = { definition, id: `${provider.id}.${key}`, key, provider }
+            sources.push(source)
+            Object.defineProperty(providerAccessors, key, {
+                enumerable: true,
+                value: (query: unknown): Descriptor => ({ [descriptor]: true, query, source }),
+            })
+        }
     }
-    return sources
+    return { accessors, sources }
+}
+
+function providerAccessor(id: string): string {
+    return id.replace(/-([a-z0-9])/g, (_match, character: string) => character.toUpperCase())
 }
 
 function sourceDefinition(value: unknown, key: string) {
@@ -282,7 +302,7 @@ function selectionEntries(value: unknown): [string, Descriptor][] {
         if (!isDescriptor(selected)) {
             throw new InsightError(
                 'INVALID_QUERY',
-                `Query selection "${name}" must be created with q.source()`,
+                `Query selection "${name}" must be created with a q.source Provider/Source accessor`,
             )
         }
         return [name, selected]

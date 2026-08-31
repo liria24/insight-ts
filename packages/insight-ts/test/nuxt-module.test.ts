@@ -32,7 +32,7 @@ describe('Nitro and Nuxt integration', () => {
         })
         expect(source).toContain('runtimeConfig.cloudflare')
         expect(source).not.toContain('runtimeConfig.insight')
-        expect(source).toContain("id: 'cloudflare'")
+        expect(source).toContain('cloudflare({')
         expect(source).not.toContain('CLOUDFLARE_API_TOKEN')
 
         const types = createServerRuntimeTypeTemplate({
@@ -40,7 +40,7 @@ describe('Nitro and Nuxt integration', () => {
             history: false,
             historySources: [],
         })
-        expect(types).toContain("ProviderDefinition<'cloudflare'")
+        expect(types).toContain('ReturnType<typeof cloudflare<')
         expect(types).toContain('InsightClient<RuntimeConfig>')
         expect(types).not.toContain('any')
     })

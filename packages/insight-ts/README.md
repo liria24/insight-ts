@@ -26,26 +26,20 @@ npm install insight-ts
 
 ```ts
 import { createInsight } from 'insight-ts'
-import { cloudflareWebAnalytics } from 'insight-ts/cloudflare'
-import { defineProvider } from 'insight-ts/provider'
-
-const cloudflare = defineProvider({
-    id: 'cloudflare',
-    sources: {
-        webAnalytics: cloudflareWebAnalytics({
-            accountId,
-            apiToken,
-            siteTag,
-        }),
-    },
-})
+import { cloudflare } from 'insight-ts/cloudflare'
 
 const insight = createInsight({
-    providers: [cloudflare] as const,
+    providers: [
+        cloudflare({
+            accountId,
+            apiToken,
+            webAnalytics: { siteTag },
+        }),
+    ],
 })
 
 const dashboard = await insight.query((q) => ({
-    traffic: q.source('cloudflare.webAnalytics', {
+    traffic: q.source.cloudflare.webAnalytics({
         metrics: ['pageViews', 'visits'],
         time: {
             from: '2026-08-01T00:00:00.000Z',
@@ -61,7 +55,7 @@ const dashboard = await insight.query((q) => ({
 console.log(dashboard.traffic.data.pageViews.value)
 ```
 
-The Source ID, query fields, selected metrics and dimensions, result data, and metadata stay typed throughout the query.
+The configured Source accessor, query fields, selected metrics and dimensions, result data, and metadata stay typed throughout the query without `as const` or explicit generics.
 
 ## What you get
 

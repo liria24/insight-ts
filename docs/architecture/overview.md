@@ -18,12 +18,12 @@ Core knows `Provider`, `Source<TQuery, TNormalized, TData, TMeta>`, `QueryResult
 `QueryQuality`, events, and a generic instrumentation port. It never classifies Source data as
 analytics, metrics, logs, traces, profiles, funnels, or billing. A Source owns query semantics,
 normalization, its exact dedupe key, execution, and result metadata. Core owns lazy multi-Source
-selection, Provider grouping, bounded execution, dedupe, abort, and result envelopes.
+selection through typed Provider/Source accessors, Provider grouping, bounded execution, dedupe,
+abort, and result envelopes. Canonical `${provider.id}.${sourceKey}` IDs remain the internal identity.
 
 The public package surface mirrors the boundaries:
 
-- `insight-ts` contains generic Core contracts and execution.
-- `insight-ts/provider` contains `defineSource()` and `defineProvider()`.
+- `insight-ts` contains generic Core contracts, execution, `defineSource()`, and `defineProvider()`.
 - `insight-ts/metrics` contains structured Metric semantics and typed `where` helpers.
 - Provider subpaths contain native request translation and validation.
 - `insight-ts/history` contains the Metric History strategy and small Repository contract.
@@ -38,6 +38,10 @@ Provider implementations validate native capability before network I/O. Their ex
 scale with compatible request groups, never rows, points, metrics, or dimension values. Analytics
 and product Sources do not adopt OTel semantics; observability Sources use OTel semantic
 conventions and UCUM units where applicable without using OTel as storage or query shape.
+
+Built-in Provider factories are their canonical consumer API and preserve the exact configured
+Source map. Provider IDs use strict ASCII kebab-case; the query DSL derives a camelCase accessor
+once when `createInsight()` initializes. Custom Provider authors use the root authoring helpers.
 
 History consumes an optional Metric Source strategy. It owns coverage gaps, normal execution
 fetches, composition, safe rollup, reduction, Fidelity, and idempotent segments. Repositories only

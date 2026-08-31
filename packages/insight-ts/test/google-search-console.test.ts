@@ -26,7 +26,7 @@ describe('Google Search Console Source', () => {
         await expect(
             source.execute(query, {
                 provider: provider.id,
-                source: 'googleSearchConsole.searchAnalytics',
+                source: 'google-search-console.searchAnalytics',
             }),
         ).rejects.toMatchObject({ code: 'CONFIGURATION_MISSING' })
         expect(fetcher).not.toHaveBeenCalled()
@@ -74,9 +74,9 @@ describe('Google Search Console Source', () => {
             fetch: fetcher,
             property: 'sc-domain:example.com',
         })
-        const insight = createInsight({ providers: [provider] as const })
+        const insight = createInsight({ providers: [provider] })
         const dashboard = await insight.query((q) => ({
-            search: q.source('googleSearchConsole.searchAnalytics', {
+            search: q.source.googleSearchConsole.searchAnalytics({
                 dimensions: ['query'],
                 metrics: ['clicks', 'impressions', 'ctr', 'averagePosition'],
                 time,
@@ -117,9 +117,9 @@ describe('Google Search Console Source', () => {
         }).sources.searchAnalytics
         const query = source.normalize({ metrics: ['clicks'], time })
         await source.execute(query, {
-            provider: 'googleSearchConsole',
+            provider: 'google-search-console',
             signal: controller.signal,
-            source: 'googleSearchConsole.searchAnalytics',
+            source: 'google-search-console.searchAnalytics',
         })
         const rejectsContains = () =>
             source.normalize({

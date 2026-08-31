@@ -93,14 +93,14 @@ export const createServerRuntimeTemplate = ({
             ? `import { createHistory } from 'insight-ts/history'\nimport { createNitroHistoryRepository } from 'insight-ts/nitro'\nimport { useStorage } from '#imports'\n`
             : ''
     const cloudflareImports = cloudflareWebAnalytics
-        ? `import { cloudflareWebAnalytics } from 'insight-ts/cloudflare'\nimport { useRuntimeConfig } from '#imports'\n`
+        ? `import { cloudflare } from 'insight-ts/cloudflare'\nimport { useRuntimeConfig } from '#imports'\n`
         : ''
     const history =
         historySources.length > 0
             ? `, history: createHistory({ repository: createNitroHistoryRepository(useStorage('insight')), sources: ${JSON.stringify(historySources)} })`
             : ''
     const providerSetup = cloudflareWebAnalytics
-        ? `const runtimeConfig = useRuntimeConfig()\n  const cloudflareConfig = runtimeConfig.cloudflare ?? {}\n  const providers = [...config.providers, {\n    id: 'cloudflare',\n    sources: {\n      webAnalytics: cloudflareWebAnalytics({\n        accountId: cloudflareConfig.accountId ?? '',\n        apiToken: cloudflareConfig.apiToken ?? '',\n        host: cloudflareConfig.host,\n        siteTag: cloudflareConfig.siteTag ?? '',\n      }),\n    },\n  }]`
+        ? `const runtimeConfig = useRuntimeConfig()\n  const cloudflareConfig = runtimeConfig.cloudflare ?? {}\n  const providers = [...config.providers, cloudflare({\n    accountId: cloudflareConfig.accountId ?? '',\n    apiToken: cloudflareConfig.apiToken ?? '',\n    webAnalytics: {\n      host: cloudflareConfig.host,\n      siteTag: cloudflareConfig.siteTag ?? '',\n    },\n  })]`
         : 'const providers = config.providers'
     return `import { createInsight } from 'insight-ts'
 ${historyImports}${cloudflareImports}import config from '#insight/server-config'
@@ -122,10 +122,10 @@ export const createServerRuntimeTypeTemplate = ({
         ? `import config from ${JSON.stringify(pathToFileURL(userConfigPath).href)}\ntype ServerConfig = typeof config`
         : 'type ServerConfig = { readonly providers: readonly [] }'
     const cloudflareImport = cloudflareWebAnalytics
-        ? `import type { cloudflareWebAnalytics } from 'insight-ts/cloudflare'\nimport type { ProviderDefinition } from 'insight-ts'\n`
+        ? `import type { cloudflare } from 'insight-ts/cloudflare'\n`
         : ''
     const cloudflareProvider = cloudflareWebAnalytics
-        ? `type CloudflareProvider = ProviderDefinition<'cloudflare', { readonly webAnalytics: ReturnType<typeof cloudflareWebAnalytics> }>`
+        ? `type CloudflareProvider = ReturnType<typeof cloudflare<{ readonly webAnalytics: { readonly siteTag: string } }>>`
         : ''
     const providers = cloudflareWebAnalytics
         ? "readonly [...ServerConfig['providers'], CloudflareProvider]"

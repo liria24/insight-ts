@@ -1,4 +1,4 @@
-import { createInsight } from 'insight-ts'
+import { createInsight, defineProvider, defineSource } from 'insight-ts'
 import {
     defineMetricSource,
     type DimensionValue,
@@ -6,7 +6,6 @@ import {
     type MetricSourceOutput,
     type NormalizedMetricQuery,
 } from 'insight-ts/metrics'
-import { defineProvider, defineSource } from 'insight-ts/provider'
 
 const trafficValues = [
     { pageViews: 1058, visits: 692 },
@@ -228,88 +227,88 @@ export async function executeDemoQuery(
         providers: [
             defineProvider({ id: 'cloudflare', sources: { webAnalytics: trafficSource } }),
             createDemoProvider(),
-        ] as const,
+        ],
     })
     const recent = {
         from: new Date(now.valueOf() - 5 * 60 * 1000).toISOString(),
         to: now.toISOString(),
     }
     const result = await insight.query((q) => ({
-        billing: q.source('demo.billing', { time: query.range }),
-        countries: q.source('cloudflare.webAnalytics', {
+        billing: q.source.demo.billing({ time: query.range }),
+        countries: q.source.cloudflare.webAnalytics({
             dimensions: ['country'],
             limit: 4,
             metrics: ['pageViews'],
             time: query.range,
         }),
-        devices: q.source('cloudflare.webAnalytics', {
+        devices: q.source.cloudflare.webAnalytics({
             dimensions: ['device'],
             limit: 3,
             metrics: ['visits'],
             time: query.range,
         }),
-        funnel: q.source('demo.funnel', { time: query.range }),
-        logs: q.source('demo.logs', { limit: 3 }),
-        observabilitySeries: q.source('demo.observability', {
+        funnel: q.source.demo.funnel({ time: query.range }),
+        logs: q.source.demo.logs({ limit: 3 }),
+        observabilitySeries: q.source.demo.observability({
             metrics: ['requestRate', 'errorRate', 'latencyP95'],
             time: { ...query.range, grain: query.grain },
         }),
-        observabilitySummary: q.source('demo.observability', {
+        observabilitySummary: q.source.demo.observability({
             metrics: ['requestRate', 'errorRate', 'latencyP95'],
             time: query.range,
         }),
-        productRevenue: q.source('demo.product', {
+        productRevenue: q.source.demo.product({
             dimensions: ['plan'],
             metrics: ['mrr'],
             time: query.range,
         }),
-        productSeries: q.source('demo.product', {
+        productSeries: q.source.demo.product({
             metrics: ['signups', 'activeTeams'],
             time: { ...query.range, grain: query.grain },
         }),
-        productSummary: q.source('demo.product', {
+        productSummary: q.source.demo.product({
             metrics: ['signups', 'activeTeams'],
             time: query.range,
         }),
-        recentTraffic: q.source('cloudflare.webAnalytics', { metrics: ['visits'], time: recent }),
-        referrers: q.source('cloudflare.webAnalytics', {
+        recentTraffic: q.source.cloudflare.webAnalytics({ metrics: ['visits'], time: recent }),
+        referrers: q.source.cloudflare.webAnalytics({
             dimensions: ['referer'],
             limit: 4,
             metrics: ['visits'],
             time: query.range,
         }),
-        searchPages: q.source('demo.searchConsole', {
+        searchPages: q.source.demo.searchConsole({
             dimensions: ['page'],
             limit: 3,
             metrics: ['clicks', 'impressions'],
             time: query.range,
         }),
-        searchQueries: q.source('demo.searchConsole', {
+        searchQueries: q.source.demo.searchConsole({
             dimensions: ['query'],
             limit: 3,
             metrics: ['clicks', 'impressions'],
             time: query.range,
         }),
-        searchSeries: q.source('demo.searchConsole', {
+        searchSeries: q.source.demo.searchConsole({
             metrics: ['clicks', 'impressions', 'ctr'],
             time: { ...query.range, grain: query.grain },
         }),
-        searchSummary: q.source('demo.searchConsole', {
+        searchSummary: q.source.demo.searchConsole({
             metrics: ['clicks', 'impressions', 'ctr', 'averagePosition'],
             time: query.range,
         }),
-        topPages: q.source('cloudflare.webAnalytics', {
+        topPages: q.source.cloudflare.webAnalytics({
             dimensions: ['path'],
             limit: 5,
             metrics: ['pageViews'],
             time: query.range,
         }),
-        trace: q.source('demo.trace', { traceId: '4bf92f3577b34da6a3ce929d0e0e4736' }),
-        trafficSeries: q.source('cloudflare.webAnalytics', {
+        trace: q.source.demo.trace({ traceId: '4bf92f3577b34da6a3ce929d0e0e4736' }),
+        trafficSeries: q.source.cloudflare.webAnalytics({
             metrics: ['pageViews', 'visits'],
             time: { ...query.range, grain: query.grain },
         }),
-        trafficSummary: q.source('cloudflare.webAnalytics', {
+        trafficSummary: q.source.cloudflare.webAnalytics({
             metrics: ['pageViews', 'visits'],
             time: query.range,
         }),
