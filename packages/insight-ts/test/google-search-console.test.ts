@@ -12,7 +12,7 @@ const time = {
     to: '2026-08-02T07:00:00.000Z',
 }
 
-describe('Google Search Console Source', () => {
+describe('Google Search Console adapter', () => {
     it('requires a host-owned access-token callback before network I/O', async () => {
         const fetcher = vi.fn<(input: RequestInfo | URL, init?: RequestInit) => Promise<Response>>()
         const provider = googleSearchConsole({
@@ -20,13 +20,14 @@ describe('Google Search Console Source', () => {
             fetch: fetcher,
             property: 'sc-domain:example.com',
         })
-        const source = provider.sources.searchAnalytics
+        const source = provider.adapters.searchAnalytics
         const query = source.normalize({ metrics: ['clicks'], time })
 
         await expect(
             source.execute(query, {
+                adapter: 'google-search-console.searchAnalytics',
                 provider: provider.id,
-                source: 'google-search-console.searchAnalytics',
+                scope: 'default',
             }),
         ).rejects.toMatchObject({ code: 'CONFIGURATION_MISSING' })
         expect(fetcher).not.toHaveBeenCalled()
@@ -76,7 +77,7 @@ describe('Google Search Console Source', () => {
         })
         const insight = createInsight({ providers: [provider] })
         const dashboard = await insight.query((q) => ({
-            search: q.source.googleSearchConsole.searchAnalytics({
+            search: q.metrics({
                 dimensions: ['query'],
                 metrics: ['clicks', 'impressions', 'ctr', 'averagePosition'],
                 time,
@@ -114,12 +115,13 @@ describe('Google Search Console Source', () => {
             auth: { getAccessToken: async () => 'token' },
             fetch: fetcher,
             property: 'sc-domain:example.com',
-        }).sources.searchAnalytics
+        }).adapters.searchAnalytics
         const query = source.normalize({ metrics: ['clicks'], time })
         await source.execute(query, {
+            adapter: 'google-search-console.searchAnalytics',
             provider: 'google-search-console',
+            scope: 'default',
             signal: controller.signal,
-            source: 'google-search-console.searchAnalytics',
         })
         const rejectsContains = () =>
             source.normalize({
@@ -147,7 +149,7 @@ describe('Google Search Console Source', () => {
             auth: { getAccessToken: async () => 'token' },
             fetch: fetcher,
             property: 'sc-domain:example.com',
-        }).sources.searchAnalytics
+        }).adapters.searchAnalytics
 
         const result = await source.execute(
             source.normalize({
@@ -156,7 +158,11 @@ describe('Google Search Console Source', () => {
                 metrics: ['clicks', 'impressions', 'ctr', 'averagePosition'],
                 time,
             }),
-            { provider: 'google-search-console', source: 'google-search-console.searchAnalytics' },
+            {
+                adapter: 'google-search-console.searchAnalytics',
+                provider: 'google-search-console',
+                scope: 'default',
+            },
         )
 
         expect(fetcher).toHaveBeenCalledOnce()
@@ -206,12 +212,13 @@ describe('Google Search Console Source', () => {
             fetch: fetcher,
             maxRows: 2,
             property: 'sc-domain:example.com',
-        }).sources.searchAnalytics
+        }).adapters.searchAnalytics
         const result = await source.execute(
             source.normalize({ dimensions: ['query'], metrics: ['clicks'], time }),
             {
+                adapter: 'google-search-console.searchAnalytics',
                 provider: 'google-search-console',
-                source: 'google-search-console.searchAnalytics',
+                scope: 'default',
             },
         )
 

@@ -10,9 +10,9 @@
 
 # Insight.ts
 
-Insight.ts is a TypeScript SDK for querying data from different services without forcing them into one shared schema. Configure explicit Sources, query them through one API, and keep each Provider's metrics, limits, sampling, and metadata visible.
+Insight.ts is a TypeScript SDK for querying canonical Metrics, Logs, and Traces across services. Configure Providers inside a logical Scope and query data without exposing backend topology.
 
-Start with Core and one Source. Add Providers, History, events, framework integrations, OpenTelemetry, or Vue UI only when you need them.
+Start with Core and one Provider. Add History, events, framework integrations, OpenTelemetry, or Vue UI only when you need them.
 
 > **Alpha:** Insight.ts is still under active development. Public APIs may change before the first stable release.
 
@@ -39,7 +39,7 @@ const insight = createInsight({
 })
 
 const dashboard = await insight.query((q) => ({
-    traffic: q.source.cloudflare.webAnalytics({
+    traffic: q.metrics({
         metrics: ['pageViews', 'visits'],
         time: {
             from: '2026-08-01T00:00:00.000Z',
@@ -55,24 +55,45 @@ const dashboard = await insight.query((q) => ({
 console.log(dashboard.traffic.data.values.pageViews)
 ```
 
-The configured Source accessor, query fields, selected metrics and dimensions, result data, and metadata stay typed throughout the query without `as const` or explicit generics.
+Configured canonical Metrics and dimensions are inferred across Provider adapters without `as const` or explicit generics.
 
 ## What you get
 
-- **Typed queries and results** — Sources define exactly what they accept and return.
+- **Typed queries and results** — configured adapters define canonical fields and results.
 - **Provider details stay visible** — sampling, approximation, partial results, pagination, freshness, and native metadata are not hidden behind artificial parity.
 - **Composable features** — use Core alone or add Providers, History, browser events, Nitro, Nuxt, Vue UI, and OpenTelemetry independently.
-- **Custom Sources** — application and service-specific data can use the same execution API without changing Core.
+- **Logical Scopes** — use the same canonical query API for production, staging, or another analysis boundary.
 
 ## Built-in Providers
 
 Insight.ts currently includes support for:
 
 - Cloudflare Web Analytics
+- Cloudflare Workers Observability Logs, Traces, and telemetry Metrics
 - Cloudflare Analytics Engine
 - Google Search Console with bounded native pagination
 
-Use `defineSource()` and `defineProvider()` for application-specific or third-party data.
+Use `defineMetricAdapter()`, `defineLogAdapter()`, `defineTraceAdapter()`, and `defineProvider()`
+for application-specific canonical data.
+
+## History
+
+One optional History workflow preserves Metrics, Logs, Traces, and future materializable
+capabilities beyond native Provider retention.
+
+```ts
+import { createHistory } from 'insight-ts/history'
+
+const insight = createInsight({
+    providers,
+    history: createHistory({ repository, capabilities: ['metrics', 'logs', 'traces'] }),
+})
+
+await insight.history.sync({ range: { from, to } })
+```
+
+History exposes range-scoped Fidelity, bounded event pagination, compaction, and expiration. It is
+not a persistent query-result cache.
 
 ## Vue UI
 

@@ -1,5 +1,6 @@
 export interface NuxtInsightHistoryOptions {
-    sources: readonly string[]
+    capabilities?: readonly string[]
+    scopes?: readonly string[]
     tasks?: boolean
 }
 

@@ -115,9 +115,9 @@ describe('Demo analytics range', () => {
         expect(pageViews).toHaveLength(7)
         expect(result.online).toBeGreaterThan(0)
         expect(result.analytics.trafficSummary.data.values.pageViews).toBe(1421)
-        expect(result.execution.sources).toContain('demo.logs')
-        expect(result.logs.data.entries).toHaveLength(3)
-        expect(result.trace.data.spans).toHaveLength(4)
+        expect(result.execution.capabilities).toContain('logs')
+        expect(result.logs.data.logs).toHaveLength(3)
+        expect(result.trace.data.traces[0]?.spans).toHaveLength(4)
     })
 
     it('keeps Source-owned renderers demo-local and shows all five sections', async () => {
@@ -140,8 +140,9 @@ describe('Demo analytics range', () => {
         }
         expect(owned).toContain('Paginated logs')
         expect(owned).toContain('Trace graph')
-        expect(fixture).toContain('defineMetricSource')
-        expect(fixture).toContain('defineSource')
+        expect(fixture).toContain('defineMetricAdapter')
+        expect(fixture).toContain('defineLogAdapter')
+        expect(fixture).toContain('defineTraceAdapter')
         expect(fixture).toContain('insight.query')
         expect(endpoint).toContain('createDemoFixture')
         expect(endpoint).not.toContain('Provider fallback')

@@ -16,10 +16,11 @@ import type { NuxtInsightModuleOptions } from './types.ts'
 
 interface ServerRuntimeTemplateOptions {
     cloudflareWebAnalytics: boolean
-    historySources: readonly string[]
+    history: false | { capabilities?: readonly string[]; scopes?: readonly string[] }
 }
 
-interface ServerRuntimeTypeTemplateOptions extends ServerRuntimeTemplateOptions {
+interface ServerRuntimeTypeTemplateOptions {
+    cloudflareWebAnalytics: boolean
     history: boolean
     userConfigPath?: string
 }
@@ -31,19 +32,22 @@ const module: NuxtModule<NuxtInsightModuleOptions> = defineNuxtModule<NuxtInsigh
         name: 'insight-ts',
     },
     setup(options, nuxt) {
-        const sources = options.history?.sources ?? []
+        const history = options.history
+            ? {
+                  ...(options.history.capabilities
+                      ? { capabilities: options.history.capabilities }
+                      : {}),
+                  ...(options.history.scopes ? { scopes: options.history.scopes } : {}),
+              }
+            : false
         const cloudflareWebAnalytics = options.providers?.cloudflare?.webAnalytics === true
-        if (options.history && sources.length === 0) {
-            throw new TypeError('insight.history.sources must contain at least one Source')
-        }
 
         const userConfigPath = join(nuxt.options.srcDir, 'server', 'insight.config.ts')
         const getConfig = () => createServerConfigTemplate(userConfigPath)
         addTemplate({ filename: 'insight/server-config.mjs', getContents: getConfig, write: true })
         addServerTemplate({ filename: '#insight/server-config', getContents: getConfig })
 
-        const getRuntime = () =>
-            createServerRuntimeTemplate({ cloudflareWebAnalytics, historySources: sources })
+        const getRuntime = () => createServerRuntimeTemplate({ cloudflareWebAnalytics, history })
         addTemplate({ filename: 'insight/server.mjs', getContents: getRuntime, write: true })
         addServerTemplate({ filename: '#insight/server', getContents: getRuntime })
         const runtimeTypes = addTypeTemplate(
@@ -53,7 +57,6 @@ const module: NuxtModule<NuxtInsightModuleOptions> = defineNuxtModule<NuxtInsigh
                     createServerRuntimeTypeTemplate({
                         cloudflareWebAnalytics,
                         history: Boolean(options.history),
-                        historySources: sources,
                         ...(existsSync(userConfigPath) ? { userConfigPath } : {}),
                     }),
             },
@@ -86,19 +89,17 @@ export const createServerConfigTemplate = (path: string): string =>
 
 export const createServerRuntimeTemplate = ({
     cloudflareWebAnalytics,
-    historySources,
+    history,
 }: ServerRuntimeTemplateOptions): string => {
-    const historyImports =
-        historySources.length > 0
-            ? `import { createHistory } from 'insight-ts/history'\nimport { createNitroHistoryRepository } from 'insight-ts/nitro'\nimport { useStorage } from '#imports'\n`
-            : ''
+    const historyImports = history
+        ? `import { createHistory } from 'insight-ts/history'\nimport { createNitroHistoryRepository } from 'insight-ts/nitro'\nimport { useStorage } from '#imports'\n`
+        : ''
     const cloudflareImports = cloudflareWebAnalytics
         ? `import { cloudflare } from 'insight-ts/cloudflare'\nimport { useRuntimeConfig } from '#imports'\n`
         : ''
-    const history =
-        historySources.length > 0
-            ? `, history: createHistory({ repository: createNitroHistoryRepository(useStorage('insight')), sources: ${JSON.stringify(historySources)} })`
-            : ''
+    const historySetup = history
+        ? `, history: createHistory({ repository: createNitroHistoryRepository(useStorage('insight'))${history.capabilities ? `, capabilities: ${JSON.stringify(history.capabilities)}` : ''}${history.scopes ? `, scopes: ${JSON.stringify(history.scopes)}` : ''} })`
+        : ''
     const providerSetup = cloudflareWebAnalytics
         ? `const runtimeConfig = useRuntimeConfig()\n  const cloudflareConfig = runtimeConfig.cloudflare ?? {}\n  const providers = [...config.providers, cloudflare({\n    accountId: cloudflareConfig.accountId ?? '',\n    apiToken: cloudflareConfig.apiToken ?? '',\n    webAnalytics: {\n      host: cloudflareConfig.host,\n      siteTag: cloudflareConfig.siteTag ?? '',\n    },\n  })]`
         : 'const providers = config.providers'
@@ -108,7 +109,7 @@ ${historyImports}${cloudflareImports}import config from '#insight/server-config'
 let instance
 export const useInsight = () => {
   ${providerSetup}
-  return instance ||= createInsight({ ...config, providers${history} })
+  return instance ||= createInsight({ ...config, providers${historySetup} })
 }
 `
 }
@@ -142,6 +143,6 @@ export declare const useInsight: () => InsightClient<RuntimeConfig>
 const historySyncTaskTemplate = `import { useInsight } from '#insight/server'
 export default defineTask({
   meta: { name: 'insight:history:sync', description: 'Synchronize Insight History gaps' },
-  run({ payload }) { return useInsight().history.sync({ range: payload.range, sources: payload.sources }) }
+  run({ payload }) { return useInsight().history.sync({ range: payload.range, scopes: payload.scopes, capabilities: payload.capabilities }) }
 })
 `

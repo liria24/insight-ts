@@ -1,10 +1,17 @@
 export { createInsight } from './insight.ts'
-export { defineProvider, defineSource } from './provider.ts'
+export { defineCapabilityAdapter, defineProvider } from './provider.ts'
 export { InsightError, ProviderError } from './errors.ts'
 export type { InsightErrorCode } from './errors.ts'
+export { normalizeTimeRange } from './time.ts'
+export type { TimeRange } from './time.ts'
 export type {
     CreateInsightOptions,
-    DataOf,
+    AdapterExecutionContext,
+    AdapterExecutionResult,
+    CapabilityAdapterDefinition,
+    CapabilityContract,
+    CapabilityExecutionResult,
+    CapabilitySchema,
     Event,
     EventDefinition,
     EventDefinitions,
@@ -13,29 +20,27 @@ export type {
     EventProperties,
     EventProperty,
     HistoryExtension,
+    HistoryFidelity,
+    HistoryFidelityBand,
+    HistoryTransformation,
+    InsightCursor,
     InsightClient,
     InsightSchema,
     Instrumentation,
     InstrumentationSpan,
-    MetaOf,
-    NormalizedQueryOf,
     Provider,
     ProviderDefinition,
     ProviderExecutionContext,
     ProviderExecutionRequest,
     QueryBuilder,
+    QueryContribution,
     QueryDescriptor,
     QueryExecutionOptions,
-    QueryOf,
     QueryQuality,
+    QueryPagination,
     QueryResult,
     QuerySelection,
     QuerySelectionResult,
-    SourceCatalogEntry,
-    SourceDefinition,
-    SourceExecutionContext,
-    SourceExecutionResult,
-    SourceFor,
-    SourceId,
+    ScopeDefinitions,
     Warning,
 } from './types.ts'

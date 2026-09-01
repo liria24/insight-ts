@@ -1,5 +1,8 @@
 <script setup lang="ts">
-defineProps<{ data: DemoReportResponse }>()
+import { computed } from 'vue'
+
+const props = defineProps<{ data: DemoReportResponse }>()
+const trace = computed(() => props.data.trace.data.traces[0])
 
 const money = new Intl.NumberFormat('en-US', { currency: 'USD', style: 'currency' })
 </script>
@@ -32,42 +35,44 @@ const money = new Intl.NumberFormat('en-US', { currency: 'USD', style: 'currency
             <h3 class="font-semibold text-highlighted">Paginated logs</h3>
             <ul class="mt-4 divide-y divide-default font-mono text-xs">
                 <li
-                    v-for="entry in data.logs.data.entries"
-                    :key="entry.timestamp"
+                    v-for="entry in data.logs.data.logs"
+                    :key="entry.id"
                     class="grid grid-cols-[auto_1fr] gap-3 py-3"
                 >
                     <UBadge
                         :color="
-                            entry.level === 'error'
+                            entry.severity === 'error' || entry.severity === 'fatal'
                                 ? 'error'
-                                : entry.level === 'warn'
+                                : entry.severity === 'warn'
                                   ? 'warning'
                                   : 'neutral'
                         "
                         variant="subtle"
-                        >{{ entry.level }}</UBadge
+                        >{{ entry.severity ?? 'info' }}</UBadge
                     >
                     <span
                         ><time class="text-muted">{{ entry.timestamp }}</time
-                        ><br />{{ entry.message }}</span
+                        ><br />{{ entry.body }}</span
                     >
                 </li>
             </ul>
-            <p class="mt-3 text-xs text-muted">nextCursor: {{ data.logs.meta.nextCursor }}</p>
+            <p class="mt-3 text-xs text-muted">
+                next: {{ data.logs.meta.pagination?.next ?? 'terminal' }}
+            </p>
         </UCard>
 
         <UCard variant="subtle">
             <h3 class="font-semibold text-highlighted">Trace graph</h3>
-            <p class="mt-1 truncate font-mono text-xs text-muted">{{ data.trace.data.traceId }}</p>
-            <ul class="mt-4 space-y-2">
+            <p class="mt-1 truncate font-mono text-xs text-muted">{{ trace?.traceId }}</p>
+            <ul v-if="trace" class="mt-4 space-y-2">
                 <li
-                    v-for="span in data.trace.data.spans"
+                    v-for="span in trace.spans"
                     :key="span.id"
                     class="flex justify-between gap-4 rounded-md border border-default p-3"
-                    :class="span.parentId ? 'ml-5' : ''"
+                    :class="span.parentSpanId ? 'ml-5' : ''"
                 >
                     <span>{{ span.name }}</span
-                    ><strong class="tabular-nums">{{ span.durationMs }}ms</strong>
+                    ><strong class="tabular-nums">{{ span.durationMs ?? 0 }}ms</strong>
                 </li>
             </ul>
         </UCard>

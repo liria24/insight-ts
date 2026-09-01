@@ -10,9 +10,9 @@
 
 # Insight.ts
 
-Insight.ts is a TypeScript SDK for querying data from different services without forcing them into one shared schema. Configure explicit Sources, query them through one API, and keep each Provider's metrics, limits, sampling, and metadata visible.
+Insight.ts is a TypeScript SDK for querying canonical Metrics, Logs, and Traces across services. Configure Providers inside a logical Scope, ask for the data you need, and keep sampling, partiality, and freshness visible without exposing backend topology in query code.
 
-Start with Core and one Source. Add built-in Providers, History, events, Nitro or Nuxt integrations, OpenTelemetry, and Vue UI only when your application needs them.
+Start with Core and one Provider. Add History, events, Nitro or Nuxt integrations, OpenTelemetry, and Vue UI only when your application needs them.
 
 > **Alpha:** Insight.ts is still under active development. Public APIs may change before the first stable release.
 
@@ -41,7 +41,7 @@ const insight = createInsight({
 })
 
 const dashboard = await insight.query((q) => ({
-    traffic: q.source.cloudflare.webAnalytics({
+    traffic: q.metrics({
         metrics: ['pageViews', 'visits'],
         time: {
             from: '2026-08-01T00:00:00.000Z',
@@ -57,19 +57,19 @@ const dashboard = await insight.query((q) => ({
 console.log(dashboard.traffic.data.values.pageViews)
 ```
 
-The configured Source accessor, query fields, selected metrics and dimensions, result data, and metadata stay typed throughout the query without `as const` or explicit generics.
+Configured canonical Metrics and dimensions are inferred across Provider adapters without `as const` or explicit generics.
 
 ## Why Insight.ts?
 
 ### Typed end to end
 
-A Source defines the query it accepts and the result it returns. TypeScript carries that information through `insight.query()`, so unsupported Source IDs, metrics, dimensions, filters, and values fail where you write them.
+A Scope's adapters define the canonical fields they can execute. TypeScript carries that information through `insight.query()`, while runtime capability intersections reject incompatible cross-adapter dimensions and filters before I/O.
 
 ### Provider details stay visible
 
 Cloudflare, Search Console, application databases, observability systems, and other services do not expose identical capabilities.
 
-Insight.ts gives them a common execution API without hiding differences such as sampling, approximation, partial results, pagination, freshness, or Provider-specific metadata.
+Insight.ts gives them canonical query contracts without hiding differences such as sampling, approximation, partial results, pagination, or freshness.
 
 ### Add only what you need
 
@@ -80,11 +80,29 @@ Core does not require a framework, History engine, UI renderer, or OpenTelemetry
 Built-in support currently includes:
 
 - **Cloudflare Web Analytics** — page views, visits, dimensions, filters, and quality metadata
+- **Cloudflare Workers Observability** — canonical Logs, Traces, and telemetry Metrics with opaque pagination
 - **Cloudflare Analytics Engine** — Metric queries, event delivery, or both
 - **Google Search Console** — Search Analytics metrics with bounded native pagination and data-state metadata
-- **Application-defined Sources** — arbitrary typed query and result contracts through `defineSource()` and `defineProvider()`
+- **Application-defined adapters** — canonical Metric, Log, and Trace adapters through focused entrypoints and custom Providers through `defineProvider()`
 
-Custom Sources use the same query execution and type inference as built-in Providers.
+Custom adapters use the same scope-aware planning and result merging as built-in Providers.
+
+## History
+
+History preserves configured canonical capabilities with one Scope-aware workflow. Capability
+adapters retain their own identity, pagination, and safe rollup semantics while the engine owns
+coverage, Fidelity, bounded storage, compaction, and expiration.
+
+```ts
+import { createHistory } from 'insight-ts/history'
+
+const insight = createInsight({
+    providers,
+    history: createHistory({ repository, capabilities: ['metrics', 'logs', 'traces'] }),
+})
+
+await insight.history.sync({ range: { from, to } })
+```
 
 ## UI
 

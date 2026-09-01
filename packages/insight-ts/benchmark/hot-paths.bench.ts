@@ -1,13 +1,14 @@
 import { bench, describe } from 'vitest'
 
-import { createInsight, defineProvider, defineSource } from '../src/core/index.ts'
+import { createInsight, defineProvider } from '../src/core/index.ts'
 import {
     createHistory,
-    type HistoryCoverage,
+    type HistoryReadQuery,
     type HistoryRepository,
     type HistorySegment,
+    type HistoryTarget,
 } from '../src/history/index.ts'
-import { defineMetricSource, type TimeRange } from '../src/metrics/index.ts'
+import { defineMetricAdapter, type TimeRange } from '../src/metrics/index.ts'
 import { cloudflare as createCloudflare } from '../src/providers/cloudflare/index.ts'
 import { googleSearchConsole } from '../src/providers/google-search-console/index.ts'
 import { createBreakdownModel, createSeriesModel } from '../src/ui-core/index.ts'
@@ -18,26 +19,28 @@ const time = {
     to: '2026-01-08T00:00:00.000Z',
 }
 
-const coreSource = defineSource({
-    execute: ({ value }: { value: number }) => ({ data: value }),
-    key: ({ value }: { value: number }) => String(value),
-    normalize: ({ value }: { value: number }) => ({ value }),
+const coreSource = defineMetricAdapter({
+    execute: () => ({ values: { value: 1 } }),
+    metrics: { value: {} },
 })
 const core = createInsight({
-    providers: [defineProvider({ id: 'app', sources: { value: coreSource } })],
+    providers: [defineProvider({ adapters: { value: coreSource }, id: 'app' })],
 })
 
 describe('Core query', () => {
     bench('normalize, deduplicate, and execute a selection', async () => {
         await core.query((q) => ({
-            first: q.source.app.value({ value: 1 }),
-            second: q.source.app.value({ value: 1 }),
-            third: q.source.app.value({ value: 2 }),
+            first: q.metrics({ metrics: ['value'], time }),
+            second: q.metrics({ metrics: ['value'], time }),
+            third: q.metrics({
+                metrics: ['value'],
+                time: { ...time, to: '2026-01-09T00:00:00.000Z' },
+            }),
         }))
     })
 })
 
-const metrics = defineMetricSource({
+const metrics = defineMetricAdapter({
     dimensions: {
         country: { operators: ['eq', 'in', 'notIn'], type: 'string' },
         status: { operators: ['eq', 'gte'], type: 'number' },
@@ -66,7 +69,7 @@ const materializationCases = [1, 5, 10].flatMap((metricCount) =>
     [100, 10_000].map((pointCount) => {
         const names = Array.from({ length: metricCount }, (_, index) => `metric${index}`)
         const values = Object.fromEntries(names.map((metric, index) => [metric, index]))
-        const source = defineMetricSource({
+        const source = defineMetricAdapter({
             execute: () => ({
                 points: Array.from({ length: pointCount }, (_, index) => ({
                     time: new Date(Date.parse(time.from) + index * 60_000).toISOString(),
@@ -89,8 +92,9 @@ describe('Metric materialization', () => {
     for (const fixture of materializationCases) {
         bench(`${fixture.metricCount} metrics x ${fixture.pointCount} points`, async () => {
             await fixture.source.execute(fixture.query, {
+                adapter: 'benchmark.metrics',
                 provider: 'benchmark',
-                source: 'benchmark.metrics',
+                scope: 'default',
             })
         })
     }
@@ -101,7 +105,7 @@ const historyPoints = Array.from({ length: 24 * 7 }, (_, index) => ({
     time: new Date(Date.parse(time.from) + index * 3_600_000).toISOString(),
     values: { errorRate: 0.05, errors: 5, requests: 100 },
 }))
-const historySource = defineMetricSource({
+const historySource = defineMetricAdapter({
     dimensions: { service: 'string' },
     execute: () => ({
         points: historyPoints,
@@ -123,38 +127,50 @@ const historySource = defineMetricSource({
 })
 
 class BenchmarkRepository implements HistoryRepository {
-    segment?: HistorySegment
+    segments: HistorySegment[] = []
 
-    async coverage(_query: { range: TimeRange; source: string }): Promise<HistoryCoverage[]> {
-        return []
+    async coverage(query: HistoryTarget & { range: TimeRange }) {
+        return this.segments.filter((segment) => matches(segment, query))
     }
 
-    async read(_query: { range: TimeRange; source: string }): Promise<HistorySegment[]> {
-        return this.segment ? [this.segment] : []
+    async delete(query: HistoryTarget & { range: TimeRange }) {
+        this.segments = this.segments.filter((segment) => !matches(segment, query))
     }
 
-    async write(segment: HistorySegment): Promise<void> {
-        this.segment = segment
+    async read(query: HistoryReadQuery) {
+        return { segments: this.segments.filter((segment) => matches(segment, query)) }
+    }
+
+    async replace(
+        query: HistoryTarget & { range: TimeRange },
+        segments: readonly HistorySegment[],
+    ) {
+        await this.delete(query)
+        this.segments.push(...segments)
     }
 }
+
+const matches = (segment: HistorySegment, query: HistoryTarget & { range: TimeRange }) =>
+    segment.adapter === query.adapter &&
+    segment.capability === query.capability &&
+    segment.scope === query.scope &&
+    segment.range.from < query.range.to &&
+    query.range.from < segment.range.to
 
 const repository = new BenchmarkRepository()
 const history = createInsight({
     history: createHistory({
-        reductions: {
-            'app.metrics': [{ transformations: [{ grain: 'day', kind: 'aggregate' }] }],
-        },
+        capabilities: ['metrics'],
         repository,
-        sources: ['app.metrics'],
     }),
-    providers: [defineProvider({ id: 'app', sources: { metrics: historySource } })],
+    providers: [defineProvider({ adapters: { metrics: historySource }, id: 'app' })],
 })
 
 describe('History', () => {
-    bench('reduce, materialize, and read a covered range', async () => {
+    bench('materialize and read a covered range', async () => {
         await history.history.sync({ range: time })
         await history.query((q) => ({
-            report: q.source.app.metrics({
+            report: q.metrics({
                 dimensions: ['service'],
                 metrics: ['errorRate', 'requests'],
                 time: { ...time, grain: 'day' },
@@ -172,7 +188,7 @@ const uiResult = {
         })),
         values: { errors: 501, latency: 502, requests: 500 },
     },
-    meta: { queriedAt: time.to, source: 'app.metrics' },
+    meta: { contributions: [], queriedAt: time.to },
 }
 
 describe('UI Core', () => {
@@ -207,7 +223,7 @@ const cloudflare = createCloudflare({
             }),
         siteTag: 'site',
     },
-}).sources.webAnalytics
+}).adapters.webAnalytics
 const cloudflareQuery = cloudflare.normalize({
     dimensions: ['country'],
     metrics: ['pageViews', 'visits'],
@@ -228,7 +244,7 @@ const searchConsole = googleSearchConsole({
     fetch: async () =>
         new Response(searchConsolePayload, { headers: { 'content-type': 'application/json' } }),
     property: 'sc-domain:example.com',
-}).sources.searchAnalytics
+}).adapters.searchAnalytics
 const searchConsoleQuery = searchConsole.normalize({
     dimensions: ['date', 'query', 'page'],
     limit: 25_000,
@@ -239,15 +255,17 @@ const searchConsoleQuery = searchConsole.normalize({
 describe('Provider normalization', () => {
     bench('translate and normalize a Cloudflare response', async () => {
         await cloudflare.execute(cloudflareQuery, {
+            adapter: 'cloudflare.webAnalytics',
             provider: 'cloudflare',
-            source: 'cloudflare.webAnalytics',
+            scope: 'default',
         })
     })
 
     bench('normalize 25,000 Search Console multi-dimension rows', async () => {
         await searchConsole.execute(searchConsoleQuery, {
+            adapter: 'google-search-console.searchAnalytics',
             provider: 'google-search-console',
-            source: 'google-search-console.searchAnalytics',
+            scope: 'default',
         })
     })
 })

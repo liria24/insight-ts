@@ -22,7 +22,7 @@ export default defineCachedEventHandler(
                         accountId: config.accountId,
                         apiToken: config.apiToken,
                         webAnalytics: { host: config.host, siteTag: config.siteTag },
-                    }).sources.webAnalytics,
+                    }).adapters.webAnalytics,
                     query,
                     now,
                 )

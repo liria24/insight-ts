@@ -20,19 +20,30 @@ const root = await mkdtemp(join(tmpdir(), 'insight-ts-consumers-'))
 const consumers: readonly Consumer[] = [
     {
         name: 'core',
-        source: `import { createInsight, defineProvider, defineSource } from 'insight-ts'
+        source: `import { createInsight, defineProvider } from 'insight-ts'
 import { cloudflare } from 'insight-ts/cloudflare'
 import { googleSearchConsole } from 'insight-ts/google-search-console'
-import type { DimensionValue } from 'insight-ts/metrics'
+import { defineLogAdapter } from 'insight-ts/logs'
+import { defineMetricAdapter } from 'insight-ts/metrics'
+import { defineTraceAdapter } from 'insight-ts/traces'
 
-const source = defineSource({
-  execute: ({ value }: { value: number }) => ({ data: value * 2 }),
-  key: ({ value }: { value: number }) => String(value),
-  normalize: ({ value }: { value: number }) => ({ value }),
+const value = defineMetricAdapter({
+  execute: () => ({ values: { value: 42 } }),
+  metrics: { value: {} },
 })
-const insight = createInsight({ providers: [defineProvider({ id: 'app', sources: { value: source } })] })
-const { value } = await insight.query((q) => ({ value: q.source.app.value({ value: 21 }) }))
-if (value.data !== 42 || value.meta.source !== 'app.value') throw new Error('Packed Core runtime failed')
+const logs = defineLogAdapter({ execute: () => ({ logs: [{ id: 'log-1', timestamp: '2026-08-01' }] }) })
+const traces = defineTraceAdapter({ execute: () => ({ traces: [{ startTime: '2026-08-01', traceId: 'trace-1' }] }) })
+const insight = createInsight({ providers: [defineProvider({ adapters: { logs, traces, value }, id: 'app' })] })
+const result = await insight.query((q) => ({
+  logs: q.logs({ time: { from: '2026-08-01', to: '2026-08-02' } }),
+  traces: q.traces({ time: { from: '2026-08-01', to: '2026-08-02' } }),
+  value: q.metrics({ metrics: ['value'], time: { from: '2026-08-01', to: '2026-08-02' } }),
+}))
+if (result.value.data.values.value !== 42 || result.logs.data.logs[0]?.id !== 'log-1' || result.traces.data.traces[0]?.traceId !== 'trace-1') throw new Error('Packed Core runtime failed')
+const nextLogCursor = result.logs.meta.pagination?.next
+if (nextLogCursor) {
+  await insight.query((q) => ({ logs: q.logs({ cursor: nextLogCursor, time: { from: '2026-08-01', to: '2026-08-02' } }) }))
+}
 
 const webOnly = cloudflare({
   accountId: 'account', apiToken: 'token', webAnalytics: { siteTag: 'site' },
@@ -47,37 +58,27 @@ const searchInsight = createInsight({ providers: [googleSearchConsole({
 
 async function verifyPublishedTypes() {
   const { traffic } = await cloudflareInsight.query((q) => ({
-    traffic: q.source.cloudflare.webAnalytics({
+    traffic: q.metrics({
       dimensions: ['path'], metrics: ['pageViews'],
       time: { from: '2026-08-01T00:00:00.000Z', to: '2026-08-02T00:00:00.000Z' },
       where: { country: { in: ['JP'] } },
     }),
   }))
   const pageViews: number | null = traffic.data.values.pageViews
-  const pointPageViews: number | null = traffic.data.points?.[0]?.values.pageViews ?? null
-  const path: DimensionValue | undefined = traffic.data.points?.[0]?.dimensions?.path
-  // @ts-expect-error only selected dimensions exist in point data
-  traffic.data.points?.[0]?.dimensions?.country
-  const sourceId: 'cloudflare.webAnalytics' = traffic.meta.source
-  void pageViews; void pointPageViews; void path; void sourceId
-  // @ts-expect-error only selected metrics exist in the result
-  traffic.data.values.visits
-  // @ts-expect-error an unconfigured Source is absent
-  cloudflareInsight.query((q) => ({ invalid: q.source.cloudflare.analyticsEngine({}) }))
+  void pageViews
+  // @ts-expect-error an unconfigured canonical Metric is absent
+  cloudflareInsight.query((q) => ({ invalid: q.metrics({ metrics: ['events'], time: { from: '', to: '' } }) }))
   // @ts-expect-error unsupported metric
-  cloudflareInsight.query((q) => ({ invalid: q.source.cloudflare.webAnalytics({ metrics: ['clicks'], time: { from: '', to: '' } }) }))
+  cloudflareInsight.query((q) => ({ invalid: q.metrics({ metrics: ['clicks'], time: { from: '', to: '' } }) }))
   // @ts-expect-error unsupported dimension
-  cloudflareInsight.query((q) => ({ invalid: q.source.cloudflare.webAnalytics({ dimensions: ['query'], metrics: ['visits'], time: { from: '', to: '' } }) }))
+  cloudflareInsight.query((q) => ({ invalid: q.metrics({ dimensions: ['query'], metrics: ['visits'], time: { from: '', to: '' } }) }))
 
   fullCloudflare.query((q) => ({
-    events: q.source.cloudflare.analyticsEngine({ metrics: ['events'], time: { from: '', to: '' } }),
-    traffic: q.source.cloudflare.webAnalytics({ metrics: ['visits'], time: { from: '', to: '' } }),
+    overview: q.metrics({ metrics: ['events', 'visits'], time: { from: '', to: '' } }),
   }))
-  const { search } = await searchInsight.query((q) => ({
-    search: q.source.googleSearchConsole.searchAnalytics({ metrics: ['clicks'], time: { from: '', to: '' } }),
+  await searchInsight.query((q) => ({
+    search: q.metrics({ metrics: ['clicks'], time: { from: '', to: '' } }),
   }))
-  const searchSource: 'google-search-console.searchAnalytics' = search.meta.source
-  void searchSource
 }
 void verifyPublishedTypes
 `,
@@ -147,9 +148,9 @@ const data = {
     values: { visits: 12 },
   },
   meta: {
+    contributions: [],
     quality: { sampled: true, sampleRate: 0.5 },
     queriedAt: '2026-08-28T00:00:00.000Z',
-    source: 'packed',
     temporal: { grain: 'day' },
   },
 } as const

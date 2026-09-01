@@ -1,19 +1,37 @@
 import { InsightError, ProviderError } from '../../core/errors.ts'
 import type { Event, EventDestination, ProviderDefinition } from '../../core/types.ts'
 import {
-    defineMetricSource,
+    defineLogAdapter,
+    type CanonicalLogFilter,
+    type LogAdapterOutput,
+    type LogRecord,
+    type LogSeverity,
+    type NormalizedLogQuery,
+} from '../../logs/index.ts'
+import {
+    defineMetricAdapter,
     type CanonicalWhere,
     type DimensionValue,
-    type MetricSourceOutput,
-    type MetricSourcePoint,
+    type MetricAdapterOutput,
+    type MetricAdapterPoint,
     type MetricValues,
 } from '../../metrics/index.ts'
+import {
+    defineTraceAdapter,
+    type CanonicalTraceFilter,
+    type NormalizedTraceQuery,
+    type TraceAdapterOutput,
+    type TraceRecord,
+    type TraceStatus,
+} from '../../traces/index.ts'
 import { fetchWithRetry } from '../shared/fetch-with-retry.ts'
 import { resolvedMetricQuery, type ResolvedMetricQuery } from '../shared/types.ts'
 
 const GRAPHQL_ENDPOINT = 'https://api.cloudflare.com/client/v4/graphql'
 const ANALYTICS_ENGINE_ENDPOINT = 'https://api.cloudflare.com/client/v4/accounts'
+const WORKERS_TELEMETRY_PATH = 'workers/observability/telemetry/query'
 const MAX_GRAPHQL_ROWS = 10_000
+const MAX_TELEMETRY_ROWS = 2_000
 const MAX_INDEX_BYTES = 96
 const MAX_BLOB_BYTES = 16 * 1024
 
@@ -75,8 +93,13 @@ interface CloudflareAnalyticsEngineOptions {
 }
 
 interface CloudflareAnalyticsEngineResource {
+    adapter?: ReturnType<typeof analyticsEngineAdapter>
     events?: EventDestination
-    source?: ReturnType<typeof analyticsEngineSource>
+}
+
+export interface CloudflareWorkersObservabilityOptions {
+    datasets?: readonly string[]
+    fetch?: Fetch
 }
 
 export interface CloudflareOptions {
@@ -86,23 +109,29 @@ export interface CloudflareOptions {
     webAnalytics?: Omit<CloudflareWebAnalyticsOptions, 'accountId' | 'apiToken' | 'siteTag'> & {
         siteTag?: string
     }
+    workersObservability?: true | CloudflareWorkersObservabilityOptions
 }
 
-type CloudflareSources<TOptions extends CloudflareOptions> = (TOptions extends {
+type CloudflareAdapters<TOptions extends CloudflareOptions> = (TOptions extends {
     webAnalytics: Exclude<CloudflareOptions['webAnalytics'], undefined>
 }
     ? { readonly webAnalytics: ReturnType<typeof cloudflareWebAnalytics> }
     : Record<never, never>) &
     (TOptions extends { analyticsEngine: { dataset: string } }
-        ? { readonly analyticsEngine: ReturnType<typeof analyticsEngineSource> }
+        ? { readonly analyticsEngine: ReturnType<typeof analyticsEngineAdapter> }
+        : Record<never, never>) &
+    (TOptions extends {
+        workersObservability: Exclude<CloudflareOptions['workersObservability'], undefined>
+    }
+        ? ReturnType<typeof workersObservabilityAdapters>
         : Record<never, never>)
 
 type CloudflareProvider<TOptions extends CloudflareOptions> = ProviderDefinition<
     'cloudflare',
-    CloudflareSources<TOptions>
+    CloudflareAdapters<TOptions>
 > & {
+    readonly adapters: CloudflareAdapters<TOptions>
     readonly id: 'cloudflare'
-    readonly sources: CloudflareSources<TOptions>
 }
 
 function cloudflareWebAnalytics(options: CloudflareWebAnalyticsOptions) {
@@ -110,7 +139,7 @@ function cloudflareWebAnalytics(options: CloudflareWebAnalyticsOptions) {
     const execute = async (
         query: ResolvedMetricQuery,
         signal?: AbortSignal,
-    ): Promise<MetricSourceOutput> => {
+    ): Promise<MetricAdapterOutput> => {
         if (!options.accountId || !options.apiToken) {
             throw new InsightError(
                 'CONFIGURATION_MISSING',
@@ -176,7 +205,7 @@ function cloudflareWebAnalytics(options: CloudflareWebAnalyticsOptions) {
         return webReport(query, rows, errors, nativeLimit)
     }
 
-    return defineMetricSource({
+    return defineMetricAdapter({
         dimensions: {
             browser: { operators: ['eq', 'ne', 'in', 'notIn'], type: 'string' },
             country: { operators: ['eq', 'ne', 'in', 'notIn'], type: 'string' },
@@ -214,7 +243,7 @@ function cloudflareAnalyticsEngine(
 
     const resource: CloudflareAnalyticsEngineResource = {}
     if (options.dataset !== undefined) {
-        resource.source = analyticsEngineSource({
+        resource.adapter = analyticsEngineAdapter({
             ...(options.accountId === undefined ? {} : { accountId: options.accountId }),
             ...(options.apiToken === undefined ? {} : { apiToken: options.apiToken }),
             dataset: options.dataset,
@@ -250,17 +279,551 @@ export function cloudflare<const TOptions extends CloudflareOptions>(
                   ...(options.apiToken === undefined ? {} : { apiToken: options.apiToken }),
                   ...options.analyticsEngine,
               })
+    const observability =
+        options.workersObservability === undefined
+            ? {}
+            : workersObservabilityAdapters({
+                  accountId: options.accountId ?? '',
+                  apiToken: options.apiToken ?? '',
+                  ...(options.workersObservability === true ? {} : options.workersObservability),
+              })
     const provider = {
         id: 'cloudflare',
-        sources: {
+        adapters: {
             ...webAnalytics,
-            ...(engine?.source === undefined ? {} : { analyticsEngine: engine.source }),
+            ...(engine?.adapter === undefined ? {} : { analyticsEngine: engine.adapter }),
+            ...observability,
         },
         ...(engine?.events === undefined ? {} : { events: engine.events }),
     } as const
-    // Runtime Source construction follows the same option predicates as CloudflareSources.
+    // Runtime adapter construction follows the same option predicates as CloudflareAdapters.
     // eslint-disable-next-line typescript/no-unsafe-type-assertion
     return provider as CloudflareProvider<TOptions>
+}
+
+interface WorkersObservabilityRuntimeOptions extends CloudflareWorkersObservabilityOptions {
+    accountId: string
+    apiToken: string
+}
+
+interface TelemetryFilter {
+    key: string
+    kind: 'filter'
+    operation: string
+    type: 'boolean' | 'number' | 'string'
+    value?: boolean | number | string
+}
+
+function workersObservabilityAdapters(options: WorkersObservabilityRuntimeOptions) {
+    return {
+        workersLogs: defineLogAdapter({
+            attributes: true,
+            execute: (query, { signal }) => workersLogs(options, query, signal),
+            filters: ['service', 'severity', 'spanId', 'traceId'],
+        }),
+        workersMetrics: defineMetricAdapter({
+            dimensions: { time: { operators: [], type: 'datetime' } },
+            execute: (query, { signal }) =>
+                workersMetrics(
+                    options,
+                    resolvedMetricQuery('cloudflare.workersMetrics', query, 'time'),
+                    signal,
+                ),
+            history: { grain: 'day' },
+            metrics: {
+                workerDurationP95: {
+                    aggregation: { kind: 'percentile', quantile: 0.95 },
+                    rollup: 'non-additive',
+                    unit: 'ms',
+                },
+                workerInvocations: {
+                    aggregation: { kind: 'count' },
+                    rollup: 'additive',
+                    unit: '{request}',
+                },
+            },
+        }),
+        workersTraces: defineTraceAdapter({
+            attributes: true,
+            execute: (query, { signal }) => workersTraces(options, query, signal),
+            filters: ['durationMs', 'name', 'service', 'status', 'traceId'],
+        }),
+    }
+}
+
+async function workersLogs(
+    options: WorkersObservabilityRuntimeOptions,
+    query: NormalizedLogQuery,
+    signal?: AbortSignal,
+): Promise<LogAdapterOutput> {
+    const limit = Math.min(query.limit ?? MAX_TELEMETRY_ROWS, MAX_TELEMETRY_ROWS)
+    const filters = [
+        telemetryFilter('$metadata.type', 'eq', 'cf-worker-log'),
+        ...compileLogFilters(query.where ?? []),
+    ]
+    const response = await telemetryQuery(
+        options,
+        telemetryBody('events', query.time, filters, {
+            limit,
+            ...(query.nativeCursor ? { offset: query.nativeCursor } : {}),
+        }),
+        signal,
+    )
+    const events = record(response.result.events)?.events
+    if (!Array.isArray(events)) {
+        throw new CloudflareApiError('Cloudflare Workers Logs returned malformed events', 502)
+    }
+    const logs = events.map(logRecord)
+    const last = logs.at(-1)
+    return {
+        logs,
+        ...(logs.length === limit && last ? { nativeCursor: last.id } : {}),
+        ...qualityOutput(response.payload, events.some(isTruncatedEvent)),
+    }
+}
+
+async function workersTraces(
+    options: WorkersObservabilityRuntimeOptions,
+    query: NormalizedTraceQuery,
+    signal?: AbortSignal,
+): Promise<TraceAdapterOutput> {
+    const limit = Math.min(query.limit ?? MAX_TELEMETRY_ROWS, MAX_TELEMETRY_ROWS)
+    const response = await telemetryQuery(
+        options,
+        telemetryBody('traces', query.time, compileTraceFilters(query.where ?? []), {
+            limit,
+            ...(query.nativeCursor ? { offset: query.nativeCursor } : {}),
+        }),
+        signal,
+    )
+    if (!Array.isArray(response.result.traces)) {
+        throw new CloudflareApiError('Cloudflare Workers Traces returned malformed traces', 502)
+    }
+    const traces = response.result.traces.map(traceRecord)
+    const last = traces.at(-1)
+    return {
+        ...(traces.length === limit && last ? { nativeCursor: last.traceId } : {}),
+        ...qualityOutput(response.payload),
+        traces,
+    }
+}
+
+async function workersMetrics(
+    options: WorkersObservabilityRuntimeOptions,
+    query: ResolvedMetricQuery,
+    signal?: AbortSignal,
+): Promise<MetricAdapterOutput> {
+    if (query.timezone !== 'UTC') {
+        throw new InsightError(
+            'UNSUPPORTED_OPERATION',
+            'Cloudflare Workers metrics support UTC buckets only',
+        )
+    }
+    if (query.dimensions.some((dimension) => dimension !== 'time')) {
+        throw new InsightError(
+            'UNSUPPORTED_OPERATION',
+            'Cloudflare Workers metrics support only the time dimension',
+        )
+    }
+    const calculations = query.metrics.map((metric) =>
+        metric === 'workerInvocations'
+            ? { alias: metric, operator: 'count' }
+            : {
+                  alias: metric,
+                  key: '$metadata.duration',
+                  keyType: 'number',
+                  operator: 'p95',
+              },
+    )
+    const granularity = telemetryGranularity(query)
+    const response = await telemetryQuery(
+        options,
+        {
+            ...telemetryBody(
+                'calculations',
+                query.range,
+                [telemetryFilter('$metadata.type', 'eq', 'cf-worker-event')],
+                {},
+            ),
+            chart: granularity !== undefined,
+            chartType: granularity === undefined ? 'aggregate' : 'timeseries_and_aggregate',
+            ...(granularity === undefined ? { ignoreSeries: true } : { granularity }),
+            parameters: {
+                calculations,
+                datasets: options.datasets ?? [],
+                filterCombination: 'and',
+                filters: [telemetryFilter('$metadata.type', 'eq', 'cf-worker-event')],
+            },
+        },
+        signal,
+    )
+    if (!Array.isArray(response.result.calculations)) {
+        throw new CloudflareApiError(
+            'Cloudflare Workers metrics returned malformed calculations',
+            502,
+        )
+    }
+    const values: Record<string, number | null> = Object.fromEntries(
+        query.metrics.map((metric) => [metric, null]),
+    )
+    const points = new Map<string, MetricAdapterPoint>()
+    let sampleInterval = 1
+    for (const value of response.result.calculations) {
+        const calculation = record(value)
+        const metric = text(calculation?.alias) || text(calculation?.calculation)
+        if (!query.metrics.includes(metric)) continue
+        const aggregates = Array.isArray(calculation?.aggregates) ? calculation.aggregates : []
+        const aggregate = record(aggregates[0])
+        values[metric] = number(aggregate?.value)
+        sampleInterval = Math.max(sampleInterval, number(aggregate?.sampleInterval) ?? 1)
+        const series = Array.isArray(calculation?.series) ? calculation.series : []
+        for (const entry of series) {
+            const item = record(entry)
+            if (typeof item?.time !== 'string' || !Array.isArray(item.data)) continue
+            const datum = record(item.data[0])
+            sampleInterval = Math.max(sampleInterval, number(datum?.sampleInterval) ?? 1)
+            const point = points.get(item.time)
+            points.set(item.time, {
+                ...(point ?? { time: item.time }),
+                values: { ...point?.values, [metric]: number(datum?.value) },
+            })
+        }
+    }
+    return {
+        meta: {
+            temporal: {
+                bucketTimezone: 'UTC',
+                ...(query.grain === 'auto' ? {} : { grain: query.grain }),
+                sourceTimezone: 'UTC',
+            },
+        },
+        ...(points.size > 0
+            ? {
+                  points: [...points.values()]
+                      .toSorted((left, right) => left.time!.localeCompare(right.time!))
+                      .slice(0, query.limit),
+              }
+            : {}),
+        ...qualityOutput(response.payload, false, sampleInterval),
+        values,
+    }
+}
+
+function telemetryBody(
+    view: 'calculations' | 'events' | 'traces',
+    time: { from: string; to: string },
+    filters: readonly TelemetryFilter[],
+    pagination: { limit?: number; offset?: string },
+): Record<string, unknown> {
+    return {
+        dry: true,
+        ...pagination,
+        ...(pagination.offset ? { offsetDirection: 'next' } : {}),
+        parameters: {
+            datasets: [],
+            filterCombination: 'and',
+            filters,
+        },
+        queryId: 'insight',
+        timeframe: {
+            from: new Date(time.from).valueOf(),
+            to: new Date(time.to).valueOf(),
+        },
+        view,
+    }
+}
+
+async function telemetryQuery(
+    options: WorkersObservabilityRuntimeOptions,
+    body: Record<string, unknown>,
+    signal?: AbortSignal,
+): Promise<{ payload: unknown; result: Record<string, unknown> }> {
+    if (!options.accountId || !options.apiToken) {
+        throw new InsightError(
+            'CONFIGURATION_MISSING',
+            'Cloudflare Workers Observability credentials are missing',
+        )
+    }
+    const fetcher = options.fetch ?? globalThis.fetch
+    const response = await fetchWithRetry(
+        fetcher,
+        `${ANALYTICS_ENGINE_ENDPOINT}/${encodeURIComponent(options.accountId)}/${WORKERS_TELEMETRY_PATH}`,
+        {
+            body: JSON.stringify({
+                ...body,
+                parameters: {
+                    ...record(body.parameters),
+                    datasets: options.datasets ?? [],
+                },
+            }),
+            headers: {
+                accept: 'application/json',
+                authorization: `Bearer ${options.apiToken}`,
+                'content-type': 'application/json',
+            },
+            method: 'POST',
+            ...(signal ? { signal } : {}),
+        },
+    )
+    const payload = await readJson(response, 'Cloudflare Workers Observability')
+    const result = record(record(payload)?.result)
+    if (!response.ok || !result) {
+        throw apiError(payload, response.status, 'Cloudflare Workers Observability query failed')
+    }
+    return { payload, result }
+}
+
+function compileLogFilters(filters: readonly CanonicalLogFilter[]): TelemetryFilter[] {
+    return filters.map((filter) =>
+        compileTelemetryFilter(
+            filter,
+            filter.field === 'severity'
+                ? '$metadata.level'
+                : filter.field.startsWith('attributes.')
+                  ? `$metadata.${filter.field.slice('attributes.'.length)}`
+                  : `$metadata.${filter.field}`,
+        ),
+    )
+}
+
+function compileTraceFilters(filters: readonly CanonicalTraceFilter[]): TelemetryFilter[] {
+    return filters.map((filter) => {
+        if (filter.field === 'status') return compileTraceStatus(filter)
+        const key =
+            filter.field === 'durationMs'
+                ? '$metadata.traceDuration'
+                : filter.field === 'name'
+                  ? '$metadata.spanName'
+                  : filter.field.startsWith('attributes.')
+                    ? `$metadata.${filter.field.slice('attributes.'.length)}`
+                    : `$metadata.${filter.field}`
+        return compileTelemetryFilter(filter, key)
+    })
+}
+
+function compileTraceStatus(filter: CanonicalTraceFilter): TelemetryFilter {
+    if (
+        (filter.operator !== 'eq' && filter.operator !== 'ne') ||
+        (filter.value !== 'ok' && filter.value !== 'error')
+    ) {
+        throw new InsightError(
+            'UNSUPPORTED_OPERATION',
+            'Cloudflare supports only eq/ne ok/error Trace status filters',
+        )
+    }
+    const exists =
+        (filter.operator === 'eq' && filter.value === 'error') ||
+        (filter.operator === 'ne' && filter.value === 'ok')
+    return {
+        key: '$metadata.error',
+        kind: 'filter',
+        operation: exists ? 'exists' : 'is_null',
+        type: 'string',
+    }
+}
+
+function compileTelemetryFilter(
+    filter: CanonicalLogFilter | CanonicalTraceFilter,
+    key: string,
+): TelemetryFilter {
+    const values = Array.isArray(filter.value) ? filter.value : [filter.value]
+    if (values.length === 0 || values.some((value) => value === null)) {
+        throw new InsightError(
+            'UNSUPPORTED_OPERATION',
+            `Cloudflare cannot represent ${filter.field} ${filter.operator}`,
+        )
+    }
+    const type = typeof values[0]
+    if (
+        !['boolean', 'number', 'string'].includes(type) ||
+        values.some((value) => typeof value !== type)
+    ) {
+        throw new InsightError(
+            'UNSUPPORTED_OPERATION',
+            `Cloudflare requires one scalar type for ${filter.field}`,
+        )
+    }
+    const operation =
+        filter.operator === 'ne'
+            ? 'neq'
+            : filter.operator === 'notIn'
+              ? 'not_in'
+              : filter.operator === 'in'
+                ? 'in'
+                : filter.operator
+    return telemetryFilter(key, operation, values.length === 1 ? values[0]! : values.join(','))
+}
+
+function telemetryFilter(
+    key: string,
+    operation: string,
+    value: boolean | number | string,
+): TelemetryFilter {
+    const type = typeof value
+    if (type !== 'boolean' && type !== 'number' && type !== 'string') {
+        throw new TypeError('Cloudflare telemetry filters require scalar values')
+    }
+    return { key, kind: 'filter', operation, type, value }
+}
+
+function logRecord(value: unknown): LogRecord {
+    const event = record(value)
+    const metadata = record(event?.$metadata)
+    if (
+        !event ||
+        !metadata ||
+        typeof metadata.id !== 'string' ||
+        number(event.timestamp) === null
+    ) {
+        throw new CloudflareApiError('Cloudflare Workers Logs returned a malformed event', 502)
+    }
+    const attributes = Object.fromEntries(
+        Object.entries(metadata).filter(
+            ([key]) => !['id', 'level', 'message', 'service', 'spanId', 'traceId'].includes(key),
+        ),
+    )
+    if (typeof event.dataset === 'string') attributes.dataset = event.dataset
+    const workers = record(event.$workers)
+    if (workers) attributes.workers = workers
+    return {
+        ...(Object.keys(attributes).length > 0 ? { attributes } : {}),
+        ...(event.source !== undefined
+            ? { body: event.source }
+            : metadata.message !== undefined
+              ? { body: metadata.message }
+              : metadata.error !== undefined
+                ? { body: metadata.error }
+                : {}),
+        id: metadata.id,
+        ...(typeof metadata.service === 'string' ? { service: metadata.service } : {}),
+        ...logSeverity(metadata.level),
+        ...(typeof metadata.spanId === 'string' ? { spanId: metadata.spanId } : {}),
+        timestamp: new Date(number(event.timestamp)!).toISOString(),
+        ...(typeof metadata.traceId === 'string' ? { traceId: metadata.traceId } : {}),
+    }
+}
+
+function logSeverity(value: unknown): { severity?: LogSeverity; severityText?: string } {
+    if (typeof value !== 'string') return {}
+    const normalized = value.toLowerCase()
+    const severity =
+        normalized === 'log'
+            ? 'info'
+            : normalized === 'warning'
+              ? 'warn'
+              : normalized === 'critical'
+                ? 'fatal'
+                : normalized
+    if (severity === 'trace') return { severity: 'trace', severityText: value }
+    if (severity === 'debug') return { severity: 'debug', severityText: value }
+    if (severity === 'info') return { severity: 'info', severityText: value }
+    if (severity === 'warn') return { severity: 'warn', severityText: value }
+    if (severity === 'error') return { severity: 'error', severityText: value }
+    if (severity === 'fatal') return { severity: 'fatal', severityText: value }
+    return { severityText: value }
+}
+
+function traceRecord(value: unknown): TraceRecord {
+    const trace = record(value)
+    const start = number(trace?.traceStartMs)
+    const end = number(trace?.traceEndMs)
+    const duration = number(trace?.traceDurationMs)
+    const services = Array.isArray(trace?.service)
+        ? trace.service.filter((service): service is string => typeof service === 'string')
+        : undefined
+    if (
+        !trace ||
+        typeof trace.traceId !== 'string' ||
+        start === null ||
+        end === null ||
+        duration === null ||
+        !services ||
+        number(trace.spans) === null
+    ) {
+        throw new CloudflareApiError('Cloudflare Workers Traces returned a malformed trace', 502)
+    }
+    const errors = Array.isArray(trace.errors)
+        ? trace.errors.filter((error): error is string => typeof error === 'string')
+        : []
+    const status: TraceStatus = errors.length > 0 ? 'error' : 'ok'
+    return {
+        attributes: {
+            ...(errors.length > 0 ? { errors } : {}),
+            ...(typeof trace.rootSpanName === 'string' ? { rootSpanName: trace.rootSpanName } : {}),
+            services,
+        },
+        durationMs: duration,
+        endTime: new Date(end).toISOString(),
+        ...(typeof trace.rootTransactionName === 'string'
+            ? { name: trace.rootTransactionName }
+            : typeof trace.rootSpanName === 'string'
+              ? { name: trace.rootSpanName }
+              : {}),
+        ...(services.length === 1 ? { service: services[0] } : {}),
+        spanCount: number(trace.spans)!,
+        startTime: new Date(start).toISOString(),
+        status,
+        traceId: trace.traceId,
+    }
+}
+
+function telemetryGranularity(query: ResolvedMetricQuery): number | undefined {
+    if (query.grain === 'auto') return undefined
+    if (query.grain === 'month' || query.grain === 'year') {
+        throw new InsightError(
+            'UNSUPPORTED_OPERATION',
+            `Cloudflare Workers metrics do not support ${query.grain} buckets`,
+        )
+    }
+    const duration = new Date(query.range.to).valueOf() - new Date(query.range.from).valueOf()
+    const interval = {
+        minute: 60_000,
+        hour: 3_600_000,
+        day: 86_400_000,
+        week: 604_800_000,
+    }[query.grain]
+    return Math.max(1, Math.ceil(duration / interval))
+}
+
+function qualityOutput(
+    payload: unknown,
+    truncated = false,
+    resultSampleInterval = 1,
+): Pick<LogAdapterOutput, 'quality'> {
+    const response = record(payload)
+    const result = record(response?.result)
+    const statistics = record(result?.statistics)
+    const run = record(result?.run)
+    const interval = Math.max(number(statistics?.abr_level) ?? 1, resultSampleInterval)
+    const errors = graphqlErrors(payload)
+    const partial = truncated || errors.length > 0 || (run?.status && run.status !== 'COMPLETED')
+    const warnings = [
+        ...errors.map((error) => ({
+            code: String(error.extensions?.code ?? error.code ?? 'cloudflare-telemetry-error'),
+            message: error.message ?? 'Cloudflare returned a telemetry error',
+        })),
+        ...(truncated
+            ? [
+                  {
+                      code: 'cloudflare-log-truncated',
+                      message: 'Cloudflare truncated at least one Workers log event',
+                  },
+              ]
+            : []),
+    ]
+    if (interval <= 1 && !partial && warnings.length === 0) return {}
+    return {
+        quality: {
+            ...(interval > 1 ? { approximate: true, sampleRate: 1 / interval, sampled: true } : {}),
+            ...(partial ? { partial: true } : {}),
+            ...(warnings.length > 0 ? { warnings } : {}),
+        },
+    }
+}
+
+function isTruncatedEvent(value: unknown): boolean {
+    const event = record(value)
+    return record(event?.$workers)?.truncated === true
 }
 
 function analyticsEngineSink(binding: CloudflareAnalyticsEngineBinding): EventDestination {
@@ -303,7 +866,7 @@ interface AnalyticsEngineReadOptions {
     now?: () => Date
 }
 
-function analyticsEngineSource(options: AnalyticsEngineReadOptions) {
+function analyticsEngineAdapter(options: AnalyticsEngineReadOptions) {
     if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(options.dataset)) {
         throw new TypeError('Analytics Engine dataset must be a SQL identifier')
     }
@@ -335,7 +898,7 @@ function analyticsEngineSource(options: AnalyticsEngineReadOptions) {
     const execute = async (
         query: ResolvedMetricQuery,
         signal?: AbortSignal,
-    ): Promise<MetricSourceOutput> => {
+    ): Promise<MetricAdapterOutput> => {
         if (!options.accountId || !options.apiToken) {
             throw new InsightError(
                 'CONFIGURATION_MISSING',
@@ -367,7 +930,7 @@ function analyticsEngineSource(options: AnalyticsEngineReadOptions) {
         return analyticsEngineReport(query, data)
     }
 
-    return defineMetricSource({
+    return defineMetricAdapter({
         dimensions: {
             name: { operators: ['eq'], type: 'string' },
             time: { operators: [], type: 'datetime' },
@@ -406,11 +969,11 @@ function analyticsEngineSql(dataset: string, query: ResolvedMetricQuery): string
     return `SELECT toStartOfInterval(timestamp, INTERVAL '1' ${unit}) AS time, SUM(_sample_interval) AS events, MAX(_sample_interval) AS sampleInterval FROM ${dataset} WHERE ${where} GROUP BY time ORDER BY time ASC LIMIT ${limit} FORMAT JSON`
 }
 
-function analyticsEngineReport(query: ResolvedMetricQuery, data: unknown[]): MetricSourceOutput {
+function analyticsEngineReport(query: ResolvedMetricQuery, data: unknown[]): MetricAdapterOutput {
     const rows = data.map((item) => record(item) ?? {})
     let maxInterval = 1
     let total = 0
-    const points: MetricSourcePoint[] = []
+    const points: MetricAdapterPoint[] = []
     const dimension = query.dimensions[0]
     for (const row of rows) {
         maxInterval = Math.max(maxInterval, number(row.sampleInterval) ?? 1)
@@ -551,7 +1114,7 @@ function webReport(
     input: WebAnalyticsRow[],
     errors: GraphQLErrorShape[],
     nativeLimit: number,
-): MetricSourceOutput {
+): MetricAdapterOutput {
     const rows = rollupWebRows(query, input)
     const limited = query.limit === undefined ? rows : rows.slice(0, query.limit)
     let maxInterval = 1
@@ -672,8 +1235,8 @@ function sumWebMetrics(metrics: readonly string[], rows: WebAnalyticsRow[]): Met
 
 function reportMeta(
     query: ResolvedMetricQuery,
-    quality: NonNullable<MetricSourceOutput['quality']>,
-): Pick<MetricSourceOutput, 'meta' | 'quality'> {
+    quality: NonNullable<MetricAdapterOutput['quality']>,
+): Pick<MetricAdapterOutput, 'meta' | 'quality'> {
     return {
         quality,
         meta: {

@@ -2,69 +2,82 @@
 
 ## Dependency boundaries
 
-- Core imports no Provider implementation, Metric helper, History Engine, OpenTelemetry package,
-  Integration, UI framework, DOM API, or renderer.
-- Providers and Metric helpers depend on Core; Provider implementations import no Integration,
-  History, or UI layer.
-- History depends on Core and Metric contracts. UI Core does the same independently.
+- Core imports no Provider implementation, canonical capability helper, History Engine,
+  OpenTelemetry package, Integration, UI framework, DOM API, or renderer.
+- Providers and capability helpers depend on Core; Provider implementations import no
+  Integration, History, or UI layer.
+- History depends on Core and capability contracts. UI Core depends on Core and Metrics
+  independently.
 - `@opentelemetry/api` is an optional peer reachable only from `insight-ts/opentelemetry`.
 - Integrations depend only on the layers they connect; no mandatory Integration interface exists.
 - UI renderer code and CSS are reachable only from `insight-ts/vue/ui`.
 - Nitro is not H3. Nuxt composes Nitro rather than duplicating storage or task wiring.
 
-## Source and query behavior
+## Scope and query behavior
 
-- Provider IDs use strict ASCII kebab-case and Source keys use lower-camel-case ASCII identifiers.
-- Queries select Sources through `q.source.<providerAccessor>.<sourceKey>()`. The accessor registry
-  is built once without Proxy; `${providerId}.${sourceKey}` remains the canonical internal ID.
-- `normalize()` is pure, deterministic, and I/O-free; `key()` is the exact Source-owned dedupe key.
-- Core does not inspect query objects, filter ASTs, dimensions, grains, cursors, or result data.
+- Scopes are logical analysis boundaries. Provider IDs and native resource names never become
+  Scope names implicitly.
+- Queries select canonical capabilities with `q.metrics()`, `q.logs()`, `q.traces()`, or another
+  registered contract. Provider/adapter accessors are not public.
+- Capability normalization is pure, deterministic, and I/O-free; adapter plans have exact dedupe
+  keys.
 - `insight.query()` is lazy: only descriptors returned by the selection callback execute.
-- Equivalent normalized queries for one Source execute once; Providers receive compatible request
-  groups and fallback execution is bounded.
-- `AbortSignal` belongs to query execution options and reaches Provider and Source execution.
-- Core constructs every `QueryResult` envelope and validates only shared `QueryQuality`.
-- Provider validation happens before network I/O. Provider metadata remains Source-specific.
+- Equivalent normalized plans execute once; Providers receive compatible request groups and
+  fallback execution is bounded.
+- `AbortSignal` belongs to query execution options and reaches Provider and adapter execution.
+- Core constructs every `QueryResult` envelope and validates shared `QueryQuality`.
+- Provider validation happens before network I/O. Native metadata remains adapter-private unless
+  mapped to a canonical contract.
 - External I/O scales with Provider request groups or History range slices, never result rows.
+- `meta.contributions` preserves merged Quality without exposing adapter IDs. Pagination cursors
+  are opaque, serializable, bound to one logical result, and do not advance sibling results.
 
 ## Metrics and filters
 
-- Metric semantics are optional helpers, not Core semantics.
+- Metrics are an optional canonical capability, not Core semantics.
+- A canonical Metric name has exactly one owner in a Scope.
 - Metric data is row-major with shared point time and dimensions; Provider output is normalized
   once at the Metric boundary.
 - Metric values are `number | null`; semantic units and aggregation never encode presentation.
-- Aggregations are structured. Ratios name supporting metrics; unsafe percentile and other
+- Aggregations are structured. Ratios name supporting Metrics; unsafe percentile and other
   non-additive rollups are rejected.
-- Histogram/distribution capability does not exist until a real Provider requires it.
-- `where` is derived from a Source's dimension schema. Scalar values mean equality; fields and
-  operators in one object are implicit AND; `AND`, `OR`, and `NOT` are explicit groups.
-- Only field-supported operators and value types appear in TypeScript. Canonical normalization
-  makes equivalent shorthand/operator forms share one key.
+- Selected dimensions and filters must be supported by every adapter contributing selected
+  Metrics; incompatibility fails before I/O.
+- `where` is typed from configured canonical dimension schemas. Equivalent shorthand/operator
+  forms normalize to one key.
 
-## Observability and events
+## Logs, traces, and events
 
-- OpenTelemetry is the observability interoperability standard, not the universal Source model.
+- Logs and Traces use canonical common fields and stable IDs; arbitrary attributes preserve data
+  that has no portable semantic.
+- OpenTelemetry guides observability interoperability but is not a universal Core data model.
+- Finite Log and Trace results are deterministically ordered and use per-result pagination.
 - Hosts own OTel SDKs, exporters, Collectors, sampling, and baggage.
 - Instrumentation attributes use `insight.*` and never contain raw queries, filters, event
   properties, credentials, or PII.
-- Active trace/span IDs may be linked to tracked events; baggage is never copied automatically.
 - Browser events are same-origin, bounded, schema-validated, and best effort. IDs, timestamps, and
   origin are server-owned.
 
 ## History
 
-- History is an optional Source-specific strategy; the implemented strategy is Metric-only.
-- History fetches through normal multi-query execution.
-- The Engine owns coverage, gaps, composition, safe rollup, reductions, Fidelity, segment IDs, and
-  idempotency. Repositories only implement `coverage`, `read`, and `write`.
+- History is one optional workflow across canonical capabilities; capability-specific strategy
+  types are not public.
+- Query and History use the same absolute half-open `{ from, to }` range.
+- The Engine owns coverage, gaps, complete page draining, composition, reductions, Fidelity,
+  materialization IDs, bounded orchestration, and lifecycle.
+- Capability contracts own data-specific range clipping, identity, merge, and reduction.
+- Event-like Repository reads are bounded. Repositories do not interpret or silently reduce data
+  and expose explicit deletion/replacement operations.
+- Complete empty ranges, policy-reduced data, and missing or provisional coverage remain distinct
+  through range-scoped Fidelity.
 - Provider Quality and range-scoped History Fidelity remain distinct.
 - Nitro Tasks may invoke only `insight.history.sync()` and are explicitly enabled.
 
 ## UI and Nuxt
 
-- Public UI renders Metric Source results and never performs Provider I/O, auth, caching, or History.
-- Every data-bearing Vue prop is named `data`; line/area render all selected metrics in Source order.
+- Public UI renders Metric results and never performs Provider I/O, auth, caching, or History.
+- Every data-bearing Vue prop is named `data`; line/area render all selected Metrics in query order.
 - Presentation formatters own percent, currency, and compact notation.
-- Logs, traces, funnels, and billing renderers remain application-local.
+- Logs and Traces renderers remain application-local.
 - Nuxt does not register Vue UI, scan UI source, control Vapor, or serialize secrets.
 - Vue VDOM and Vapor compile the same SFC source; no Vapor-specific public entry exists.
