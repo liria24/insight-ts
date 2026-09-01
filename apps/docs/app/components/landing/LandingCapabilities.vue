@@ -1,6 +1,6 @@
 <script setup lang="ts">
 const inferredTypes = [
-    { label: 'source', value: "'cloudflare.webAnalytics'" },
+    { label: 'capability', value: "'metrics'" },
     { label: 'query', value: "MetricQuery<'pageViews' | 'visits'>" },
     { label: 'metrics', value: "'pageViews' | 'visits'" },
     { label: 'result', value: "QueryResult<MetricData<'pageViews' | 'visits'>>" },
@@ -9,13 +9,13 @@ const inferredTypes = [
 const principles = [
     {
         title: 'Provider-aware',
-        description: 'Each Source keeps provider limits, sampling, freshness, and quality visible.',
+        description: 'Each contribution keeps sampling, freshness, and quality visible.',
         icon: 'mingcute:layers-line',
     },
     {
         title: 'Typed end to end',
         description:
-            'Source, query, metric, dimension, and selected result keys stay literal through one execution.',
+            'Configured canonical metrics and dimensions stay typed through one execution.',
         icon: 'mingcute:code-line',
     },
     {
@@ -45,8 +45,8 @@ const principles = [
                         in the typed query instead of hiding them behind a generic dashboard API.
                     </p>
                     <p class="text-muted mt-4 leading-7">
-                        Insight.ts derives each Source query and result from the configured Provider
-                        while leaving unrelated data in its own shape.
+                        Insight.ts derives each canonical query from all configured adapters while
+                        keeping Provider routing internal.
                     </p>
                 </div>
 
@@ -60,7 +60,7 @@ const principles = [
                     <pre
                         class="m-0 overflow-x-auto bg-default/70 p-5 font-mono text-sm leading-7 sm:p-7"
                     ><code><span class="text-dimmed">const</span> dashboard = <span class="text-dimmed">await</span> insight.query((q) => ({
-    traffic: q.source(<span class="text-highlighted">'cloudflare.webAnalytics'</span>, {
+    traffic: q.metrics({
         metrics: [<span class="text-highlighted">'pageViews'</span>, <span class="text-highlighted">'visits'</span>],
         time: { ...range, grain: <span class="text-highlighted">'day'</span> },
     }),

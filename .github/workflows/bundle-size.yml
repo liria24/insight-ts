@@ -1,0 +1,78 @@
+name: Consumer bundle size
+
+on:
+    pull_request:
+
+permissions:
+    contents: read
+
+jobs:
+    compare:
+        runs-on: ubuntu-latest
+        permissions:
+            contents: read
+        steps:
+            - name: Checkout main baseline
+              uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+              with:
+                  path: base
+                  persist-credentials: false
+                  ref: ${{ github.event.pull_request.base.sha }}
+            - name: Checkout pull request
+              uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+              with:
+                  path: head
+                  persist-credentials: false
+                  ref: ${{ github.event.pull_request.head.sha }}
+                  repository: ${{ github.event.pull_request.head.repo.full_name }}
+            - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+              with:
+                  node-version: 24
+            - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
+              with:
+                  bun-version: 1.4.0
+            - run: bun ci
+              working-directory: base
+            - run: bun --filter insight-ts build
+              working-directory: base
+            - run: bun ci
+              working-directory: head
+            - run: bun --filter insight-ts build
+              working-directory: head
+            - name: Measure main
+              run: bun packages/insight-ts/scripts/measure-bundles.ts --package-root
+                  ../base/packages/insight-ts --output bundle-base.json
+              working-directory: head
+            - name: Measure pull request
+              run: bun packages/insight-ts/scripts/measure-bundles.ts --output
+                  bundle-head.json
+              working-directory: head
+            - name: Compare
+              run: bun packages/insight-ts/scripts/measure-bundles.ts --compare
+                  bundle-base.json bundle-head.json --output bundle-comment.md
+              working-directory: head
+            - name: Add job summary
+              run: cat bundle-comment.md >> "$GITHUB_STEP_SUMMARY"
+              working-directory: head
+            - name: Save comment
+              uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+              with:
+                  name: bundle-size-comment
+                  path: head/bundle-comment.md
+
+    comment:
+        if: github.event.pull_request.head.repo.full_name == github.repository
+        needs: compare
+        runs-on: ubuntu-latest
+        permissions:
+            contents: read
+            pull-requests: write
+        steps:
+            - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+              with:
+                  name: bundle-size-comment
+            - name: Update pull request comment
+              uses: marocchino/sticky-pull-request-comment@5770ad5eb8f42dd2c4f34da00c94c5381e49af88 # v3.0.5
+              with:
+                  header: consumer-bundle-size
+                  path: bundle-comment.md

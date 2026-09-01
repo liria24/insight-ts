@@ -16,13 +16,14 @@ const props = withDefaults(defineProps<InsightBarChartProps>(), {
     locale: 'en-US',
 })
 
-const metric = computed(() => Object.keys(props.data.data)[0] ?? '')
+const metric = computed(() => Object.keys(props.data.data.values)[0] ?? '')
 const rows = computed(() =>
-    (props.data.data[metric.value]?.points ?? []).flatMap((point) => {
+    (props.data.data.points ?? []).flatMap((point) => {
         const label = point.dimensions?.[props.dimension]
-        return label === undefined || point.value === null
+        const value = point.values[metric.value]
+        return label === undefined || value === null || value === undefined
             ? []
-            : [{ label: String(label), value: point.value }]
+            : [{ label: String(label), value }]
     }),
 )
 const maximum = computed(() => Math.max(0, ...rows.value.map(({ value }) => value)))

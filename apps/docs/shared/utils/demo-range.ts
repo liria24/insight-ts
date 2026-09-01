@@ -1,5 +1,7 @@
 import type { QueryResult } from 'insight-ts'
+import type { LogData } from 'insight-ts/logs'
 import type { Grain, MetricData, MetricMeta, TimeRange } from 'insight-ts/metrics'
+import type { TraceData } from 'insight-ts/traces'
 
 export const demoRangeOptions = [
     { label: 'Last 24 Hours', value: '24h' },
@@ -31,9 +33,9 @@ export interface DemoReportResponse {
         trafficSummary: DemoMetricResult<'pageViews' | 'visits'>
     }
     billing: QueryResult<DemoBillingData>
-    execution: { queriedAt: string; sources: readonly string[] }
+    execution: { capabilities: readonly string[]; queriedAt: string }
     funnel: QueryResult<DemoFunnelData>
-    logs: QueryResult<DemoLogsData, DemoLogsMeta>
+    logs: QueryResult<LogData>
     observability: {
         series: DemoMetricResult<'requestRate' | 'errorRate' | 'latencyP95'>
         summary: DemoMetricResult<'requestRate' | 'errorRate' | 'latencyP95'>
@@ -44,7 +46,7 @@ export interface DemoReportResponse {
         series: DemoMetricResult<'signups' | 'activeTeams'>
         summary: DemoMetricResult<'signups' | 'activeTeams'>
     }
-    trace: QueryResult<DemoTraceData>
+    trace: QueryResult<TraceData>
 }
 
 export type DemoMetricResult<
@@ -54,20 +56,6 @@ export type DemoMetricResult<
 
 export interface DemoFunnelData {
     steps: readonly { converted: number; name: string; rate: number }[]
-}
-
-export interface DemoLogsData {
-    entries: readonly { level: 'error' | 'info' | 'warn'; message: string; timestamp: string }[]
-}
-
-export interface DemoLogsMeta {
-    nextCursor?: string
-}
-
-export interface DemoTraceData {
-    edges: readonly { from: string; to: string }[]
-    spans: readonly { durationMs: number; id: string; name: string; parentId?: string }[]
-    traceId: string
 }
 
 export interface DemoBillingData {

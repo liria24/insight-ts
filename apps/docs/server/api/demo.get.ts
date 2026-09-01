@@ -1,5 +1,5 @@
 import { InsightError, ProviderError } from 'insight-ts'
-import { cloudflareWebAnalytics } from 'insight-ts/cloudflare'
+import { cloudflare } from 'insight-ts/cloudflare'
 
 export default defineCachedEventHandler(
     async (event) => {
@@ -18,12 +18,11 @@ export default defineCachedEventHandler(
         if (config.accountId && config.apiToken && config.siteTag) {
             try {
                 return await executeDemoQuery(
-                    cloudflareWebAnalytics({
+                    cloudflare({
                         accountId: config.accountId,
                         apiToken: config.apiToken,
-                        host: config.host,
-                        siteTag: config.siteTag,
-                    }),
+                        webAnalytics: { host: config.host, siteTag: config.siteTag },
+                    }).adapters.webAnalytics,
                     query,
                     now,
                 )

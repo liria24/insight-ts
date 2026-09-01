@@ -41,6 +41,10 @@
             "types": "./dist/history.d.ts",
             "import": "./dist/history.js"
         },
+        "./logs": {
+            "types": "./dist/logs.d.ts",
+            "import": "./dist/logs.js"
+        },
         "./metrics": {
             "types": "./dist/metrics.d.ts",
             "import": "./dist/metrics.js"
@@ -57,9 +61,9 @@
             "types": "./dist/opentelemetry.d.ts",
             "import": "./dist/opentelemetry.js"
         },
-        "./provider": {
-            "types": "./dist/provider.d.ts",
-            "import": "./dist/provider.js"
+        "./traces": {
+            "types": "./dist/traces.d.ts",
+            "import": "./dist/traces.js"
         },
         "./ui-core": {
             "types": "./dist/ui-core.d.ts",
@@ -80,7 +84,10 @@
         "access": "public"
     },
     "scripts": {
+        "bench": "vitest bench --run",
+        "bench:json": "vitest bench --run --outputJson benchmark-results.json",
         "build": "tsdown",
+        "bundle:size": "bun run build && bun scripts/measure-bundles.ts",
         "prepack": "bun run build",
         "test": "vitest run",
         "typecheck": "vue-tsc --noEmit"
@@ -91,15 +98,17 @@
     },
     "devDependencies": {
         "@arethetypeswrong/cli": "^0.18.5",
+        "@opentelemetry/api": "^1.9.1",
         "@tsdown/css": "^0.22.14",
         "@types/bun": "^1.4.0",
         "@vue/compiler-sfc": "3.5.42",
-        "happy-dom": "^20.11.15",
+        "happy-dom": "^20.12.0",
         "publint": "^0.3.24",
         "tsdown": "^0.22.14",
         "typescript": "6.0.3",
         "unplugin-vue": "^7.2.0",
         "unstorage": "^1.17.5",
+        "vite": "^8.2.2",
         "vitest": "^4.1.11",
         "vue-compiler-36": "npm:@vue/compiler-sfc@3.6.0-rc.6",
         "vue-tsc": "^3.3.11"

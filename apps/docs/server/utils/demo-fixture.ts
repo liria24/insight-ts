@@ -1,12 +1,21 @@
-import { createInsight } from 'insight-ts'
 import {
-    defineMetricSource,
+    createInsight,
+    defineCapabilityAdapter,
+    defineProvider,
+    normalizeTimeRange,
+    type CapabilityAdapterDefinition,
+    type CapabilityContract,
+    type CapabilitySchema,
+} from 'insight-ts'
+import { defineLogAdapter } from 'insight-ts/logs'
+import {
+    defineMetricAdapter,
     type DimensionValue,
-    type MetricSourceDefinition,
-    type MetricSourceOutput,
+    type MetricAdapterDefinition,
+    type MetricAdapterOutput,
     type NormalizedMetricQuery,
 } from 'insight-ts/metrics'
-import { defineProvider, defineSource } from 'insight-ts/provider'
+import { defineTraceAdapter } from 'insight-ts/traces'
 
 const trafficValues = [
     { pageViews: 1058, visits: 692 },
@@ -19,7 +28,7 @@ const trafficValues = [
 ] as const
 
 export const createDemoTrafficSource = () =>
-    defineMetricSource({
+    defineMetricAdapter({
         dimensions: {
             country: { operators: ['eq', 'in'], type: 'string' },
             device: { operators: ['eq', 'in'], type: 'string' },
@@ -39,7 +48,7 @@ export const createDemoTrafficSource = () =>
         },
     })
 
-const searchSource = defineMetricSource({
+const searchSource = defineMetricAdapter({
     dimensions: {
         page: { operators: ['eq', 'contains'], type: 'string' },
         query: { operators: ['eq', 'contains'], type: 'string' },
@@ -73,7 +82,7 @@ const searchSource = defineMetricSource({
     },
 })
 
-const productSource = defineMetricSource({
+const productSource = defineMetricAdapter({
     dimensions: { plan: { operators: ['eq', 'in'], type: 'string' } },
     execute: (query) =>
         metricFixture(
@@ -92,7 +101,7 @@ const productSource = defineMetricSource({
     },
 })
 
-const observabilitySource = defineMetricSource({
+const observabilitySource = defineMetricAdapter({
     execute: (query) =>
         metricFixture(query, [
             { errorRate: 0.008, latencyP95: 182, requestRate: 124 },
@@ -114,93 +123,111 @@ const observabilitySource = defineMetricSource({
     },
 })
 
-const funnelSource = defineSource({
+const funnelSource = defineDemoAdapter(
+    'funnel',
+    (input) => timeQuery(input),
+    async () => ({
+        steps: [
+            { converted: 10_000, name: 'Visited', rate: 1 },
+            { converted: 2_840, name: 'Signed up', rate: 0.284 },
+            { converted: 1_036, name: 'Activated', rate: 0.104 },
+            { converted: 386, name: 'Upgraded', rate: 0.039 },
+        ],
+    }),
+)
+
+const logsSource = defineLogAdapter({
+    execute: async (query) => ({
+        logs: [
+            {
+                body: 'Deployment completed',
+                id: 'deployment-completed',
+                severity: 'info' as const,
+                timestamp: '2026-08-29T02:16:00.000Z',
+            },
+            {
+                body: 'Queue latency exceeded 200ms',
+                id: 'queue-latency',
+                severity: 'warn' as const,
+                timestamp: '2026-08-29T02:13:00.000Z',
+            },
+            {
+                body: 'Checkout request timed out',
+                id: 'checkout-timeout',
+                severity: 'error' as const,
+                timestamp: '2026-08-29T02:09:00.000Z',
+            },
+        ].slice(0, query.limit),
+        nativeCursor: 'demo-page-2',
+    }),
+})
+
+const traceId = '4bf92f3577b34da6a3ce929d0e0e4736'
+const traceSource = defineTraceAdapter({
     execute: async () => ({
-        data: {
-            steps: [
-                { converted: 10_000, name: 'Visited', rate: 1 },
-                { converted: 2_840, name: 'Signed up', rate: 0.284 },
-                { converted: 1_036, name: 'Activated', rate: 0.104 },
-                { converted: 386, name: 'Upgraded', rate: 0.039 },
-            ],
-        },
+        traces: [
+            {
+                name: 'GET /checkout',
+                rootSpanId: 'root',
+                spans: [
+                    {
+                        durationMs: 243,
+                        id: 'root',
+                        name: 'GET /checkout',
+                        startTime: '2026-08-29T02:09:00.000Z',
+                        traceId,
+                    },
+                    {
+                        durationMs: 196,
+                        id: 'api',
+                        name: 'checkout.create',
+                        parentSpanId: 'root',
+                        startTime: '2026-08-29T02:09:00.010Z',
+                        traceId,
+                    },
+                    {
+                        durationMs: 121,
+                        id: 'db',
+                        name: 'postgres INSERT',
+                        parentSpanId: 'api',
+                        startTime: '2026-08-29T02:09:00.020Z',
+                        traceId,
+                    },
+                    {
+                        durationMs: 18,
+                        id: 'cache',
+                        name: 'redis GET',
+                        parentSpanId: 'api',
+                        startTime: '2026-08-29T02:09:00.030Z',
+                        traceId,
+                    },
+                ],
+                startTime: '2026-08-29T02:09:00.000Z',
+                traceId,
+            },
+        ],
     }),
-    key: ({ from, to }) => `${from}:${to}`,
-    normalize: (query: { time: DemoReportQuery['range'] }) => query.time,
+    filters: ['traceId'],
 })
 
-const logsSource = defineSource({
-    execute: async (query: { cursor: string; limit: number }) => ({
-        data: {
-            entries: [
-                {
-                    level: 'info' as const,
-                    message: 'Deployment completed',
-                    timestamp: '2026-08-29T02:16:00.000Z',
-                },
-                {
-                    level: 'warn' as const,
-                    message: 'Queue latency exceeded 200ms',
-                    timestamp: '2026-08-29T02:13:00.000Z',
-                },
-                {
-                    level: 'error' as const,
-                    message: 'Checkout request timed out',
-                    timestamp: '2026-08-29T02:09:00.000Z',
-                },
-            ].slice(0, query.limit),
-        },
-        meta: { nextCursor: 'demo-page-2' },
+const billingSource = defineDemoAdapter(
+    'billing',
+    (input) => timeQuery(input),
+    async () => ({
+        currency: 'USD' as const,
+        invoices: [
+            { amount: 8900, customer: 'Acme', status: 'paid' as const },
+            { amount: 4200, customer: 'Globex', status: 'open' as const },
+            { amount: 3100, customer: 'Initech', status: 'paid' as const },
+        ],
+        outstanding: 4200,
+        revenue: 16_200,
     }),
-    key: ({ cursor, limit }) => `${cursor}:${limit}`,
-    normalize: (query: { cursor?: string; limit?: number }) => ({
-        cursor: query.cursor ?? '',
-        limit: Math.max(1, Math.min(query.limit ?? 3, 20)),
-    }),
-})
-
-const traceSource = defineSource({
-    execute: async ({ traceId }: { traceId: string }) => ({
-        data: {
-            edges: [
-                { from: 'root', to: 'api' },
-                { from: 'api', to: 'db' },
-                { from: 'api', to: 'cache' },
-            ],
-            spans: [
-                { durationMs: 243, id: 'root', name: 'GET /checkout' },
-                { durationMs: 196, id: 'api', name: 'checkout.create', parentId: 'root' },
-                { durationMs: 121, id: 'db', name: 'postgres INSERT', parentId: 'api' },
-                { durationMs: 18, id: 'cache', name: 'redis GET', parentId: 'api' },
-            ],
-            traceId,
-        },
-    }),
-    key: ({ traceId }) => traceId,
-    normalize: (query: { traceId: string }) => ({ traceId: query.traceId.trim() }),
-})
-
-const billingSource = defineSource({
-    execute: async () => ({
-        data: {
-            currency: 'USD' as const,
-            invoices: [
-                { amount: 8900, customer: 'Acme', status: 'paid' as const },
-                { amount: 4200, customer: 'Globex', status: 'open' as const },
-                { amount: 3100, customer: 'Initech', status: 'paid' as const },
-            ],
-            outstanding: 4200,
-            revenue: 16_200,
-        },
-    }),
-    key: ({ from, to }) => `${from}:${to}`,
-    normalize: (query: { time: DemoReportQuery['range'] }) => query.time,
-})
+)
 
 export const createDemoProvider = () =>
     defineProvider({
-        id: 'demo',
-        sources: {
+        adapters: {
             billing: billingSource,
             funnel: funnelSource,
             logs: logsSource,
@@ -209,6 +236,7 @@ export const createDemoProvider = () =>
             searchConsole: searchSource,
             trace: traceSource,
         },
+        id: 'demo',
     })
 
 export async function createDemoFixture(
@@ -219,97 +247,97 @@ export async function createDemoFixture(
 }
 
 export async function executeDemoQuery(
-    trafficSource: MetricSourceDefinition,
+    trafficSource: MetricAdapterDefinition,
     query: DemoReportQuery,
     now = new Date(),
 ): Promise<DemoReportResponse> {
     const insight = createInsight({
         now: () => now,
         providers: [
-            defineProvider({ id: 'cloudflare', sources: { webAnalytics: trafficSource } }),
+            defineProvider({ adapters: { webAnalytics: trafficSource }, id: 'cloudflare' }),
             createDemoProvider(),
-        ] as const,
+        ],
     })
     const recent = {
         from: new Date(now.valueOf() - 5 * 60 * 1000).toISOString(),
         to: now.toISOString(),
     }
     const result = await insight.query((q) => ({
-        billing: q.source('demo.billing', { time: query.range }),
-        countries: q.source('cloudflare.webAnalytics', {
+        billing: q.billing({ time: query.range }),
+        countries: q.metrics({
             dimensions: ['country'],
             limit: 4,
             metrics: ['pageViews'],
             time: query.range,
         }),
-        devices: q.source('cloudflare.webAnalytics', {
+        devices: q.metrics({
             dimensions: ['device'],
             limit: 3,
             metrics: ['visits'],
             time: query.range,
         }),
-        funnel: q.source('demo.funnel', { time: query.range }),
-        logs: q.source('demo.logs', { limit: 3 }),
-        observabilitySeries: q.source('demo.observability', {
+        funnel: q.funnel({ time: query.range }),
+        logs: q.logs({ limit: 3, time: query.range }),
+        observabilitySeries: q.metrics({
             metrics: ['requestRate', 'errorRate', 'latencyP95'],
             time: { ...query.range, grain: query.grain },
         }),
-        observabilitySummary: q.source('demo.observability', {
+        observabilitySummary: q.metrics({
             metrics: ['requestRate', 'errorRate', 'latencyP95'],
             time: query.range,
         }),
-        productRevenue: q.source('demo.product', {
+        productRevenue: q.metrics({
             dimensions: ['plan'],
             metrics: ['mrr'],
             time: query.range,
         }),
-        productSeries: q.source('demo.product', {
+        productSeries: q.metrics({
             metrics: ['signups', 'activeTeams'],
             time: { ...query.range, grain: query.grain },
         }),
-        productSummary: q.source('demo.product', {
+        productSummary: q.metrics({
             metrics: ['signups', 'activeTeams'],
             time: query.range,
         }),
-        recentTraffic: q.source('cloudflare.webAnalytics', { metrics: ['visits'], time: recent }),
-        referrers: q.source('cloudflare.webAnalytics', {
+        recentTraffic: q.metrics({ metrics: ['visits'], time: recent }),
+        referrers: q.metrics({
             dimensions: ['referer'],
             limit: 4,
             metrics: ['visits'],
             time: query.range,
         }),
-        searchPages: q.source('demo.searchConsole', {
+        searchPages: q.metrics({
             dimensions: ['page'],
             limit: 3,
             metrics: ['clicks', 'impressions'],
             time: query.range,
         }),
-        searchQueries: q.source('demo.searchConsole', {
+        searchQueries: q.metrics({
             dimensions: ['query'],
             limit: 3,
             metrics: ['clicks', 'impressions'],
             time: query.range,
         }),
-        searchSeries: q.source('demo.searchConsole', {
+        searchSeries: q.metrics({
             metrics: ['clicks', 'impressions', 'ctr'],
             time: { ...query.range, grain: query.grain },
         }),
-        searchSummary: q.source('demo.searchConsole', {
+        searchSummary: q.metrics({
             metrics: ['clicks', 'impressions', 'ctr', 'averagePosition'],
             time: query.range,
         }),
-        topPages: q.source('cloudflare.webAnalytics', {
+        topPages: q.metrics({
             dimensions: ['path'],
             limit: 5,
             metrics: ['pageViews'],
             time: query.range,
         }),
-        trace: q.source('demo.trace', { traceId: '4bf92f3577b34da6a3ce929d0e0e4736' }),
-        trafficSeries: q.source('cloudflare.webAnalytics', {
+        trace: q.traces({ time: query.range, where: { traceId } }),
+        trafficSeries: q.metrics({
             metrics: ['pageViews', 'visits'],
             time: { ...query.range, grain: query.grain },
         }),
-        trafficSummary: q.source('cloudflare.webAnalytics', {
+        trafficSummary: q.metrics({
             metrics: ['pageViews', 'visits'],
             time: query.range,
         }),
@@ -328,11 +356,14 @@ export async function executeDemoQuery(
             trafficSummary: result.trafficSummary,
         },
         billing: result.billing,
-        execution: { queriedAt: now.toISOString(), sources: insight.sources().map(({ id }) => id) },
+        execution: {
+            capabilities: ['metrics', 'logs', 'traces', 'billing', 'funnel'],
+            queriedAt: now.toISOString(),
+        },
         funnel: result.funnel,
         logs: result.logs,
         observability: { series: result.observabilitySeries, summary: result.observabilitySummary },
-        online: Math.max(0, Math.round(result.recentTraffic.data.visits?.value ?? 0)),
+        online: Math.max(0, Math.round(result.recentTraffic.data.values.visits ?? 0)),
         product: {
             revenue: result.productRevenue,
             series: result.productSeries,
@@ -342,11 +373,47 @@ export async function executeDemoQuery(
     }
 }
 
+function defineDemoAdapter<const TName extends string, TQuery extends object, TData>(
+    name: TName,
+    normalize: (input: unknown) => TQuery,
+    execute: (query: TQuery) => Promise<TData> | TData,
+): CapabilityAdapterDefinition<TName, CapabilitySchema<TQuery, TData>, TQuery, TQuery, TData> {
+    const contract: CapabilityContract<TName, TQuery> = {
+        key: (query) => JSON.stringify(query),
+        merge: (_query, contributions) => {
+            const contribution = contributions[0]
+            if (!contribution) throw new TypeError(`Missing ${name} fixture result`)
+            return { contributions: [{}], data: contribution.result.data }
+        },
+        name,
+        normalize,
+        plan: (query) => query,
+    }
+    return defineCapabilityAdapter({
+        contract,
+        execute: async (query) => ({ data: await execute(query) }),
+        key: (query) => JSON.stringify(query),
+        normalize,
+    })
+}
+
+const timeQuery = (input: unknown): { time: DemoReportQuery['range'] } => {
+    if (!isRecord(input)) throw new TypeError('Demo query must be an object')
+    const time = input.time
+    if (!isRecord(time) || typeof time.from !== 'string' || typeof time.to !== 'string') {
+        throw new TypeError('Demo query requires a time range')
+    }
+    return { time: normalizeTimeRange({ from: time.from, to: time.to }) }
+}
+
+const isRecord = (value: unknown): value is Record<string, unknown> =>
+    typeof value === 'object' && value !== null && !Array.isArray(value)
+
 function metricFixture(
     query: NormalizedMetricQuery,
     values: readonly Readonly<Record<string, number>>[],
     dimensions: Readonly<Record<string, readonly DimensionValue[]>> = {},
-): MetricSourceOutput {
+): MetricAdapterOutput {
     const rows =
         query.dimensions.length > 0
             ? Array.from(

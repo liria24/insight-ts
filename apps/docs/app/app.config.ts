@@ -15,6 +15,9 @@ export default defineAppConfig({
     header: {
         title: 'Insight.ts',
     },
+    navigation: {
+        sub: 'header',
+    },
     seo: {
         description:
             'Runtime-neutral TypeScript SDK for analytics, observability, and application data—with Provider semantics intact.',

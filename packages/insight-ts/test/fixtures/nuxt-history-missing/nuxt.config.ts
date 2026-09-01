@@ -4,5 +4,5 @@ import insight from '../../../src/integrations/nuxt/index.ts'
 
 export default defineNuxtConfig({
     modules: [insight],
-    insight: { history: { sources: ['app.usage'] } },
+    insight: { history: {} },
 })

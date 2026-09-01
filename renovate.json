@@ -1,0 +1,22 @@
+{
+    "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+    "baseBranchPatterns": ["main"],
+    "extends": ["config:recommended", "helpers:pinGitHubActionDigests"],
+    "lockFileMaintenance": { "enabled": false },
+    "packageRules": [
+        {
+            "groupName": "all non-major dependencies",
+            "matchUpdateTypes": ["minor", "patch", "pin", "digest"]
+        },
+        {
+            "groupName": null,
+            "matchUpdateTypes": ["major"]
+        }
+    ],
+    "prConcurrentLimit": 3,
+    "prHourlyLimit": 2,
+    "rebaseWhen": "conflicted",
+    "recreateWhen": "auto",
+    "schedule": ["before 6am on Monday"],
+    "timezone": "Asia/Tokyo"
+}

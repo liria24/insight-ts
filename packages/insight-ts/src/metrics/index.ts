@@ -1,15 +1,19 @@
 import { InsightError } from '../core/errors.ts'
+import { normalizeTimeRange, normalizeTimestamp, type TimeRange } from '../core/time.ts'
 import type {
+    AdapterExecutionContext,
+    CapabilityAdapterDefinition,
+    CapabilityContract,
+    CapabilityContribution,
+    CapabilitySchema,
+    HistoryFidelityBand,
+    HistoryMaterializer,
     QueryQuality,
-    SourceDefinition,
-    SourceExecutionContext,
-    sourceResultType,
 } from '../core/types.ts'
 
-export interface TimeRange {
-    from: string
-    to: string
-}
+export { normalizeTimeRange }
+export type { TimeRange }
+export type { HistoryFidelity, HistoryFidelityBand, HistoryTransformation } from '../core/types.ts'
 
 export type Grain = 'minute' | 'hour' | 'day' | 'week' | 'month' | 'year'
 export type DimensionValue = boolean | number | string | null
@@ -132,21 +136,16 @@ export type DimensionValues<TDimension extends string = string> = Readonly<
     Record<TDimension, DimensionValue>
 >
 
-export interface MetricPoint<TDimension extends string = string> {
+export interface MetricPoint<TMetric extends string = string, TDimension extends string = string> {
     dimensions?: Partial<DimensionValues<TDimension>>
     time?: string
-    value: number | null
+    values: MetricValues<TMetric>
 }
 
-export interface MetricDatum<TDimension extends string = string> {
-    points?: readonly MetricPoint<TDimension>[]
-    value: number | null
+export interface MetricData<TMetric extends string = string, TDimension extends string = string> {
+    readonly points?: readonly MetricPoint<TMetric, TDimension>[]
+    readonly values: MetricValues<TMetric>
 }
-
-export type MetricData<
-    TMetric extends string = string,
-    TDimension extends string = string,
-> = Readonly<Record<TMetric, MetricDatum<TDimension>>>
 
 export interface MetricQuery<
     TMetrics extends MetricDefinitions = MetricDefinitions,
@@ -170,34 +169,13 @@ export interface NormalizedMetricQuery {
     where?: CanonicalWhere
 }
 
-export interface MetricSourcePoint {
-    dimensions?: Readonly<Record<string, DimensionValue>>
-    time?: string
-    values: MetricValues
-}
+export type MetricAdapterPoint = MetricPoint
 
-export interface MetricSourceOutput {
+export interface MetricAdapterOutput {
     meta?: MetricMeta
-    points?: readonly MetricSourcePoint[]
+    points?: readonly MetricAdapterPoint[]
     quality?: QueryQuality
     values: MetricValues
-}
-
-export type HistoryTransformation =
-    | { kind: 'sample'; rate: number }
-    | { field: string; kind: 'filter' }
-    | { fields: readonly string[]; kind: 'omit-fields' }
-    | { grain: Grain; kind: 'aggregate' }
-    | { kind: 'truncate'; limit: number }
-    | { id: string; kind: 'custom' }
-
-export interface HistoryFidelity {
-    preservation: 'full' | 'reduced'
-    transformations: readonly HistoryTransformation[]
-}
-
-export interface HistoryFidelityBand extends HistoryFidelity {
-    range: TimeRange
 }
 
 export interface MetricMeta {
@@ -213,68 +191,81 @@ export interface MetricMeta {
     }
 }
 
-export interface MetricHistoryStrategy {
+interface MetricCaptureOptions {
     dimensions?: readonly string[]
     grain: Grain
     metrics?: readonly string[]
 }
 
-type SelectedMetric<TQuery> = TQuery extends {
-    metrics: readonly (infer TMetric extends string)[]
+interface CanonicalMetricQueryInput {
+    limit?: number
+    time: TimeRange & { grain?: Grain }
+    timezone?: string
+    where?: Readonly<Record<string, unknown>>
 }
-    ? TMetric
-    : never
-type SelectedDimension<TQuery> = TQuery extends {
-    dimensions: readonly (infer TDimension extends string)[]
-}
-    ? TDimension
-    : never
 
-export interface MetricSourceDefinition<
+type MetricCapabilitySchema<
+    TMetrics extends MetricDefinitions,
+    TDimensions extends DimensionDefinitions,
+> = CapabilitySchema<
+    CanonicalMetricQueryInput,
+    MetricData,
+    MetricMeta,
+    {
+        dimensions: Extract<keyof TDimensions, string>
+        metrics: Extract<keyof TMetrics, string>
+    },
+    'metrics'
+>
+
+type MetricContract = CapabilityContract<'metrics', NormalizedMetricQuery>
+
+export interface MetricAdapterDefinition<
     TMetrics extends MetricDefinitions = MetricDefinitions,
     TDimensions extends DimensionDefinitions = DimensionDefinitions,
-> extends SourceDefinition<
+> extends CapabilityAdapterDefinition<
+    'metrics',
+    MetricCapabilitySchema<TMetrics, TDimensions>,
     MetricQuery<TMetrics, TDimensions>,
     NormalizedMetricQuery,
     MetricData,
     MetricMeta
 > {
-    readonly [sourceResultType]?: <const TQuery extends MetricQuery<TMetrics, TDimensions>>(
-        query: TQuery,
-    ) => MetricData<
-        Extract<SelectedMetric<TQuery>, keyof TMetrics & string>,
-        Extract<SelectedDimension<TQuery>, keyof TDimensions & string>
-    >
     dimensions: DimensionDefinitions
-    history?: MetricHistoryStrategy
-    metricSource: true
+    metricAdapter: true
     metrics: TMetrics
 }
 
-export interface MetricSourceOptions<
+export interface MetricAdapterOptions<
     TMetrics extends MetricDefinitions,
     TDimensions extends DimensionDefinitions,
 > {
     dimensions?: TDimensions
     execute(
         query: NormalizedMetricQuery,
-        context: SourceExecutionContext,
-    ): Promise<MetricSourceOutput> | MetricSourceOutput
-    history?: MetricHistoryStrategy
+        context: AdapterExecutionContext,
+    ): Promise<MetricAdapterOutput> | MetricAdapterOutput
+    history?: MetricCaptureOptions
     metrics: TMetrics
 }
 
-export const defineMetricSource = <
+export const defineMetricAdapter = <
     const TMetrics extends MetricDefinitions,
     const TDimensions extends DimensionDefinitions = Record<never, never>,
 >(
-    options: MetricSourceOptions<TMetrics, TDimensions>,
-): MetricSourceDefinition<TMetrics, TDimensions> => {
+    options: MetricAdapterOptions<TMetrics, TDimensions>,
+): MetricAdapterDefinition<TMetrics, TDimensions> => {
     validateMetricDefinitions(options.metrics)
     const dimensions = options.dimensions ?? {}
-    const source: MetricSourceDefinition<TMetrics, TDimensions> = {
+    const materialize = metricHistoryMaterializer(
+        options.metrics,
         dimensions,
-        async execute(query: NormalizedMetricQuery, context: SourceExecutionContext) {
+        options.history ?? { grain: 'day' },
+    )
+    const adapter: MetricAdapterDefinition<TMetrics, TDimensions> = {
+        contract: metricContract,
+        dimensions,
+        async execute(query: NormalizedMetricQuery, context: AdapterExecutionContext) {
             const output = await options.execute(query, context)
             return {
                 data: metricData(query, output),
@@ -282,14 +273,14 @@ export const defineMetricSource = <
                 ...(output.quality ? { quality: output.quality } : {}),
             }
         },
-        ...(options.history ? { history: options.history } : {}),
         key: (query: NormalizedMetricQuery) => JSON.stringify(query),
-        metricSource: true as const,
+        materialize,
+        metricAdapter: true as const,
         metrics: options.metrics,
         normalize: (input: MetricQuery<TMetrics, TDimensions>) =>
             normalizeMetricQuery(input, options.metrics, dimensions),
     }
-    return source
+    return adapter
 }
 
 const normalizeMetricQuery = (
@@ -529,39 +520,29 @@ const whereOperators = new Set<string>([
 ])
 const isWhereOperator = (value: string): value is WhereOperator => whereOperators.has(value)
 
-const metricData = (query: NormalizedMetricQuery, output: MetricSourceOutput): MetricData => {
-    const points = output.points ?? []
-    return Object.fromEntries(
-        query.metrics.map((metric) => {
-            const selectedPoints = points.map((point) => ({
-                ...(point.dimensions ? { dimensions: point.dimensions } : {}),
-                ...(point.time
-                    ? { time: normalizeTimestamp(point.time, 'Metric point time') }
-                    : {}),
-                value: finiteOrNull(point.values[metric], `Metric "${metric}" point`),
-            }))
-            return [
-                metric,
-                {
-                    ...(selectedPoints.length > 0 ? { points: selectedPoints } : {}),
-                    value: finiteOrNull(output.values[metric], `Metric "${metric}" value`),
-                },
-            ]
-        }),
-    )
+const metricData = (query: NormalizedMetricQuery, output: MetricAdapterOutput): MetricData => {
+    const points = (output.points ?? []).map((point) => ({
+        ...(point.dimensions ? { dimensions: point.dimensions } : {}),
+        ...(point.time ? { time: normalizeTimestamp(point.time, 'Metric point time') } : {}),
+        values: selectedMetricValues(query.metrics, point.values, 'point'),
+    }))
+    return {
+        ...(points.length > 0 ? { points } : {}),
+        values: selectedMetricValues(query.metrics, output.values, 'value'),
+    }
 }
 
-export const normalizeTimeRange = (range: TimeRange): TimeRange => {
-    const from = new Date(range.from)
-    const to = new Date(range.to)
-    if (!Number.isFinite(from.valueOf()) || !Number.isFinite(to.valueOf()) || from >= to) {
-        throw new InsightError(
-            'INVALID_QUERY',
-            'Time must contain valid absolute from and to timestamps with from before to',
-        )
-    }
-    return { from: from.toISOString(), to: to.toISOString() }
-}
+const selectedMetricValues = (
+    metrics: readonly string[],
+    values: MetricValues,
+    location: 'point' | 'value',
+): MetricValues =>
+    Object.fromEntries(
+        metrics.map((metric) => [
+            metric,
+            finiteOrNull(values[metric], `Metric "${metric}" ${location}`),
+        ]),
+    )
 
 const grains = new Set<string>(['minute', 'hour', 'day', 'week', 'month', 'year'])
 const isGrain = (value: unknown): value is Grain => typeof value === 'string' && grains.has(value)
@@ -581,14 +562,6 @@ const finiteOrNull = (value: unknown, name: string): number | null => {
     return value
 }
 
-const normalizeTimestamp = (value: string, name: string): string => {
-    const date = new Date(value)
-    if (!Number.isFinite(date.valueOf())) {
-        throw new InsightError('INVALID_QUERY', `${name} must be an ISO timestamp`)
-    }
-    return date.toISOString()
-}
-
 const requireRecord = (value: unknown, name: string): Record<string, unknown> => {
     if (!isRecord(value)) throw new InsightError('INVALID_QUERY', `${name} must be an object`)
     return value
@@ -596,3 +569,358 @@ const requireRecord = (value: unknown, name: string): Record<string, unknown> =>
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
     typeof value === 'object' && value !== null && !Array.isArray(value)
+
+const metricContract: MetricContract = {
+    key: (query) => JSON.stringify(query),
+    merge(query, contributions) {
+        const rows = new Map<
+            string,
+            {
+                dimensions?: Partial<DimensionValues>
+                time?: string
+                values: Record<string, number | null>
+            }
+        >()
+        const values: Record<string, number | null> = Object.fromEntries(
+            query.metrics.map((metric) => [metric, null]),
+        )
+        for (const contribution of contributions) {
+            const data = requireMetricData(contribution.result.data)
+            for (const metric of query.metrics) {
+                if (Object.hasOwn(data.values, metric)) values[metric] = data.values[metric] ?? null
+            }
+            for (const point of data.points ?? []) {
+                const key = metricPointKey(point)
+                const row = rows.get(key) ?? {
+                    ...(point.dimensions ? { dimensions: point.dimensions } : {}),
+                    ...(point.time ? { time: point.time } : {}),
+                    values: Object.fromEntries(query.metrics.map((metric) => [metric, null])),
+                }
+                for (const metric of query.metrics) {
+                    if (Object.hasOwn(point.values, metric)) {
+                        row.values[metric] = point.values[metric] ?? null
+                    }
+                }
+                rows.set(key, row)
+            }
+        }
+        const points = [...rows.values()].toSorted((left, right) =>
+            metricPointKey(left).localeCompare(metricPointKey(right)),
+        )
+        return {
+            contributions: contributions.map(({ result }) => ({
+                fields: Object.keys(requireMetricData(result.data).values),
+                ...(result.quality ? { quality: result.quality } : {}),
+            })),
+            data: { ...(points.length > 0 ? { points } : {}), values },
+            ...mergeMetricMeta(contributions),
+        }
+    },
+    name: 'metrics',
+    normalize(input, adapters) {
+        const metrics = metricAdapters(adapters)
+        const query = requireRecord(input, 'Metric query')
+        const selected = stringArray(query.metrics, 'metrics')
+        const owners = new Map<string, MetricAdapterDefinition>()
+        for (const adapter of metrics) {
+            for (const metric of Object.keys(adapter.metrics)) owners.set(metric, adapter)
+        }
+        const contributing = new Set<MetricAdapterDefinition>()
+        for (const metric of selected) {
+            const owner = owners.get(metric)
+            if (!owner) {
+                throw new InsightError('UNSUPPORTED_METRIC', `Unsupported metric: ${metric}`)
+            }
+            contributing.add(owner)
+        }
+        return normalizeMetricQuery(
+            input,
+            Object.fromEntries(metrics.flatMap((adapter) => Object.entries(adapter.metrics))),
+            compatibleDimensions([...contributing]),
+        )
+    },
+    plan(query, adapter) {
+        if (!isMetricAdapter(adapter)) return undefined
+        const metrics = query.metrics.filter((metric) => Object.hasOwn(adapter.metrics, metric))
+        return metrics.length === 0 ? undefined : { ...query, metrics }
+    },
+    validate(adapters) {
+        const owners = new Map<string, MetricAdapterDefinition>()
+        for (const adapter of metricAdapters(adapters)) {
+            for (const metric of Object.keys(adapter.metrics)) {
+                if (owners.has(metric)) {
+                    throw new InsightError(
+                        'INVALID_QUERY',
+                        `Metric "${metric}" has more than one adapter in the Scope`,
+                    )
+                }
+                owners.set(metric, adapter)
+            }
+        }
+    },
+}
+
+const metricAdapters = (adapters: readonly object[]): MetricAdapterDefinition[] => {
+    const metrics = adapters.filter(isMetricAdapter)
+    if (metrics.length !== adapters.length) {
+        throw new InsightError('INVALID_QUERY', 'Metrics contract received an invalid adapter')
+    }
+    return metrics
+}
+
+const isMetricAdapter = (value: object): value is MetricAdapterDefinition =>
+    isRecord(value) &&
+    value.metricAdapter === true &&
+    isRecord(value.metrics) &&
+    isRecord(value.dimensions)
+
+const compatibleDimensions = (
+    adapters: readonly MetricAdapterDefinition[],
+): DimensionDefinitions => {
+    if (adapters.length === 0) return {}
+    const dimensions: Record<string, DimensionInput> = {}
+    for (const [field, definition] of Object.entries(adapters[0]!.dimensions)) {
+        const type = dimensionType(definition)
+        const operators = defaultedOperators(definition)
+        if (
+            adapters.slice(1).every((adapter) => {
+                const candidate = adapter.dimensions[field]
+                return candidate !== undefined && dimensionType(candidate) === type
+            })
+        ) {
+            const common = [...operators].filter((operator) =>
+                adapters
+                    .slice(1)
+                    .every((adapter) =>
+                        defaultedOperators(adapter.dimensions[field]!).has(operator),
+                    ),
+            )
+            dimensions[field] = { operators: common, type }
+        }
+    }
+    return dimensions
+}
+
+const dimensionType = (definition: DimensionInput): DimensionValueType =>
+    typeof definition === 'string' ? definition : definition.type
+
+const defaultedOperators = (definition: DimensionInput): Set<WhereOperator> =>
+    new Set(
+        typeof definition === 'string' || !definition.operators
+            ? defaultOperators(dimensionType(definition))
+            : definition.operators,
+    )
+
+const requireMetricData = (value: unknown): MetricData => {
+    if (!isRecord(value) || !isRecord(value.values)) {
+        throw new InsightError('INVALID_QUERY', 'Metric adapter returned invalid data')
+    }
+    const points = value.points
+    if (points !== undefined && !Array.isArray(points)) {
+        throw new InsightError('INVALID_QUERY', 'Metric adapter returned invalid points')
+    }
+    // Metric adapters construct this value at the canonical boundary.
+    // eslint-disable-next-line typescript/no-unsafe-type-assertion
+    return value as unknown as MetricData
+}
+
+const metricHistoryMaterializer = (
+    definitions: MetricDefinitions,
+    dimensions: DimensionDefinitions,
+    capture: MetricCaptureOptions,
+): HistoryMaterializer<NormalizedMetricQuery, MetricData, MetricMeta> => {
+    const metrics = capture.metrics ?? Object.keys(definitions)
+    const selectedDimensions = capture.dimensions ?? []
+    for (const metric of metrics) {
+        if (!Object.hasOwn(definitions, metric)) {
+            throw new TypeError(`Unknown History metric "${metric}"`)
+        }
+    }
+    for (const dimension of selectedDimensions) {
+        if (!Object.hasOwn(dimensions, dimension)) {
+            throw new TypeError(`Unknown History dimension "${dimension}"`)
+        }
+    }
+    return {
+        capture: (range) => ({
+            dimensions: selectedDimensions,
+            grain: capture.grain,
+            metrics,
+            time: normalizeTimeRange(range),
+            timezone: 'UTC',
+        }),
+        itemId: () => 'metrics',
+        items: (data) => [requireMetricData(data)],
+        materialize: (query, items) => ({
+            data: materializeMetricData(
+                mergeStoredMetricData(items.map((item) => requireMetricData(item))),
+                definitions,
+                query,
+            ),
+            meta: {
+                temporal: {
+                    ...(query.grain === 'auto' ? {} : { grain: query.grain }),
+                    ...(query.timezone ? { bucketTimezone: query.timezone } : {}),
+                },
+            },
+        }),
+        range: (query) =>
+            query.where === undefined &&
+            query.metrics.every((metric) => metrics.includes(metric)) &&
+            query.dimensions.every((dimension) => selectedDimensions.includes(dimension))
+                ? query.time
+                : undefined,
+        read: 'all',
+        sortKey: () => 'metrics',
+    }
+}
+
+const mergeStoredMetricData = (values: readonly MetricData[]): MetricData => {
+    const points = values.flatMap((value) => value.points ?? [])
+    return {
+        ...(points.length > 0 ? { points } : {}),
+        values: Object.assign({}, ...values.map((value) => value.values)),
+    }
+}
+
+const materializeMetricData = (
+    data: MetricData,
+    definitions: MetricDefinitions,
+    query: NormalizedMetricQuery,
+): MetricData => {
+    const resolve = (metric: string, points: readonly MetricPoint[]): number | null => {
+        const definition = definitions[metric]
+        if (!definition) {
+            throw new InsightError('HISTORY_CORRUPT', `Unknown stored metric "${metric}"`)
+        }
+        if (definition.aggregation?.kind === 'ratio') {
+            return metricRatio(
+                resolve(definition.aggregation.numerator, points),
+                resolve(definition.aggregation.denominator, points),
+            )
+        }
+        return aggregateStoredMetric(
+            points.map((point) => point.values[metric] ?? null),
+            definition,
+            metric,
+        )
+    }
+    const groups = new Map<string, MetricPoint[]>()
+    for (const point of data.points ?? []) {
+        if (point.time && (point.time < query.time.from || point.time >= query.time.to)) continue
+        const normalized: MetricPoint = {
+            ...(query.dimensions.length > 0
+                ? {
+                      dimensions: Object.fromEntries(
+                          query.dimensions.map((dimension) => [
+                              dimension,
+                              point.dimensions?.[dimension] ?? null,
+                          ]),
+                      ),
+                  }
+                : {}),
+            ...(query.grain === 'auto' || !point.time
+                ? {}
+                : { time: metricBucketStart(point.time, query.grain) }),
+            values: point.values,
+        }
+        const key = metricPointKey(normalized)
+        const group = groups.get(key) ?? []
+        group.push(normalized)
+        groups.set(key, group)
+    }
+    const points = [...groups.values()]
+        .map((group) => ({
+            ...(group[0]?.dimensions ? { dimensions: group[0].dimensions } : {}),
+            ...(group[0]?.time ? { time: group[0].time } : {}),
+            values: Object.fromEntries(
+                query.metrics.map((metric) => [metric, resolve(metric, group)]),
+            ),
+        }))
+        .toSorted((left, right) => metricPointKey(left).localeCompare(metricPointKey(right)))
+    const limited = query.limit ? points.slice(0, query.limit) : points
+    const scalar = (metric: string): number | null => {
+        const definition = definitions[metric]
+        if (!definition) {
+            throw new InsightError('HISTORY_CORRUPT', `Unknown stored metric "${metric}"`)
+        }
+        return definition.aggregation?.kind === 'ratio'
+            ? metricRatio(
+                  scalar(definition.aggregation.numerator),
+                  scalar(definition.aggregation.denominator),
+              )
+            : (data.values[metric] ?? null)
+    }
+    return {
+        ...(limited.length > 0 ? { points: limited } : {}),
+        values: Object.fromEntries(
+            query.metrics.map((metric) => [
+                metric,
+                data.points?.length ? resolve(metric, data.points) : scalar(metric),
+            ]),
+        ),
+    }
+}
+
+const aggregateStoredMetric = (
+    values: readonly (number | null)[],
+    definition: MetricDefinition,
+    metric: string,
+): number | null => {
+    const present = values.filter((value): value is number => value !== null)
+    if (definition.rollup === 'additive') {
+        return present.reduce((total, value) => total + value, 0)
+    }
+    if (definition.aggregation?.kind === 'last') return values.at(-1) ?? null
+    if (values.length <= 1) return values[0] ?? null
+    const reason =
+        definition.aggregation?.kind === 'percentile'
+            ? 'percentile'
+            : (definition.aggregation?.kind ?? definition.rollup ?? 'unspecified')
+    throw new InsightError(
+        'UNSAFE_ROLLUP',
+        `Metric "${metric}" cannot roll up ${reason} values safely`,
+    )
+}
+
+const metricRatio = (
+    numerator: number | null | undefined,
+    denominator: number | null | undefined,
+) =>
+    numerator === null || numerator === undefined || !denominator ? null : numerator / denominator
+
+const metricBucketStart = (value: string, grain: Grain): string => {
+    const date = new Date(value)
+    if (!Number.isFinite(date.valueOf())) {
+        throw new InsightError('HISTORY_CORRUPT', `Invalid History timestamp: ${value}`)
+    }
+    if (grain === 'year') date.setUTCMonth(0, 1)
+    if (grain === 'year' || grain === 'month') date.setUTCDate(1)
+    if (grain === 'week') {
+        const weekday = date.getUTCDay() || 7
+        date.setUTCDate(date.getUTCDate() - weekday + 1)
+    }
+    if (['year', 'month', 'week', 'day'].includes(grain)) date.setUTCHours(0)
+    if (grain !== 'minute') date.setUTCMinutes(0)
+    date.setUTCSeconds(0, 0)
+    return date.toISOString()
+}
+
+const metricPointKey = (point: { dimensions?: Partial<DimensionValues>; time?: string }): string =>
+    `${point.time ?? ''}\0${JSON.stringify(
+        Object.entries(point.dimensions ?? {}).toSorted(([left], [right]) =>
+            left.localeCompare(right),
+        ),
+    )}`
+
+const mergeMetricMeta = (
+    contributions: readonly CapabilityContribution[],
+): { meta?: MetricMeta } => {
+    const metas = contributions.flatMap(({ result }) => (result.meta ? [result.meta] : []))
+    if (metas.length === 0) return {}
+    const first = JSON.stringify(metas[0])
+    if (!metas.every((meta) => JSON.stringify(meta) === first)) return {}
+    // Metric adapters are the only producers accepted by this contract.
+    // eslint-disable-next-line typescript/no-unsafe-type-assertion
+    return { meta: metas[0] as MetricMeta }
+}

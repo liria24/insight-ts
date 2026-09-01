@@ -11,25 +11,31 @@
         "build": "bun run build:sdk && bun run build:docs",
         "build:docs": "bun --filter insight-ts-docs build",
         "build:sdk": "bun --filter insight-ts build",
-        "check": "bun run format:check && bun run lint && bun run typecheck && bun run test && bun run build && bun run test:package",
+        "bench": "bun --filter insight-ts bench",
+        "bundle:size": "bun --filter insight-ts bundle:size",
+        "check": "bun run format:check && bun run lint && bun run workspace:check && bun run unused && bun run typecheck && bun run test && bun run build && bun run test:consumers",
         "deps:update": "taze",
         "docs:build": "bun --filter insight-ts-docs build",
         "docs:dev": "bun --filter insight-ts-docs dev",
         "format": "oxfmt . --write",
         "format:check": "oxfmt . --check",
         "lint": "oxlint .",
+        "lint:fix": "oxlint . --fix",
         "preview:package": "pkg-pr-new publish ./packages/insight-ts --bun --compact --previewVersion",
         "test": "bun --filter insight-ts test && bun --filter insight-ts-docs test",
-        "test:package": "bun packages/insight-ts/scripts/test-package.ts",
-        "typecheck": "bun --filter insight-ts typecheck"
+        "test:consumers": "bun packages/insight-ts/scripts/test-consumers.ts",
+        "typecheck": "bun --filter insight-ts typecheck",
+        "unused": "knip && knip --production",
+        "workspace:check": "sherif"
     },
     "devDependencies": {
+        "knip": "^6.34.0",
         "oxfmt": "^0.65.0",
         "oxlint": "^1.80.0",
         "oxlint-tsgolint": "^7.0.2001",
         "pkg-pr-new": "^0.0.88",
-        "taze": "^21.1.0",
-        "vue-router": "^5.3.0"
+        "sherif": "^1.13.0",
+        "taze": "^21.1.0"
     },
     "engines": {
         "node": ">=24.0.0"

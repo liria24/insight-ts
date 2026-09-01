@@ -1,30 +1,26 @@
-/* eslint-disable no-await-in-loop -- repository reads and writes preserve deterministic segment order */
+/* eslint-disable no-await-in-loop -- pagination and replacement order are intentional */
 
 import { InsightError } from '../core/errors.ts'
+import { normalizeTimeRange, type TimeRange } from '../core/time.ts'
 import type {
+    AdapterExecutionResult,
     HistoryExtension,
+    HistoryFidelity,
+    HistoryFidelityBand,
     HistoryRuntime,
     HistoryRuntimeContext,
+    HistoryTransformation,
+    InstrumentationSpan,
+    QueryExecutionOptions,
     QueryQuality,
-    QueryResult,
     RuntimeSource,
-    SourceRequest,
 } from '../core/types.ts'
-import {
-    type DimensionValue,
-    type Grain,
-    type HistoryFidelity,
-    type HistoryFidelityBand,
-    type HistoryTransformation,
-    type MetricData,
-    type MetricDefinition,
-    type MetricMeta,
-    type MetricSourceDefinition,
-    type MetricPoint,
-    type NormalizedMetricQuery,
-    normalizeTimeRange,
-    type TimeRange,
-} from '../metrics/index.ts'
+
+export interface HistoryTarget {
+    adapter: string
+    capability: string
+    scope: string
+}
 
 export interface HistoryCoverage {
     id: string
@@ -32,475 +28,475 @@ export interface HistoryCoverage {
     range: TimeRange
 }
 
-export interface HistorySegment extends HistoryCoverage {
-    data: MetricData
+export interface HistorySegment extends HistoryCoverage, HistoryTarget {
+    data?: unknown
+    empty?: boolean
     fidelity: HistoryFidelity
-    meta: QueryResult<MetricData, MetricMeta>['meta']
+    meta?: object
     observedAt: string
+    quality?: QueryQuality
     schemaVersion: 2
-    source: string
+    sortKey: string
+}
+
+export interface HistoryReadQuery extends HistoryTarget {
+    cursor?: string
+    limit: number
+    range: TimeRange
+}
+
+export interface HistoryReadResult {
+    next?: string
+    segments: readonly HistorySegment[]
 }
 
 export interface HistoryRepository {
-    coverage(query: { range: TimeRange; source: string }): Promise<readonly HistoryCoverage[]>
-    read(query: { range: TimeRange; source: string }): Promise<readonly HistorySegment[]>
-    write(segment: HistorySegment): Promise<void>
+    coverage(query: HistoryTarget & { range: TimeRange }): Promise<readonly HistoryCoverage[]>
+    delete(query: HistoryTarget & { range: TimeRange }): Promise<void>
+    read(query: HistoryReadQuery): Promise<HistoryReadResult>
+    replace(
+        query: HistoryTarget & { range: TimeRange },
+        segments: readonly HistorySegment[],
+    ): Promise<void>
+}
+
+export interface HistoryReductionContext extends HistoryTarget {
+    range: TimeRange
 }
 
 export type HistoryReduction =
     | { kind: 'sample'; rate: number }
-    | { field: string; kind: 'filter'; values: readonly DimensionValue[] }
-    | { fields: readonly string[]; kind: 'omit-fields' }
+    | {
+          id: string
+          kind: 'filter'
+          test(item: unknown, context: HistoryReductionContext): boolean
+      }
     | { kind: 'truncate'; limit: number }
-    | { grain: Grain; kind: 'aggregate' }
     | {
           id: string
           kind: 'custom'
-          transform(data: MetricData): MetricData | Promise<MetricData>
+          transform(
+              items: readonly unknown[],
+              context: HistoryReductionContext,
+          ): Promise<readonly unknown[]> | readonly unknown[]
       }
 
-export interface HistoryReductionRule {
+export interface HistoryPolicy {
+    capability?: string
     range?: TimeRange
+    scope?: string
     transformations: readonly HistoryReduction[]
 }
 
+export interface HistorySelection {
+    capabilities?: readonly string[]
+    scopes?: readonly string[]
+}
+
 export interface HistoryController {
-    sync(options: {
-        range: TimeRange
-        sources?: readonly string[]
-    }): Promise<{ fetched: number; skipped: number }>
+    compact(options: { range: TimeRange } & HistorySelection): Promise<{ compacted: number }>
+    expire(options?: { before?: string } & HistorySelection): Promise<{ deleted: number }>
+    sync(
+        options: { range: TimeRange } & HistorySelection,
+    ): Promise<{ fetched: number; skipped: number }>
 }
 
-export interface HistoryOptions<TSource extends string = string> {
-    reductions?: Partial<Readonly<Record<TSource, readonly HistoryReductionRule[]>>>
+export interface HistoryOptions extends HistorySelection {
+    maxPages?: number
+    policies?: readonly HistoryPolicy[]
+    readSize?: number
     repository: HistoryRepository
-    sources: readonly TSource[]
+    retention?: { maxAgeMs: number }
 }
 
-export const createHistory = <const TSource extends string>(
-    options: HistoryOptions<TSource>,
-): HistoryExtension<HistoryController> => ({
-    attach(context) {
-        return new HistoryEngine(options, context)
-    },
+export const createHistory = (options: HistoryOptions): HistoryExtension<HistoryController> => ({
+    attach: (context) => new HistoryEngine(options, context),
 })
 
 class HistoryEngine implements HistoryRuntime<HistoryController> {
     readonly #context: HistoryRuntimeContext
+    readonly #maxPages: number
     readonly #options: HistoryOptions
-    readonly #sourceIds: Set<string>
+    readonly #readSize: number
+    readonly #sources: readonly RuntimeSource[]
 
     constructor(options: HistoryOptions, context: HistoryRuntimeContext) {
         this.#options = options
         this.#context = context
-        this.#sourceIds = new Set(options.sources)
-        for (const sourceId of this.#sourceIds) {
-            const source = context.sources.find(({ id }) => id === sourceId)
-            if (!source) {
-                throw new InsightError('SOURCE_NOT_FOUND', `Unknown History Source: ${sourceId}`)
-            }
-            if (!metricSource(source)?.history) {
-                throw new InsightError(
-                    'CAPABILITY_UNAVAILABLE',
-                    `Source "${sourceId}" does not declare Metric History`,
-                )
-            }
+        this.#maxPages = positiveInteger(options.maxPages ?? 100, 'History maxPages')
+        this.#readSize = positiveInteger(options.readSize ?? 1000, 'History readSize')
+        this.#sources = context.sources.filter(
+            (source) => source.definition.materialize && this.#enabled(source),
+        )
+        this.#validateSelections(options)
+        if (options.retention && !(options.retention.maxAgeMs > 0)) {
+            throw new TypeError('History retention maxAgeMs must be positive')
         }
     }
 
-    handles(source: RuntimeSource, input: unknown): boolean {
-        if (!this.#sourceIds.has(source.id)) return false
-        const definition = metricSource(source)
-        if (!definition?.history || !isNormalizedMetricQuery(input)) return false
-        const metrics = new Set(definition.history.metrics ?? Object.keys(definition.metrics))
-        const dimensions = new Set(definition.history.dimensions ?? [])
-        return (
-            input.where === undefined &&
-            input.metrics.every((metric) => metrics.has(metric)) &&
-            input.dimensions.every((dimension) => dimensions.has(dimension))
-        )
+    handles(source: RuntimeSource, query: unknown): boolean {
+        if (!this.#sources.includes(source)) return false
+        return source.definition.materialize?.range(query) !== undefined
     }
 
-    async sync(options: {
-        range: TimeRange
-        sources?: readonly string[]
-    }): Promise<{ fetched: number; skipped: number }> {
-        return this.#instrument('insight.history.sync', {}, async () => {
-            const requested = normalizeTimeRange(options.range)
-            const planned: { range: TimeRange; source: RuntimeSource }[] = []
+    async sync(
+        options: { range: TimeRange } & HistorySelection,
+    ): Promise<{ fetched: number; skipped: number }> {
+        const range = normalizeTimeRange(options.range)
+        return this.#instrument('insight.history.sync', {}, async (span) => {
+            let fetched = 0
             let skipped = 0
-            for (const source of this.#selectedSources(options.sources)) {
-                const coverage = await this.#instrument(
-                    'insight.history.read',
-                    { 'insight.source': source.id },
-                    () =>
-                        this.#options.repository.coverage({ range: requested, source: source.id }),
-                )
-                const gaps = uncoveredRanges(requested, coverage)
+            for (const source of this.#select(options)) {
+                const target = historyTarget(source)
+                const coverage = await this.#coverage(target, range)
+                const gaps = uncoveredRanges(range, coverage)
                 if (gaps.length === 0) {
                     skipped += 1
                     continue
                 }
-                planned.push(
-                    ...gaps
-                        .flatMap((range) => splitForRules(this.#options, source.id, range))
-                        .map((range) => ({ range, source })),
-                )
+                for (const gap of gaps.flatMap((item) => this.#split(source, item))) {
+                    await this.#capture(source, gap)
+                    fetched += 1
+                }
             }
-            const results = await this.#context.execute(
-                planned.map(({ range, source }) => historyRequest(source, range)),
-            )
-            for (const [index, plan] of planned.entries()) {
-                const result = results[index]!
-                const reduced = await applyReductions(
-                    requireMetricData(result.data, plan.source.id),
-                    reductionsFor(this.#options, plan.source.id, plan.range),
-                    plan.source,
-                )
-                await this.#instrument(
-                    'insight.history.write',
-                    { 'insight.source': plan.source.id },
-                    () =>
-                        this.#options.repository.write({
-                            data: reduced.data,
-                            fidelity: reduced.fidelity,
-                            id: segmentId(plan.source.id, plan.range),
-                            meta: result.meta,
-                            observedAt: this.#context.now().toISOString(),
-                            ...(isProvisional(result, plan.range) ? { provisional: true } : {}),
-                            range: plan.range,
-                            schemaVersion: 2,
-                            source: plan.source.id,
-                        }),
-                )
-            }
-            return { fetched: planned.length, skipped }
+            span.setAttribute('insight.history.partition.count', fetched)
+            return { fetched, skipped }
         })
     }
 
     async query(
         source: RuntimeSource,
         input: unknown,
-        live: () => Promise<QueryResult<unknown, object>>,
-    ): Promise<QueryResult<unknown, object>> {
-        if (!this.handles(source, input) || !isNormalizedMetricQuery(input)) return live()
-        const query = input
-        const definition = metricSource(source)
-        if (!definition) return invalidHistory(source.id)
-        const segments = validSegments(
-            await this.#instrument('insight.history.read', { 'insight.source': source.id }, () =>
-                this.#options.repository.read({ range: query.time, source: source.id }),
-            ),
-            source.id,
-        )
-        const coverage = segments.map(({ id, provisional, range }) => ({
-            id,
-            ...(provisional ? { provisional } : {}),
-            range,
-        }))
-        const gaps = uncoveredRanges(query.time, coverage)
-        const liveResults =
-            gaps.length === 0
-                ? []
-                : await this.#context.execute(
-                      gaps.map((range) => historyRequest(source, range, query)),
-                  )
-        const data = mergeData([
-            ...segments.map(({ data: value }) => value),
-            ...liveResults.map(({ data: value }) => requireMetricData(value, source.id)),
-        ])
-        const materialized = materialize(data, definition, query)
-        const quality = mergeQuality([
-            ...segments.map(({ meta }) => meta.quality),
-            ...liveResults.map(({ meta }) => meta.quality),
-        ])
-        const fidelity: HistoryFidelityBand[] = segments.map(({ fidelity: value, range }) => ({
-            ...value,
-            range,
-        }))
-        const result: QueryResult<MetricData, MetricMeta> = {
-            data: materialized,
-            meta: {
-                ...(fidelity.length > 0 ? { fidelity } : {}),
-                ...(quality ? { quality } : {}),
-                queriedAt: this.#context.now().toISOString(),
-                source: source.id,
-                temporal: {
-                    ...(query.grain === 'auto' ? {} : { grain: query.grain }),
-                    ...(query.timezone ? { bucketTimezone: query.timezone } : {}),
-                },
-            },
-        }
-        return result
-    }
-
-    #selectedSources(requested: readonly string[] | undefined): RuntimeSource[] {
-        const selected = requested ? new Set(requested) : this.#sourceIds
-        for (const id of selected) {
-            if (!this.#sourceIds.has(id)) {
-                throw new InsightError('SOURCE_NOT_FOUND', `History Source "${id}" is not enabled`)
+        live: () => Promise<AdapterExecutionResult<unknown, object>>,
+        execution: QueryExecutionOptions = {},
+    ): Promise<AdapterExecutionResult<unknown, object>> {
+        execution.signal?.throwIfAborted()
+        const materializer = source.definition.materialize
+        const range = materializer?.range(input)
+        if (!materializer || !range || !this.#sources.includes(source)) return live()
+        const normalized = normalizeTimeRange(range)
+        const target = historyTarget(source)
+        const coverage = await this.#coverage(target, normalized)
+        for (const gap of uncoveredRanges(normalized, coverage)) {
+            for (const part of this.#split(source, gap)) {
+                await this.#capture(source, part, execution)
             }
         }
-        return this.#context.sources.filter(({ id }) => selected.has(id))
+
+        const cursor = decodeCursor(materializer.cursor?.(input), target)
+        const limit = materializer.limit?.(input) ?? this.#readSize
+        const page =
+            materializer.read === 'all'
+                ? { segments: await this.#readAll(target, normalized) }
+                : await this.#read(target, normalized, limit, cursor)
+        const segments = validSegments(page.segments, target)
+        const items = segments.flatMap((segment) =>
+            segment.empty || segment.data === undefined ? [] : [segment.data],
+        )
+        const materialized = materializer.materialize(input, items)
+        const fidelity = fidelityBands(segments, normalized)
+        const remaining = uncoveredRanges(normalized, await this.#coverage(target, normalized)).map(
+            (missing) => ({
+                preservation: 'not-preserved' as const,
+                range: missing,
+                transformations: [],
+            }),
+        )
+        const quality = mergeQuality([
+            ...segments.map(({ quality: value }) => value),
+            materialized.quality,
+            ...(remaining.length > 0 ? [{ partial: true }] : []),
+        ])
+        return {
+            ...materialized,
+            meta: {
+                ...materialized.meta,
+                fidelity: [...fidelity, ...remaining],
+            },
+            ...(page.next ? { nativeCursor: encodeCursor(page.next, target) } : {}),
+            ...(quality ? { quality } : {}),
+        }
+    }
+
+    async compact(
+        options: { range: TimeRange } & HistorySelection,
+    ): Promise<{ compacted: number }> {
+        const range = normalizeTimeRange(options.range)
+        let compacted = 0
+        for (const source of this.#select(options)) {
+            const target = historyTarget(source)
+            const segments = await this.#readAll(target, range)
+            if (segments.length === 0) continue
+            await this.#replace(target, range, dedupeSegments(segments))
+            compacted += 1
+        }
+        return { compacted }
+    }
+
+    async expire(
+        options: { before?: string } & HistorySelection = {},
+    ): Promise<{ deleted: number }> {
+        const before = options.before
+            ? normalizeTimeRange({ from: epoch, to: options.before }).to
+            : this.#retentionBoundary()
+        const range = { from: epoch, to: before }
+        let deleted = 0
+        for (const source of this.#select(options)) {
+            await this.#options.repository.delete({ ...historyTarget(source), range })
+            deleted += 1
+        }
+        return { deleted }
+    }
+
+    async #capture(
+        source: RuntimeSource,
+        range: TimeRange,
+        execution?: QueryExecutionOptions,
+    ): Promise<void> {
+        return this.#instrument(
+            'insight.history.capture',
+            historyAttributes(historyTarget(source)),
+            (span) => this.#capturePartition(source, range, span, execution),
+        )
+    }
+
+    async #capturePartition(
+        source: RuntimeSource,
+        range: TimeRange,
+        span: InstrumentationSpan,
+        execution?: QueryExecutionOptions,
+    ): Promise<void> {
+        const materializer = source.definition.materialize!
+        const target = historyTarget(source)
+        let query = materializer.capture(range)
+        const items = new Map<string, unknown>()
+        let quality: QueryQuality | undefined
+        let meta: object | undefined
+        let page = 0
+        let previousCursor: string | undefined
+        while (true) {
+            if (page++ >= this.#maxPages) {
+                throw new InsightError(
+                    'UNSUPPORTED_OPERATION',
+                    `History capture exceeded ${this.#maxPages} pages for "${source.id}"`,
+                )
+            }
+            const [result] = await this.#context.execute([{ query, source }], execution)
+            if (!result) throw new InsightError('HISTORY_CORRUPT', 'Missing History result')
+            for (const [index, item] of materializer.items(result.data).entries()) {
+                items.set(materializer.itemId(item, index), item)
+            }
+            quality = mergeQuality([quality, result.quality])
+            meta = result.meta ?? meta
+            if (!result.nativeCursor) break
+            if (!materializer.continue || result.nativeCursor === previousCursor) {
+                throw new InsightError(
+                    'HISTORY_CORRUPT',
+                    'History adapter returned an invalid cursor',
+                )
+            }
+            previousCursor = result.nativeCursor
+            query = materializer.continue(query, result.nativeCursor)
+        }
+        const sorted = [...items.values()].toSorted((left, right) =>
+            materializer.sortKey(right).localeCompare(materializer.sortKey(left)),
+        )
+        const reduced = await applyReductions(
+            sorted,
+            this.#reductions(target, range),
+            { ...target, range },
+            (item, index) => materializer.itemId(item, index),
+        )
+        const observedAt = this.#context.now().toISOString()
+        const provisional = isProvisional(quality, meta, range)
+        const segments = reduced.items.map((data, index) => {
+            const id = materializer.itemId(data, index)
+            return {
+                ...target,
+                data,
+                fidelity: reduced.fidelity,
+                id: segmentId(target, range, id),
+                ...(meta ? { meta } : {}),
+                observedAt,
+                ...(provisional ? { provisional: true } : {}),
+                ...(quality ? { quality } : {}),
+                range,
+                schemaVersion: 2 as const,
+                sortKey: materializer.sortKey(data),
+            }
+        })
+        span.setAttribute('insight.history.page.count', page)
+        span.setAttribute('insight.history.item.count', items.size)
+        span.setAttribute('insight.history.item.peak', items.size)
+        await this.#replace(
+            target,
+            range,
+            segments.length > 0
+                ? segments
+                : [emptySegment(target, range, observedAt, reduced.fidelity, quality, provisional)],
+        )
+    }
+
+    #coverage(target: HistoryTarget, range: TimeRange) {
+        return this.#instrument('insight.history.read', historyAttributes(target), () =>
+            this.#options.repository.coverage({ ...target, range }),
+        )
+    }
+
+    #enabled(source: RuntimeSource): boolean {
+        return (
+            (!this.#options.scopes || this.#options.scopes.includes(source.scope)) &&
+            (!this.#options.capabilities ||
+                this.#options.capabilities.includes(source.definition.contract.name))
+        )
     }
 
     #instrument<T>(
         name: string,
         attributes: Readonly<Record<string, boolean | number | string>>,
-        operation: () => Promise<T>,
+        operation: (span: InstrumentationSpan) => Promise<T>,
     ): Promise<T> {
         return this.#context.instrumentation
-            ? Promise.resolve(
-                  this.#context.instrumentation.run(name, attributes, () => operation()),
-              )
-            : operation()
+            ? Promise.resolve(this.#context.instrumentation.run(name, attributes, operation))
+            : operation(noopSpan)
     }
-}
 
-const historyRequest = (
-    source: RuntimeSource,
-    range: TimeRange,
-    query?: NormalizedMetricQuery,
-): SourceRequest => {
-    const definition = metricSource(source)
-    if (!definition?.history) return invalidHistory(source.id)
-    return {
-        query: {
-            dimensions: query?.dimensions ?? definition.history.dimensions ?? [],
-            metrics: definition.history.metrics ?? Object.keys(definition.metrics),
-            time: {
-                from: range.from,
-                grain: definition.history.grain,
-                to: range.to,
-            },
-            ...(query?.timezone ? { timezone: query.timezone } : {}),
-        },
-        source,
-    }
-}
-
-const metricSource = (source: RuntimeSource): MetricSourceDefinition | undefined => {
-    const definition = source.definition
-    return isMetricSourceDefinition(definition) ? definition : undefined
-}
-
-const isMetricSourceDefinition = (value: unknown): value is MetricSourceDefinition =>
-    isRecord(value) &&
-    value.metricSource === true &&
-    isRecord(value.metrics) &&
-    isRecord(value.dimensions) &&
-    typeof value.normalize === 'function' &&
-    typeof value.key === 'function' &&
-    typeof value.execute === 'function'
-
-const isNormalizedMetricQuery = (value: unknown): value is NormalizedMetricQuery =>
-    isRecord(value) &&
-    Array.isArray(value.metrics) &&
-    value.metrics.every((metric) => typeof metric === 'string') &&
-    Array.isArray(value.dimensions) &&
-    value.dimensions.every((dimension) => typeof dimension === 'string') &&
-    isRecord(value.time) &&
-    typeof value.time.from === 'string' &&
-    typeof value.time.to === 'string'
-
-const requireMetricData = (value: unknown, source: string): MetricData => {
-    if (!isMetricData(value)) {
-        throw new InsightError('HISTORY_CORRUPT', `Invalid Metric data from "${source}"`)
-    }
-    return value
-}
-
-const isMetricData = (value: unknown): value is MetricData =>
-    isRecord(value) &&
-    Object.values(value).every(
-        (datum) =>
-            isRecord(datum) &&
-            (datum.value === null ||
-                (typeof datum.value === 'number' && Number.isFinite(datum.value))) &&
-            (datum.points === undefined ||
-                (Array.isArray(datum.points) && datum.points.every(isMetricPoint))),
-    )
-
-const isMetricPoint = (value: unknown): value is MetricPoint =>
-    isRecord(value) &&
-    (value.value === null || (typeof value.value === 'number' && Number.isFinite(value.value))) &&
-    (value.time === undefined || typeof value.time === 'string') &&
-    (value.dimensions === undefined ||
-        (isRecord(value.dimensions) &&
-            Object.values(value.dimensions).every(
-                (dimension) =>
-                    dimension === null ||
-                    typeof dimension === 'boolean' ||
-                    typeof dimension === 'number' ||
-                    typeof dimension === 'string',
-            )))
-
-const mergeData = (values: readonly MetricData[]): MetricData => {
-    const metrics = new Set(values.flatMap((value) => Object.keys(value)))
-    return Object.fromEntries(
-        [...metrics].map((metric) => {
-            const data = values.flatMap((value) => (value[metric] ? [value[metric]] : []))
-            return [
-                metric,
-                {
-                    points: data.flatMap(({ points }) => points ?? []),
-                    value: data.at(-1)?.value ?? null,
-                },
-            ]
-        }),
-    )
-}
-
-const materialize = (
-    data: MetricData,
-    source: MetricSourceDefinition,
-    query: NormalizedMetricQuery,
-): MetricData => {
-    const cache = new Map<string, MetricData[string]>()
-    const resolve = (metric: string): MetricData[string] => {
-        const existing = cache.get(metric)
-        if (existing) return existing
-        const definition = source.metrics[metric]
-        if (!definition) {
-            throw new InsightError('HISTORY_CORRUPT', `Unknown stored metric "${metric}"`)
-        }
-        if (definition.aggregation?.kind === 'ratio') {
-            const numerator = resolve(definition.aggregation.numerator)
-            const denominator = resolve(definition.aggregation.denominator)
-            const denominatorPoints = new Map(
-                (denominator.points ?? []).map((point) => [pointKey(point), point.value]),
-            )
-            const result = {
-                points: (numerator.points ?? []).map((point) => ({
-                    ...point,
-                    value: ratio(point.value, denominatorPoints.get(pointKey(point))),
-                })),
-                value: ratio(numerator.value, denominator.value),
+    #read(target: HistoryTarget, range: TimeRange, limit: number, cursor?: string) {
+        return this.#instrument('insight.history.read', historyAttributes(target), async () => {
+            const result = await this.#options.repository.read({
+                ...target,
+                ...(cursor ? { cursor } : {}),
+                limit: positiveInteger(limit, 'History read limit'),
+                range,
+            })
+            if (!result || !Array.isArray(result.segments)) {
+                throw new InsightError(
+                    'HISTORY_CORRUPT',
+                    'History repository returned an invalid page',
+                )
             }
-            cache.set(metric, result)
             return result
-        }
-        const points = data[metric]?.points ?? []
-        const groups = new Map<string, MetricPoint[]>()
-        for (const point of points) {
-            const normalized: MetricPoint = {
-                ...(query.dimensions.length > 0
-                    ? {
-                          dimensions: Object.fromEntries(
-                              query.dimensions.map((dimension) => [
-                                  dimension,
-                                  point.dimensions?.[dimension] ?? null,
-                              ]),
-                          ),
-                      }
-                    : {}),
-                ...(query.grain === 'auto' || !point.time
-                    ? {}
-                    : { time: bucketStart(point.time, query.grain) }),
-                value: point.value,
+        })
+    }
+
+    async #readAll(target: HistoryTarget, range: TimeRange): Promise<HistorySegment[]> {
+        const segments: HistorySegment[] = []
+        let cursor: string | undefined
+        for (let page = 0; page < this.#maxPages; page += 1) {
+            const result = await this.#read(target, range, this.#readSize, cursor)
+            segments.push(...validSegments(result.segments, target))
+            if (!result.next) return segments
+            if (result.next === cursor) {
+                throw new InsightError('HISTORY_CORRUPT', 'History repository repeated a cursor')
             }
-            const key = pointKey(normalized)
-            const group = groups.get(key) ?? []
-            group.push(normalized)
-            groups.set(key, group)
+            cursor = result.next
         }
-        const outputPoints = [...groups.values()]
-            .map((group) => ({
-                ...group[0],
-                value: aggregate(
-                    group.map(({ value }) => value),
-                    definition,
-                    metric,
-                    source,
-                ),
-            }))
-            .toSorted((left, right) => pointKey(left).localeCompare(pointKey(right)))
-        const limited = query.limit ? outputPoints.slice(0, query.limit) : outputPoints
-        const result = {
-            ...(limited.length > 0 ? { points: limited } : {}),
-            value:
-                points.length > 0
-                    ? aggregate(
-                          points.map(({ value }) => value),
-                          definition,
-                          metric,
-                          source,
-                      )
-                    : (data[metric]?.value ?? null),
-        }
-        cache.set(metric, result)
-        return result
+        throw new InsightError('HISTORY_CORRUPT', 'History repository exceeded the page limit')
     }
-    return Object.fromEntries(query.metrics.map((metric) => [metric, resolve(metric)]))
+
+    #reductions(target: HistoryTarget, range: TimeRange): readonly HistoryReduction[] {
+        return (this.#options.policies ?? []).flatMap((policy) =>
+            policyMatches(policy, target, range) ? policy.transformations : [],
+        )
+    }
+
+    #replace(target: HistoryTarget, range: TimeRange, segments: readonly HistorySegment[]) {
+        return this.#instrument('insight.history.write', historyAttributes(target), () =>
+            this.#options.repository.replace({ ...target, range }, segments),
+        )
+    }
+
+    #retentionBoundary(): string {
+        const maxAgeMs = this.#options.retention?.maxAgeMs
+        if (!maxAgeMs) {
+            throw new InsightError(
+                'INVALID_QUERY',
+                'History expire requires before or retention.maxAgeMs',
+            )
+        }
+        return new Date(this.#context.now().valueOf() - maxAgeMs).toISOString()
+    }
+
+    #select(selection: HistorySelection): RuntimeSource[] {
+        this.#validateSelections(selection)
+        return this.#sources.filter(
+            (source) =>
+                (!selection.scopes || selection.scopes.includes(source.scope)) &&
+                (!selection.capabilities ||
+                    selection.capabilities.includes(source.definition.contract.name)),
+        )
+    }
+
+    #split(source: RuntimeSource, range: TimeRange): TimeRange[] {
+        const target = historyTarget(source)
+        const boundaries = (this.#options.policies ?? [])
+            .filter((policy) => policyMatches(policy, target, range) && policy.range)
+            .flatMap(({ range: policyRange }) => {
+                const normalized = normalizeTimeRange(policyRange!)
+                return [normalized.from, normalized.to]
+            })
+            .filter((value) => value > range.from && value < range.to)
+        const partitionMs = source.definition.materialize?.partitionMs
+        if (partitionMs !== undefined) {
+            positiveInteger(partitionMs, 'History partitionMs')
+            const from = Date.parse(range.from)
+            const to = Date.parse(range.to)
+            for (
+                let value = Math.ceil(from / partitionMs) * partitionMs;
+                value < to;
+                value += partitionMs
+            ) {
+                if (value > from) boundaries.push(new Date(value).toISOString())
+            }
+        }
+        const points = [range.from, ...new Set(boundaries), range.to].toSorted()
+        return points.slice(0, -1).map((from, index) => ({ from, to: points[index + 1]! }))
+    }
+
+    #validateSelections(selection: HistorySelection): void {
+        const scopes = new Set(this.#sources.map(({ scope }) => scope))
+        const capabilities = new Set(
+            this.#sources.map(({ definition }) => definition.contract.name),
+        )
+        for (const scope of selection.scopes ?? []) {
+            if (!scopes.has(scope)) {
+                throw new InsightError('SOURCE_NOT_FOUND', `Unknown History Scope: ${scope}`)
+            }
+        }
+        for (const capability of selection.capabilities ?? []) {
+            if (!capabilities.has(capability)) {
+                throw new InsightError(
+                    'CAPABILITY_UNAVAILABLE',
+                    `Unknown History capability: ${capability}`,
+                )
+            }
+        }
+    }
 }
 
-const aggregate = (
-    values: readonly (number | null)[],
-    definition: MetricDefinition,
-    metric: string,
-    source: MetricSourceDefinition,
-): number | null => {
-    const present = values.filter((value): value is number => value !== null)
-    if (definition.rollup === 'additive') {
-        return present.reduce((total, value) => total + value, 0)
-    }
-    if (definition.aggregation?.kind === 'last') return values.at(-1) ?? null
-    if (values.length <= 1) return values[0] ?? null
-    const reason =
-        definition.aggregation?.kind === 'percentile'
-            ? 'percentile'
-            : (definition.aggregation?.kind ?? definition.rollup ?? 'unspecified')
-    throw new InsightError(
-        'UNSAFE_ROLLUP',
-        `Metric "${metric}" cannot roll up ${reason} values safely`,
-        { cause: source },
-    )
+const noopSpan: InstrumentationSpan = {
+    recordException: () => undefined,
+    setAttribute: () => undefined,
 }
-
-const ratio = (numerator: number | null | undefined, denominator: number | null | undefined) =>
-    numerator === null || numerator === undefined || !denominator ? null : numerator / denominator
-
-const pointKey = (point: MetricPoint): string =>
-    JSON.stringify([point.time ?? null, point.dimensions ?? {}])
 
 async function applyReductions(
-    input: MetricData,
+    input: readonly unknown[],
     reductions: readonly HistoryReduction[],
-    source: RuntimeSource,
-): Promise<{ data: MetricData; fidelity: HistoryFidelity }> {
-    let data = input
+    context: HistoryReductionContext,
+    itemId: (item: unknown, index: number) => string,
+): Promise<{ fidelity: HistoryFidelity; items: readonly unknown[] }> {
+    let items = input
     const transformations: HistoryTransformation[] = []
     for (const reduction of reductions) {
         if (reduction.kind === 'sample') {
             if (!(reduction.rate > 0 && reduction.rate <= 1)) {
                 throw new InsightError('INVALID_QUERY', 'History sample rate must be in (0, 1]')
             }
-            const step = Math.max(1, Math.round(1 / reduction.rate))
-            data = mapPoints(data, (points) => points.filter((_, index) => index % step === 0))
+            items = items.filter((item, index) => sampled(itemId(item, index), reduction.rate))
             transformations.push({ kind: 'sample', rate: reduction.rate })
         } else if (reduction.kind === 'filter') {
-            data = mapPoints(data, (points) =>
-                points.filter((point) =>
-                    reduction.values.includes(point.dimensions?.[reduction.field] ?? null),
-                ),
-            )
-            transformations.push({ field: reduction.field, kind: 'filter' })
-        } else if (reduction.kind === 'omit-fields') {
-            data = mapPoints(data, (points) =>
-                points.map((point) => ({
-                    ...point,
-                    ...(point.dimensions
-                        ? {
-                              dimensions: Object.fromEntries(
-                                  Object.entries(point.dimensions).filter(
-                                      ([field]) => !reduction.fields.includes(field),
-                                  ),
-                              ),
-                          }
-                        : {}),
-                })),
-            )
-            transformations.push({ fields: reduction.fields, kind: 'omit-fields' })
+            items = items.filter((item) => reduction.test(item, context))
+            transformations.push({ id: reduction.id, kind: 'filter' })
         } else if (reduction.kind === 'truncate') {
             if (!Number.isInteger(reduction.limit) || reduction.limit < 0) {
                 throw new InsightError(
@@ -508,60 +504,20 @@ async function applyReductions(
                     'History truncate limit must be non-negative',
                 )
             }
-            data = mapPoints(data, (points) => points.slice(0, reduction.limit))
+            items = items.slice(0, reduction.limit)
             transformations.push({ kind: 'truncate', limit: reduction.limit })
-        } else if (reduction.kind === 'aggregate') {
-            const definition = metricSource(source)
-            if (!definition) return invalidHistory(source.id)
-            data = materialize(data, definition, {
-                dimensions: allDimensions(data),
-                grain: reduction.grain,
-                metrics: Object.keys(data),
-                time: storedRange(data),
-                timezone: 'UTC',
-            })
-            transformations.push({ grain: reduction.grain, kind: 'aggregate' })
         } else {
-            data = await reduction.transform(data)
+            items = await reduction.transform(items, context)
             transformations.push({ id: reduction.id, kind: 'custom' })
         }
     }
     return {
-        data,
         fidelity: {
             preservation: transformations.length === 0 ? 'full' : 'reduced',
             transformations,
         },
+        items,
     }
-}
-
-const mapPoints = (
-    data: MetricData,
-    transform: (points: readonly MetricPoint[]) => readonly MetricPoint[],
-): MetricData =>
-    Object.fromEntries(
-        Object.entries(data).map(([metric, datum]) => [
-            metric,
-            { ...datum, ...(datum.points ? { points: transform(datum.points) } : {}) },
-        ]),
-    )
-
-const allDimensions = (data: MetricData): string[] => [
-    ...new Set(
-        Object.values(data).flatMap(({ points }) =>
-            (points ?? []).flatMap(({ dimensions }) => Object.keys(dimensions ?? {})),
-        ),
-    ),
-]
-
-const storedRange = (data: MetricData): TimeRange => {
-    const times = Object.values(data)
-        .flatMap(({ points }) => points ?? [])
-        .flatMap(({ time }) => (time ? [time] : []))
-        .toSorted()
-    const from = times[0] ?? new Date(0).toISOString()
-    const last = times.at(-1) ?? from
-    return { from, to: new Date(new Date(last).valueOf() + 1).toISOString() }
 }
 
 function uncoveredRanges(requested: TimeRange, coverage: readonly HistoryCoverage[]): TimeRange[] {
@@ -581,21 +537,96 @@ function uncoveredRanges(requested: TimeRange, coverage: readonly HistoryCoverag
     return gaps
 }
 
-function splitForRules(options: HistoryOptions, source: string, range: TimeRange): TimeRange[] {
-    const boundaries = (options.reductions?.[source] ?? [])
-        .flatMap((rule) => (rule.range ? [rule.range.from, rule.range.to] : []))
-        .filter((value) => value > range.from && value < range.to)
-    const points = [range.from, ...new Set(boundaries), range.to].toSorted()
-    return points.slice(0, -1).map((from, index) => ({ from, to: points[index + 1]! }))
+const validSegments = (
+    segments: readonly HistorySegment[],
+    target: HistoryTarget,
+): HistorySegment[] =>
+    segments.map((segment) => {
+        if (
+            segment.schemaVersion !== 2 ||
+            segment.scope !== target.scope ||
+            segment.capability !== target.capability ||
+            segment.adapter !== target.adapter ||
+            (!segment.empty && segment.data === undefined) ||
+            !validFidelity(segment.fidelity)
+        ) {
+            throw new InsightError(
+                'HISTORY_CORRUPT',
+                `Invalid History segment for "${target.scope}.${target.capability}"`,
+            )
+        }
+        return segment
+    })
+
+const fidelityBands = (
+    segments: readonly HistorySegment[],
+    range: TimeRange,
+): HistoryFidelityBand[] => {
+    const bands = new Map<string, HistoryFidelityBand>()
+    for (const segment of segments) {
+        const overlap = intersection(range, segment.range)
+        if (!overlap) continue
+        const band = { ...segment.fidelity, range: overlap }
+        bands.set(JSON.stringify(band), band)
+    }
+    return [...bands.values()].toSorted((left, right) =>
+        left.range.from.localeCompare(right.range.from),
+    )
 }
 
-function reductionsFor(
-    options: HistoryOptions,
-    source: string,
+const emptySegment = (
+    target: HistoryTarget,
     range: TimeRange,
-): readonly HistoryReduction[] {
-    return (options.reductions?.[source] ?? []).flatMap((rule) =>
-        !rule.range || intersection(rule.range, range) ? rule.transformations : [],
+    observedAt: string,
+    fidelity: HistoryFidelity,
+    quality: QueryQuality | undefined,
+    provisional: boolean,
+): HistorySegment => ({
+    ...target,
+    empty: true,
+    fidelity,
+    id: segmentId(target, range, 'empty'),
+    observedAt,
+    ...(provisional ? { provisional: true } : {}),
+    ...(quality ? { quality } : {}),
+    range,
+    schemaVersion: 2,
+    sortKey: '',
+})
+
+const dedupeSegments = (segments: readonly HistorySegment[]): HistorySegment[] => [
+    ...new Map(segments.map((segment) => [segment.id, segment])).values(),
+]
+
+const historyTarget = (source: RuntimeSource): HistoryTarget => ({
+    adapter: source.id,
+    capability: source.definition.contract.name,
+    scope: source.scope,
+})
+
+const historyAttributes = (target: HistoryTarget) => ({
+    'insight.adapter': target.adapter,
+    'insight.capability': target.capability,
+    'insight.scope': target.scope,
+})
+
+const policyMatches = (policy: HistoryPolicy, target: HistoryTarget, range: TimeRange): boolean =>
+    (!policy.scope || policy.scope === target.scope) &&
+    (!policy.capability || policy.capability === target.capability) &&
+    (!policy.range || intersection(normalizeTimeRange(policy.range), range) !== undefined)
+
+const isProvisional = (
+    quality: QueryQuality | undefined,
+    meta: object | undefined,
+    range: TimeRange,
+): boolean => {
+    const freshness = isRecord(meta) && isRecord(meta.freshness) ? meta.freshness : undefined
+    return Boolean(
+        quality?.partial ||
+        (freshness &&
+            typeof freshness.incompleteFrom === 'string' &&
+            freshness.incompleteFrom < range.to &&
+            freshness.completeThrough !== range.to),
     )
 }
 
@@ -603,63 +634,82 @@ const mergeQuality = (values: readonly (QueryQuality | undefined)[]): QueryQuali
     const present = values.filter((value): value is QueryQuality => value !== undefined)
     if (present.length === 0) return undefined
     const warnings = present.flatMap(({ warnings: items }) => items ?? [])
-    const sampleRates = present.flatMap(({ sampleRate }) =>
+    const rates = present.flatMap(({ sampleRate }) =>
         sampleRate === undefined ? [] : [sampleRate],
     )
     return {
         ...(present.some(({ approximate }) => approximate) ? { approximate: true } : {}),
         ...(present.some(({ partial }) => partial) ? { partial: true } : {}),
-        ...(present.some(({ sampled }) => sampled) ? { sampled: true } : {}),
-        ...(sampleRates.length > 0 ? { sampleRate: Math.min(...sampleRates) } : {}),
+        ...(present.some(({ sampled: value }) => value) ? { sampled: true } : {}),
+        ...(rates.length > 0 ? { sampleRate: Math.min(...rates) } : {}),
         ...(present.some(({ thresholded }) => thresholded) ? { thresholded: true } : {}),
         ...(warnings.length > 0 ? { warnings } : {}),
     }
 }
 
-const isProvisional = (result: QueryResult<unknown, object>, range: TimeRange): boolean => {
-    const meta = result.meta as QueryResult<unknown>['meta'] & {
-        freshness?: { completeThrough?: string; incompleteFrom?: string }
+const encodeCursor = (cursor: string, target: HistoryTarget): string =>
+    `${cursorPrefix}${encodeBase64(JSON.stringify({ cursor, target }))}`
+
+const decodeCursor = (cursor: string | undefined, target: HistoryTarget): string | undefined => {
+    if (!cursor) return undefined
+    if (!cursor.startsWith(cursorPrefix)) throw invalidCursor()
+    try {
+        const value: unknown = JSON.parse(decodeBase64(cursor.slice(cursorPrefix.length)))
+        if (
+            !isRecord(value) ||
+            typeof value.cursor !== 'string' ||
+            !sameTarget(value.target, target)
+        ) {
+            throw invalidCursor()
+        }
+        return value.cursor
+    } catch (error) {
+        if (error instanceof InsightError) throw error
+        throw invalidCursor()
     }
-    const incomplete = meta.freshness?.incompleteFrom
-    return Boolean(
-        meta.quality?.partial ||
-        (incomplete && incomplete < range.to && meta.freshness?.completeThrough !== range.to),
+}
+
+const encodeBase64 = (value: string): string => {
+    const bytes = new TextEncoder().encode(value)
+    let binary = ''
+    for (const byte of bytes) binary += String.fromCharCode(byte)
+    return btoa(binary).replaceAll('+', '-').replaceAll('/', '_').replace(/=+$/, '')
+}
+
+const decodeBase64 = (value: string): string => {
+    const encoded = value.replaceAll('-', '+').replaceAll('_', '/')
+    const binary = atob(encoded.padEnd(Math.ceil(encoded.length / 4) * 4, '='))
+    return new TextDecoder('utf-8', { fatal: true }).decode(
+        Uint8Array.from(binary, (character) => character.charCodeAt(0)),
     )
 }
 
-const validSegments = (segments: readonly HistorySegment[], source: string): HistorySegment[] =>
-    segments.map((segment) => {
-        if (
-            segment.schemaVersion !== 2 ||
-            segment.source !== source ||
-            !segment.fidelity ||
-            !isRecord(segment.data) ||
-            !isRecord(segment.meta)
-        ) {
-            throw new InsightError('HISTORY_CORRUPT', `Invalid History segment for "${source}"`)
-        }
-        return segment
-    })
+const sameTarget = (value: unknown, target: HistoryTarget): boolean =>
+    isRecord(value) &&
+    value.adapter === target.adapter &&
+    value.capability === target.capability &&
+    value.scope === target.scope
 
-const segmentId = (source: string, range: TimeRange): string =>
-    `${source}:${range.from}:${range.to}`
+const segmentId = (target: HistoryTarget, range: TimeRange, item: string): string =>
+    `${target.scope}:${target.adapter}:${range.from}:${range.to}:${item}`
 
-const bucketStart = (value: string, grain: Grain): string => {
-    const date = new Date(value)
-    if (!Number.isFinite(date.valueOf())) {
-        throw new InsightError('HISTORY_CORRUPT', `Invalid History timestamp: ${value}`)
+const sampled = (value: string, rate: number): boolean => {
+    let hash = 2_166_136_261
+    for (let index = 0; index < value.length; index += 1) {
+        hash = Math.imul(hash ^ value.charCodeAt(index), 16_777_619)
     }
-    if (grain === 'year') date.setUTCMonth(0, 1)
-    if (grain === 'year' || grain === 'month') date.setUTCDate(1)
-    if (grain === 'week') {
-        const weekday = date.getUTCDay() || 7
-        date.setUTCDate(date.getUTCDate() - weekday + 1)
-    }
-    if (['year', 'month', 'week', 'day'].includes(grain)) date.setUTCHours(0)
-    if (grain !== 'minute') date.setUTCMinutes(0)
-    date.setUTCSeconds(0, 0)
-    return date.toISOString()
+    return (hash >>> 0) / 0x1_0000_0000 < rate
 }
+
+const positiveInteger = (value: number, name: string): number => {
+    if (!Number.isInteger(value) || value <= 0) throw new TypeError(`${name} must be positive`)
+    return value
+}
+
+const validFidelity = (value: unknown): value is HistoryFidelity =>
+    isRecord(value) &&
+    ['full', 'reduced', 'not-preserved'].includes(String(value.preservation)) &&
+    Array.isArray(value.transformations)
 
 const intersection = (left: TimeRange, right: TimeRange): TimeRange | undefined => {
     const from = left.from > right.from ? left.from : right.from
@@ -670,12 +720,8 @@ const intersection = (left: TimeRange, right: TimeRange): TimeRange | undefined 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
     typeof value === 'object' && value !== null && !Array.isArray(value)
 
-const invalidHistory = (source: string): never => {
-    throw new InsightError('HISTORY_CORRUPT', `Invalid Metric History Source "${source}"`)
-}
+const invalidCursor = () => new InsightError('INVALID_QUERY', 'Invalid History cursor')
+const cursorPrefix = 'history:v2:'
+const epoch = new Date(0).toISOString()
 
-export type {
-    HistoryFidelity,
-    HistoryFidelityBand,
-    HistoryTransformation,
-} from '../metrics/index.ts'
+export type { HistoryFidelity, HistoryFidelityBand, HistoryTransformation }

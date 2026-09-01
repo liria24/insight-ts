@@ -3,13 +3,11 @@ import { InsightAreaChart } from '../../../../src/integrations/vue/ui/index.ts'
 
 const data = {
     data: {
-        pageViews: {
-            points: [
-                { time: '2026-08-27T00:00:00.000Z', value: 12 },
-                { time: '2026-08-28T00:00:00.000Z', value: 18 },
-            ],
-            value: 30,
-        },
+        points: [
+            { time: '2026-08-27T00:00:00.000Z', values: { pageViews: 12 } },
+            { time: '2026-08-28T00:00:00.000Z', values: { pageViews: 18 } },
+        ],
+        values: { pageViews: 30 },
     },
     meta: {
         quality: {},

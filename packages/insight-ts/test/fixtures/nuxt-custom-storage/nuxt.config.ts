@@ -5,7 +5,7 @@ import insight from '../../../src/integrations/nuxt/index.ts'
 
 const config: NuxtConfig & { nitro: { storage: { insight: { driver: string } } } } = {
     modules: [insight],
-    insight: { history: { sources: ['app.usage'] } },
+    insight: { history: { capabilities: ['metrics'] } },
     nitro: { storage: { insight: { driver: 'memory' } } },
 }
 

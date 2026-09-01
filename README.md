@@ -10,9 +10,9 @@
 
 # Insight.ts
 
-Insight.ts is a TypeScript SDK for querying data from different services without forcing them into one shared schema. Configure explicit Sources, query them through one API, and keep each Provider's metrics, limits, sampling, and metadata visible.
+Insight.ts is a TypeScript SDK for querying canonical Metrics, Logs, and Traces across services. Configure Providers inside a logical Scope, ask for the data you need, and keep sampling, partiality, and freshness visible without exposing backend topology in query code.
 
-Start with Core and one Source. Add built-in Providers, History, events, Nitro or Nuxt integrations, OpenTelemetry, and Vue UI only when your application needs them.
+Start with Core and one Provider. Add History, events, Nitro or Nuxt integrations, OpenTelemetry, and Vue UI only when your application needs them.
 
 > **Alpha:** Insight.ts is still under active development. Public APIs may change before the first stable release.
 
@@ -28,26 +28,20 @@ This example queries page views and visits from Cloudflare Web Analytics.
 
 ```ts
 import { createInsight } from 'insight-ts'
-import { cloudflareWebAnalytics } from 'insight-ts/cloudflare'
-import { defineProvider } from 'insight-ts/provider'
-
-const cloudflare = defineProvider({
-    id: 'cloudflare',
-    sources: {
-        webAnalytics: cloudflareWebAnalytics({
-            accountId,
-            apiToken,
-            siteTag,
-        }),
-    },
-})
+import { cloudflare } from 'insight-ts/cloudflare'
 
 const insight = createInsight({
-    providers: [cloudflare] as const,
+    providers: [
+        cloudflare({
+            accountId,
+            apiToken,
+            webAnalytics: { siteTag },
+        }),
+    ],
 })
 
 const dashboard = await insight.query((q) => ({
-    traffic: q.source('cloudflare.webAnalytics', {
+    traffic: q.metrics({
         metrics: ['pageViews', 'visits'],
         time: {
             from: '2026-08-01T00:00:00.000Z',
@@ -60,22 +54,22 @@ const dashboard = await insight.query((q) => ({
     }),
 }))
 
-console.log(dashboard.traffic.data.pageViews.value)
+console.log(dashboard.traffic.data.values.pageViews)
 ```
 
-The Source ID, query fields, selected metrics and dimensions, result data, and metadata stay typed throughout the query.
+Configured canonical Metrics and dimensions are inferred across Provider adapters without `as const` or explicit generics.
 
 ## Why Insight.ts?
 
 ### Typed end to end
 
-A Source defines the query it accepts and the result it returns. TypeScript carries that information through `insight.query()`, so unsupported Source IDs, metrics, dimensions, filters, and values fail where you write them.
+A Scope's adapters define the canonical fields they can execute. TypeScript carries that information through `insight.query()`, while runtime capability intersections reject incompatible cross-adapter dimensions and filters before I/O.
 
 ### Provider details stay visible
 
 Cloudflare, Search Console, application databases, observability systems, and other services do not expose identical capabilities.
 
-Insight.ts gives them a common execution API without hiding differences such as sampling, approximation, partial results, pagination, freshness, or Provider-specific metadata.
+Insight.ts gives them canonical query contracts without hiding differences such as sampling, approximation, partial results, pagination, or freshness.
 
 ### Add only what you need
 
@@ -86,11 +80,29 @@ Core does not require a framework, History engine, UI renderer, or OpenTelemetry
 Built-in support currently includes:
 
 - **Cloudflare Web Analytics** — page views, visits, dimensions, filters, and quality metadata
+- **Cloudflare Workers Observability** — canonical Logs, Traces, and telemetry Metrics with opaque pagination
 - **Cloudflare Analytics Engine** — Metric queries, event delivery, or both
-- **Google Search Console** — Search Analytics metrics with native pagination and data-state metadata
-- **Application-defined Sources** — arbitrary typed query and result contracts through `defineSource()` and `defineProvider()`
+- **Google Search Console** — Search Analytics metrics with data-state and quality metadata
+- **Application-defined adapters** — canonical Metric, Log, and Trace adapters through focused entrypoints and custom Providers through `defineProvider()`
 
-Custom Sources use the same query execution and type inference as built-in Providers.
+Custom adapters use the same scope-aware planning and result merging as built-in Providers.
+
+## History
+
+History preserves configured canonical capabilities with one Scope-aware workflow. Capability
+adapters retain their own identity, pagination, and safe rollup semantics while the engine owns
+coverage, bounded partition synchronization, Fidelity, storage, compaction, and expiration.
+
+```ts
+import { createHistory } from 'insight-ts/history'
+
+const insight = createInsight({
+    providers,
+    history: createHistory({ repository, capabilities: ['metrics', 'logs', 'traces'] }),
+})
+
+await insight.history.sync({ range: { from, to } })
+```
 
 ## UI
 
@@ -119,9 +131,11 @@ The complete documentation is available at [insight.liria.me](https://insight.li
 - [Introduction](https://insight.liria.me/getting-started/introduction)
 - [Installation](https://insight.liria.me/getting-started/installation)
 - [First query](https://insight.liria.me/getting-started/first-query)
+- [Query](https://insight.liria.me/query/introduction)
+- [Track](https://insight.liria.me/track/events)
+- [History](https://insight.liria.me/history/introduction)
 - [Providers](https://insight.liria.me/providers/cloudflare)
 - [UI](https://insight.liria.me/ui/stat)
-- [Guides](https://insight.liria.me/guides/data-model)
 - [API reference](https://insight.liria.me/reference/api)
 - [Live demo](https://insight.liria.me/demo)
 
@@ -132,8 +146,23 @@ This repository is a Bun workspace containing the SDK, documentation site, tests
 ```sh
 bun ci
 bun run check
+bun run bundle:size
+bun run bench
 bun run docs:dev
 ```
+
+`bun run check` runs Oxfmt, Oxlint, Sherif, Knip (full and production modes),
+typechecking, Vitest, the package build with publint/ATTW, and packed consumer contracts. Consumer
+bundle sizes and Bencher benchmarks run in separate informational workflows so size or performance
+changes do not duplicate correctness gates or fail CI by themselves. `taze` remains available through
+`bun run deps:update` for manual dependency updates; Renovate handles scheduled updates.
+
+Bencher reads Vitest's JSON benchmark output directly. To enable its GitHub reports, set the
+`BENCHER_PROJECT` repository variable and the `BENCHER_API_KEY` repository secret.
+
+`main` is the only development trunk. Normal changes use a short-lived branch, pull request, and
+squash merge. Uppt alone owns temporary `release/v*` branches and the existing release PR, tag,
+GitHub Release, and npm OIDC staged-publishing flow.
 
 Repository structure:
 
