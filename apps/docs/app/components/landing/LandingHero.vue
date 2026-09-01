@@ -76,7 +76,7 @@ const ecosystem = [
                     </div>
 
                     <UButton
-                        to="/getting-started/introduction"
+                        to="/get-started/overview/introduction"
                         label="Read the docs"
                         trailing-icon="mingcute:arrow-right-line"
                         color="neutral"

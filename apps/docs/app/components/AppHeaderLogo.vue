@@ -5,7 +5,7 @@ const color = computed(() => (props.white ? 'text-white' : 'text-highlighted hov
 </script>
 
 <template>
-    <div class="flex items-center gap-3">
+    <div class="flex items-center gap-6">
         <ULink
             to="/"
             aria-label="Insight.ts home"
@@ -15,7 +15,19 @@ const color = computed(() => (props.white ? 'text-white' : 'text-highlighted hov
             Insight.ts
         </ULink>
 
-        <ULink to="/getting-started/introduction" class="ml-2 text-sm">Docs</ULink>
-        <ULink to="/demo" class="text-sm">Demo</ULink>
+        <UNavigationMenu
+            color="neutral"
+            variant="link"
+            :items="[
+                {
+                    label: 'Docs',
+                    to: '/get-started/overview/introduction',
+                },
+                {
+                    label: 'Demo',
+                    to: '/demo',
+                },
+            ]"
+        />
     </div>
 </template>
