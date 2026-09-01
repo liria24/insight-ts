@@ -1,4 +1,4 @@
-/* eslint-disable vitest/require-mock-type-parameters */
+/* eslint-disable no-await-in-loop, vitest/require-mock-type-parameters */
 
 import { describe, expect, it, vi } from 'vitest'
 
@@ -100,6 +100,59 @@ describe('per-result pagination', () => {
             insight.query((q) => ({ page: q.logs({ cursor, limit: 2, time }) })),
         ).rejects.toMatchObject({ code: 'INVALID_QUERY' })
         expect(execute).toHaveBeenCalledOnce()
+    })
+
+    it('rejects malformed, tampered, and oversized cursors before Provider I/O', async () => {
+        const execute = vi.fn(() => ({
+            logs: [log('a', 1), log('b', 0)],
+            nativeCursor: 'next',
+        }))
+        const insight = createInsight({
+            providers: [
+                defineProvider({
+                    adapters: { logs: defineLogAdapter({ execute }) },
+                    id: 'logs',
+                }),
+            ],
+        })
+        const first = await insight.query((q) => ({ page: q.logs({ limit: 1, time }) }))
+        const cursor = first.page.meta.pagination?.next
+        if (!cursor) throw new Error('Expected a Log cursor')
+        const position = Math.min(24, cursor.length - 1)
+        const tampered = `${cursor.slice(0, position)}${cursor[position] === 'a' ? 'b' : 'a'}${cursor.slice(position + 1)}`
+        const calls = execute.mock.calls.length
+
+        for (const invalid of [
+            'not-an-insight-cursor',
+            'insight:v1:not-base64!',
+            tampered,
+            `insight:v1:${'a'.repeat(1_100_000)}`,
+        ]) {
+            await expect(
+                insight.query((q) => ({ page: q.logs({ cursor: invalid, limit: 1, time }) })),
+            ).rejects.toMatchObject({ code: 'INVALID_QUERY' })
+        }
+        expect(execute).toHaveBeenCalledTimes(calls)
+    })
+
+    it('rejects repeated Provider cursors', async () => {
+        const execute = vi.fn(() => ({ logs: [log(crypto.randomUUID(), 1)], nativeCursor: 'same' }))
+        const insight = createInsight({
+            providers: [
+                defineProvider({
+                    adapters: { logs: defineLogAdapter({ execute }) },
+                    id: 'logs',
+                }),
+            ],
+        })
+        const first = await insight.query((q) => ({ page: q.logs({ limit: 1, time }) }))
+        const cursor = first.page.meta.pagination?.next
+        if (!cursor) throw new Error('Expected a Log cursor')
+
+        await expect(
+            insight.query((q) => ({ page: q.logs({ cursor, limit: 1, time }) })),
+        ).rejects.toMatchObject({ code: 'INVALID_QUERY' })
+        expect(execute).toHaveBeenCalledTimes(2)
     })
 
     it('uses the same opaque continuation for Traces and buffer-only pages', async () => {
