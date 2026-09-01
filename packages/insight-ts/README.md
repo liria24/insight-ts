@@ -69,6 +69,7 @@ Configured canonical Metrics and dimensions are inferred across Provider adapter
 Insight.ts currently includes support for:
 
 - Cloudflare Web Analytics
+- Cloudflare Workers Observability Logs, Traces, and telemetry Metrics
 - Cloudflare Analytics Engine
 - Google Search Console with bounded native pagination
 

@@ -12,6 +12,7 @@ import {
 } from '../src/history/index.ts'
 import { defineLogAdapter } from '../src/logs/index.ts'
 import { defineMetricAdapter, type TimeRange } from '../src/metrics/index.ts'
+import { cloudflare } from '../src/providers/cloudflare/index.ts'
 import { defineTraceAdapter } from '../src/traces/index.ts'
 
 const range: TimeRange = {
@@ -203,6 +204,50 @@ describe('generic History', () => {
         expect(second.logs.meta.pagination).toBeUndefined()
         expect(repository.reads.map(({ limit }) => limit)).toEqual([2, 2])
         expect(execute).toHaveBeenCalledTimes(providerCalls)
+    })
+
+    it('drains Cloudflare native continuation before marking Log coverage complete', async () => {
+        let page = 0
+        const fetcher = vi.fn<(input: RequestInfo | URL, init?: RequestInit) => Promise<Response>>(
+            async () => {
+                const events =
+                    page++ === 0
+                        ? Array.from({ length: 1000 }, (_, index) => ({
+                              $metadata: { id: `log-${index}` },
+                              source: `log ${index}`,
+                              timestamp: Date.parse(range.to) - index - 1,
+                          }))
+                        : [
+                              {
+                                  $metadata: { id: 'log-1000' },
+                                  source: 'oldest',
+                                  timestamp: Date.parse(range.from),
+                              },
+                          ]
+                return Response.json({
+                    result: { events: { events }, run: { status: 'COMPLETED' } },
+                })
+            },
+        )
+        const repository = new MemoryRepository()
+        const insight = createInsight({
+            history: createHistory({ capabilities: ['logs'], repository }),
+            providers: [
+                cloudflare({
+                    accountId: 'account',
+                    apiToken: 'token',
+                    workersObservability: { fetch: fetcher },
+                }),
+            ],
+        })
+
+        await insight.history.sync({ range })
+        expect(fetcher).toHaveBeenCalledTimes(2)
+        expect(repository.segments).toHaveLength(1001)
+        const calls = fetcher.mock.calls.length
+        const result = await insight.query((q) => ({ logs: q.logs({ limit: 1, time: range }) }))
+        expect(result.logs.data.logs[0]?.id).toBe('log-0')
+        expect(fetcher).toHaveBeenCalledTimes(calls)
     })
 
     it('distinguishes reduced, empty, and not-preserved ranges', async () => {

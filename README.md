@@ -80,6 +80,7 @@ Core does not require a framework, History engine, UI renderer, or OpenTelemetry
 Built-in support currently includes:
 
 - **Cloudflare Web Analytics** — page views, visits, dimensions, filters, and quality metadata
+- **Cloudflare Workers Observability** — canonical Logs, Traces, and telemetry Metrics with opaque pagination
 - **Cloudflare Analytics Engine** — Metric queries, event delivery, or both
 - **Google Search Console** — Search Analytics metrics with bounded native pagination and data-state metadata
 - **Application-defined adapters** — canonical Metric, Log, and Trace adapters through focused entrypoints and custom Providers through `defineProvider()`
