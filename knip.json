@@ -21,6 +21,7 @@
                 "benchmark/**/*.bench.ts",
                 "scripts/*.ts",
                 "test/**/*.test.ts",
+                "test/types.*.ts",
                 "test/fixtures/**/*.{ts,vue}"
             ],
             "ignoreDependencies": ["@arethetypeswrong/cli"],

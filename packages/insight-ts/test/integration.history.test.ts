@@ -410,6 +410,137 @@ describe('generic History', () => {
         expect(repository.segments).toEqual([])
     })
 
+    it('fetches only uncovered half-open range boundaries', async () => {
+        const repository = new MemoryRepository()
+        const execute = vi.fn((query: { time: TimeRange }) => ({
+            points: [{ time: query.time.from, values: { requests: 1 } }],
+            values: { requests: 1 },
+        }))
+        const insight = createInsight({
+            history: createHistory({ capabilities: ['metrics'], repository }),
+            providers: [
+                defineProvider({
+                    adapters: {
+                        metrics: defineMetricAdapter({
+                            execute,
+                            history: { grain: 'day', metrics: ['requests'] },
+                            metrics: {
+                                requests: { aggregation: { kind: 'sum' }, rollup: 'additive' },
+                            },
+                        }),
+                    },
+                    id: 'app',
+                }),
+            ],
+        })
+        const firstDay = { from: range.from, to: '2026-08-02T00:00:00.000Z' }
+        await insight.history.sync({ range: firstDay })
+        execute.mockClear()
+
+        const result = await insight.query((q) => ({
+            requests: q.metrics({ metrics: ['requests'], time: { ...range, grain: 'day' } }),
+        }))
+
+        expect(execute).toHaveBeenCalledOnce()
+        expect(execute).toHaveBeenCalledWith(
+            expect.objectContaining({ time: { from: firstDay.to, to: range.to } }),
+            expect.any(Object),
+        )
+        expect(result.requests.data.values.requests).toBe(2)
+        expect(result.requests.meta.fidelity).toEqual([
+            expect.objectContaining({ preservation: 'full', range: firstDay }),
+            expect.objectContaining({
+                preservation: 'full',
+                range: { from: firstDay.to, to: range.to },
+            }),
+        ])
+    })
+
+    it('retries failed and provisional captures without committing stale coverage', async () => {
+        const repository = new MemoryRepository()
+        let attempt = 0
+        const execute = vi.fn(() => {
+            attempt += 1
+            if (attempt === 1) throw new Error('temporary failure')
+            return {
+                logs: [{ id: `log-${attempt}`, timestamp: range.from }],
+                ...(attempt === 2 ? { quality: { partial: true } } : {}),
+            }
+        })
+        const insight = createInsight({
+            history: createHistory({ capabilities: ['logs'], repository }),
+            providers: [
+                defineProvider({
+                    adapters: { logs: defineLogAdapter({ execute }) },
+                    id: 'app',
+                }),
+            ],
+        })
+
+        await expect(insight.history.sync({ range })).rejects.toThrow('temporary failure')
+        expect(repository.segments).toEqual([])
+        await expect(insight.history.sync({ range })).resolves.toEqual({ fetched: 1, skipped: 0 })
+        expect(repository.segments.every(({ provisional }) => provisional)).toBe(true)
+        await expect(insight.history.sync({ range })).resolves.toEqual({ fetched: 1, skipped: 0 })
+        expect(repository.segments.every(({ provisional }) => !provisional)).toBe(true)
+        expect(repository.segments.map(({ id }) => id).join()).toContain('log-3')
+    })
+
+    it('rejects repository cursor loops and corrupt segments', async () => {
+        const base = new MemoryRepository()
+        const looping: HistoryRepository = {
+            coverage: async () => [{ id: 'covered', range }],
+            delete: (query) => base.delete(query),
+            read: async () => ({ next: 'loop', segments: [] }),
+            replace: (query, segments) => base.replace(query, segments),
+        }
+        const provider = defineProvider({
+            adapters: {
+                metrics: defineMetricAdapter({
+                    execute: () => ({ values: { requests: 1 } }),
+                    metrics: { requests: {} },
+                }),
+            },
+            id: 'app',
+        })
+        const loop = createInsight({
+            history: createHistory({ capabilities: ['metrics'], repository: looping }),
+            providers: [provider],
+        })
+        await expect(
+            loop.query((q) => ({ requests: q.metrics({ metrics: ['requests'], time: range }) })),
+        ).rejects.toMatchObject({ code: 'HISTORY_CORRUPT' })
+
+        const corrupt: HistoryRepository = {
+            ...looping,
+            read: async () => ({
+                segments: [
+                    {
+                        adapter: 'wrong.metrics',
+                        capability: 'metrics',
+                        data: { values: { requests: 1 } },
+                        fidelity: { preservation: 'full', transformations: [] },
+                        id: 'corrupt',
+                        observedAt: range.to,
+                        range,
+                        schemaVersion: 2,
+                        scope: 'default',
+                        sortKey: 'metrics',
+                    },
+                ],
+            }),
+        }
+        const corrupted = createInsight({
+            history: createHistory({ capabilities: ['metrics'], repository: corrupt }),
+            providers: [provider],
+        })
+        await expect(
+            corrupted.query((q) => ({
+                requests: q.metrics({ metrics: ['requests'], time: range }),
+            })),
+        ).rejects.toMatchObject({ code: 'HISTORY_CORRUPT' })
+    })
+
     it('preserves safe Metric rollup rules and bypasses unrepresented filters', async () => {
         const execute = vi.fn<typeof metricAdapter.execute>((query, context) =>
             metricAdapter.execute(query, context),

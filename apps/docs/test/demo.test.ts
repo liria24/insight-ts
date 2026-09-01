@@ -31,7 +31,7 @@ describe('Demo analytics range', () => {
         await Promise.all(
             Object.entries(pages).map(async ([file, { fixture, tag }]) => {
                 const content = await Bun.file(
-                    new URL(`../content/7.ui/${file}`, import.meta.url),
+                    new URL(`../content/4.ui/${file}`, import.meta.url),
                 ).text()
                 const example = content.slice(
                     content.indexOf('## Example'),

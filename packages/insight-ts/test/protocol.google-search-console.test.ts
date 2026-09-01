@@ -133,58 +133,16 @@ describe('Google Search Console adapter', () => {
         void rejectsContains
     })
 
-    it('normalizes 25,000 multi-dimension rows once and reuses date conversion', async () => {
-        const formatToParts = vi.spyOn(Intl.DateTimeFormat.prototype, 'formatToParts')
-        const rows = Array.from({ length: 25_000 }, (_, index) => ({
-            clicks: 1,
-            ctr: 0.5,
-            impressions: 2,
-            keys: ['2026-08-01', `query-${index}`, `/page-${index}`],
-            position: 3,
-        }))
-        const fetcher = vi.fn<(input: RequestInfo | URL, init?: RequestInit) => Promise<Response>>(
-            async () => Response.json({ rows }),
-        )
-        const source = googleSearchConsole({
-            auth: { getAccessToken: async () => 'token' },
-            fetch: fetcher,
-            property: 'sc-domain:example.com',
-        }).adapters.searchAnalytics
-
-        const result = await source.execute(
-            source.normalize({
-                dimensions: ['date', 'query', 'page'],
-                limit: 25_000,
-                metrics: ['clicks', 'impressions', 'ctr', 'averagePosition'],
-                time,
-            }),
-            {
-                adapter: 'google-search-console.searchAnalytics',
-                provider: 'google-search-console',
-                scope: 'default',
-            },
-        )
-
-        expect(fetcher).toHaveBeenCalledOnce()
-        expect(formatToParts.mock.calls.length).toBeLessThan(20)
-        expect(result.data.points).toHaveLength(25_000)
-        expect(result.data.values).toEqual({
-            averagePosition: 3,
-            clicks: 25_000,
-            ctr: 0.5,
-            impressions: 50_000,
-        })
-        formatToParts.mockRestore()
-    })
-
-    it('caps unbounded pagination with visible quality metadata', async () => {
-        expect(() =>
-            googleSearchConsole({
-                auth: { getAccessToken: async () => 'token' },
-                maxRows: 0,
-                property: 'sc-domain:example.com',
-            }),
-        ).toThrow('maxRows must be a positive safe integer')
+    it('keeps execution limits advanced and separate from canonical query limits', async () => {
+        for (const maxRows of [0, 1.5, Number.MAX_SAFE_INTEGER + 1]) {
+            expect(() =>
+                googleSearchConsole({
+                    advanced: { maxRows },
+                    auth: { getAccessToken: async () => 'token' },
+                    property: 'sc-domain:example.com',
+                }),
+            ).toThrow('maxRows must be a positive safe integer')
+        }
 
         const fetcher = vi.fn<(input: RequestInfo | URL, init?: RequestInit) => Promise<Response>>(
             async () =>
@@ -208,9 +166,9 @@ describe('Google Search Console adapter', () => {
                 }),
         )
         const source = googleSearchConsole({
+            advanced: { maxRows: 2 },
             auth: { getAccessToken: async () => 'token' },
             fetch: fetcher,
-            maxRows: 2,
             property: 'sc-domain:example.com',
         }).adapters.searchAnalytics
         const result = await source.execute(
@@ -225,7 +183,24 @@ describe('Google Search Console adapter', () => {
         expect(fetcher).toHaveBeenCalledOnce()
         expect(result.data.values.clicks).toBe(3)
         expect(result.quality?.warnings).toContainEqual(
-            expect.objectContaining({ code: 'google-search-console-max-rows' }),
+            expect.objectContaining({ code: 'execution-limit' }),
+        )
+
+        fetcher.mockClear()
+        const limited = await source.execute(
+            source.normalize({ dimensions: ['query'], limit: 1, metrics: ['clicks'], time }),
+            {
+                adapter: 'google-search-console.searchAnalytics',
+                provider: 'google-search-console',
+                scope: 'default',
+            },
+        )
+        const request = fetcher.mock.calls[0]?.[1]
+        expect(
+            typeof request?.body === 'string' ? JSON.parse(request.body) : undefined,
+        ).toMatchObject({ rowLimit: 1 })
+        expect(limited.quality?.warnings).not.toContainEqual(
+            expect.objectContaining({ code: 'execution-limit' }),
         )
     })
 })

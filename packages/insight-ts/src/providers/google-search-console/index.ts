@@ -70,12 +70,14 @@ export class GoogleSearchConsoleApiError extends ProviderError {
 }
 
 export interface GoogleSearchConsoleOptions {
+    advanced?: {
+        maxRows?: number
+    }
     auth: {
         getAccessToken?(): Promise<string>
     }
     dataState?: DataState
     fetch?: Fetch
-    maxRows?: number
     property: string
 }
 
@@ -110,7 +112,7 @@ export function googleSearchConsole(options: GoogleSearchConsoleOptions) {
 function googleSearchConsoleAdapter(options: GoogleSearchConsoleOptions) {
     const fetcher = options.fetch ?? globalThis.fetch
     const dataState = options.dataState ?? 'final'
-    const maxRows = options.maxRows ?? DEFAULT_MAX_ROWS
+    const maxRows = options.advanced?.maxRows ?? DEFAULT_MAX_ROWS
     if (!Number.isSafeInteger(maxRows) || maxRows <= 0) {
         throw new TypeError('Google Search Console maxRows must be a positive safe integer')
     }
@@ -270,7 +272,7 @@ function googleSearchConsoleAdapter(options: GoogleSearchConsoleOptions) {
             startRow += page.length
         }
 
-        return googleReport(query, rows, metadata, truncatedByMaxRows ? maxRows : undefined)
+        return googleReport(query, rows, metadata, truncatedByMaxRows)
     }
 
     return defineMetricAdapter({
@@ -383,7 +385,7 @@ function googleReport(
     query: ResolvedMetricQuery,
     rows: NormalizedSearchAnalyticsRow[],
     metadata: SearchAnalyticsMetadata | undefined,
-    maxRows: number | undefined,
+    executionLimited: boolean,
 ): MetricAdapterOutput {
     const exactRange = canRepresentRangeExactly(query)
     const incompleteFrom =
@@ -423,14 +425,15 @@ function googleReport(
                           'Search Console exposes whole Pacific calendar days; the requested instant range was expanded to overlapping source days',
                   },
               ]),
-        ...(maxRows === undefined
-            ? []
-            : [
+        ...(executionLimited
+            ? [
                   {
-                      code: 'google-search-console-max-rows',
-                      message: `Search Console reached the configured maxRows limit of ${maxRows}; results may be incomplete`,
+                      code: 'execution-limit',
+                      message:
+                          'Search Console reached its execution limit; results may be incomplete',
                   },
-              ]),
+              ]
+            : []),
     ]
     const meta: Pick<MetricAdapterOutput, 'meta' | 'quality'> = {
         meta: {

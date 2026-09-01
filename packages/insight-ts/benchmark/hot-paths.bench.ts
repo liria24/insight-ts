@@ -1,4 +1,4 @@
-import { bench, describe } from 'vitest'
+import { beforeAll, bench, describe } from 'vitest'
 
 import { createInsight, defineProvider } from '../src/core/index.ts'
 import {
@@ -157,19 +157,26 @@ const matches = (segment: HistorySegment, query: HistoryTarget & { range: TimeRa
     segment.range.from < query.range.to &&
     query.range.from < segment.range.to
 
-const repository = new BenchmarkRepository()
-const history = createInsight({
-    history: createHistory({
-        capabilities: ['metrics'],
-        repository,
-    }),
-    providers: [defineProvider({ adapters: { metrics: historySource }, id: 'app' })],
-})
+const benchmarkHistory = () =>
+    createInsight({
+        history: createHistory({
+            capabilities: ['metrics'],
+            repository: new BenchmarkRepository(),
+        }),
+        providers: [defineProvider({ adapters: { metrics: historySource }, id: 'app' })],
+    })
+const coveredHistory = benchmarkHistory()
 
 describe('History', () => {
-    bench('materialize and read a covered range', async () => {
+    beforeAll(() => coveredHistory.history.sync({ range: time }))
+
+    bench('cold materialization', async () => {
+        const history = benchmarkHistory()
         await history.history.sync({ range: time })
-        await history.query((q) => ({
+    })
+
+    bench('read an already-covered range', async () => {
+        await coveredHistory.query((q) => ({
             report: q.metrics({
                 dimensions: ['service'],
                 metrics: ['errorRate', 'requests'],

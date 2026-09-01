@@ -71,7 +71,7 @@ Insight.ts currently includes support for:
 - Cloudflare Web Analytics
 - Cloudflare Workers Observability Logs, Traces, and telemetry Metrics
 - Cloudflare Analytics Engine
-- Google Search Console with bounded native pagination
+- Google Search Console Search Analytics
 
 Use `defineMetricAdapter()`, `defineLogAdapter()`, `defineTraceAdapter()`, and `defineProvider()`
 for application-specific canonical data.
