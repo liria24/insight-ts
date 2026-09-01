@@ -8,6 +8,7 @@ import {
     type AdapterExecutionResult,
     type EventDestination,
     type EventProperties,
+    type HistoryExtension,
     type Instrumentation,
     type ProviderExecutionRequest,
     type QueryResult,
@@ -167,6 +168,56 @@ describe('canonical query planning', () => {
         expect(execute).toHaveBeenCalledOnce()
         expect(execute.mock.calls[0]?.[0]).toHaveLength(1)
         expect(result.first).toEqual(result.second)
+    })
+
+    it('overlaps direct and History-managed plans after one ownership pass', async () => {
+        let historyStarted = false
+        let overlapped = false
+        const controller = new AbortController()
+        const handles = vi.fn((source: { id: string }) => source.id.endsWith('.managed'))
+        const history: HistoryExtension = {
+            attach: () => ({
+                handles,
+                async query(_source, _query, live, execution) {
+                    expect(execution?.signal).toBe(controller.signal)
+                    historyStarted = true
+                    return live()
+                },
+            }),
+        }
+        const insight = createInsight({
+            history,
+            providers: [
+                defineProvider({
+                    adapters: {
+                        direct: defineMetricAdapter({
+                            async execute() {
+                                await new Promise((resolve) => setTimeout(resolve, 20))
+                                overlapped = historyStarted
+                                return { values: { direct: 1 } }
+                            },
+                            metrics: { direct: {} },
+                        }),
+                        managed: defineMetricAdapter({
+                            execute: () => ({ values: { managed: 2 } }),
+                            metrics: { managed: {} },
+                        }),
+                    },
+                    id: 'mixed',
+                }),
+            ],
+        })
+
+        const result = await insight.query(
+            (q) => ({
+                mixed: q.metrics({ metrics: ['direct', 'managed'], time }),
+            }),
+            { signal: controller.signal },
+        )
+
+        expect(overlapped).toBe(true)
+        expect(handles).toHaveBeenCalledTimes(2)
+        expect(result.mixed.data.values).toEqual({ direct: 1, managed: 2 })
     })
 
     it('selects logical Scopes without changing the query DSL', async () => {
@@ -343,6 +394,37 @@ describe('events and instrumentation', () => {
             }),
         )
         expect(JSON.stringify(calls)).not.toContain('2026-08-02')
+    })
+
+    it('compiles event validation and Scope routing once', async () => {
+        let schemaReads = 0
+        let routeReads = 0
+        const track = vi.fn<EventDestination['track']>()
+        const properties: { readonly kind: readonly ['open', 'close'] } = {
+            get kind() {
+                schemaReads += 1
+                return ['open', 'close'] as const
+            },
+        }
+        const provider = defineProvider({
+            get events() {
+                routeReads += 1
+                return { track }
+            },
+            id: 'events',
+        })
+        const insight = createInsight({
+            events: { interaction: { properties } },
+            providers: [provider],
+        })
+
+        await Promise.all(
+            Array.from({ length: 100 }, () => insight.track('interaction', { kind: 'open' })),
+        )
+
+        expect(schemaReads).toBe(1)
+        expect(routeReads).toBe(1)
+        expect(track).toHaveBeenCalledTimes(100)
     })
 })
 

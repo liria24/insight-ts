@@ -251,6 +251,7 @@ const logHistoryMaterializer: HistoryMaterializer<NormalizedLogQuery, LogData, L
             .slice(0, query.limit)
         return { data: { logs } }
     },
+    partitionMs: 7 * 24 * 60 * 60 * 1000,
     range: (query) => query.time,
     read: 'bounded',
     sortKey(item) {

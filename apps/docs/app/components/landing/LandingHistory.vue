@@ -83,7 +83,7 @@ const features = [
                         class="rounded-full"
                     />
                     <UButton
-                        to="/concepts/overview"
+                        to="/query/introduction"
                         label="Read the concepts"
                         variant="outline"
                         color="neutral"

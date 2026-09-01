@@ -31,7 +31,7 @@ describe('Demo analytics range', () => {
         await Promise.all(
             Object.entries(pages).map(async ([file, { fixture, tag }]) => {
                 const content = await Bun.file(
-                    new URL(`../content/5.ui/${file}`, import.meta.url),
+                    new URL(`../content/7.ui/${file}`, import.meta.url),
                 ).text()
                 const example = content.slice(
                     content.indexOf('## Example'),
@@ -39,6 +39,10 @@ describe('Demo analytics range', () => {
                 )
                 expect(example).toContain(`:::${tag}{:data='`)
                 expect(example).toContain(fixture)
+                if (file !== '8.quality-notice.md') {
+                    expect(example).toContain('"values":{"pageViews":4140}')
+                    expect(example).not.toContain('"pageViews":{"points"')
+                }
                 expect(example).toContain('#code')
                 expect(example).not.toContain('dashboard.')
                 expect(example).not.toContain('\n---')

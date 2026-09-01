@@ -91,7 +91,7 @@ Custom adapters use the same scope-aware planning and result merging as built-in
 
 History preserves configured canonical capabilities with one Scope-aware workflow. Capability
 adapters retain their own identity, pagination, and safe rollup semantics while the engine owns
-coverage, Fidelity, bounded storage, compaction, and expiration.
+coverage, bounded partition synchronization, Fidelity, storage, compaction, and expiration.
 
 ```ts
 import { createHistory } from 'insight-ts/history'
@@ -131,9 +131,11 @@ The complete documentation is available at [insight.liria.me](https://insight.li
 - [Introduction](https://insight.liria.me/getting-started/introduction)
 - [Installation](https://insight.liria.me/getting-started/installation)
 - [First query](https://insight.liria.me/getting-started/first-query)
+- [Query](https://insight.liria.me/query/introduction)
+- [Track](https://insight.liria.me/track/events)
+- [History](https://insight.liria.me/history/introduction)
 - [Providers](https://insight.liria.me/providers/cloudflare)
 - [UI](https://insight.liria.me/ui/stat)
-- [Guides](https://insight.liria.me/guides/data-model)
 - [API reference](https://insight.liria.me/reference/api)
 - [Live demo](https://insight.liria.me/demo)
 

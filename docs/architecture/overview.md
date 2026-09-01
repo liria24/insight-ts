@@ -61,10 +61,10 @@ contribution level. Pageable results expose an opaque per-result `meta.paginatio
 it re-queries only that logical result.
 
 History consumes optional capability materialization protocols. It owns coverage gaps, complete
-page draining, composition, reductions, Fidelity, idempotent materializations, and lifecycle.
-Repositories provide bounded range operations and explicit deletion/replacement. Nitro supplies
-the `storage.insight` mount. History is historical materialization, not a persistent query-result
-cache.
+page draining within bounded time partitions, composition, reductions, Fidelity, idempotent
+materializations, and lifecycle. Repositories provide bounded range operations and explicit
+deletion/replacement. Nitro supplies the `storage.insight` mount and indexes stored partitions by
+target. History is historical materialization, not a persistent query-result cache.
 
 UI Core depends on Core and Metric contracts. Vue UI treats TanStack Charts as private and accepts
 already queried data. Log and Trace renderers remain application-local.
