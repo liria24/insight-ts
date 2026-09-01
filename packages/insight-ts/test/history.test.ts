@@ -2,7 +2,7 @@
 
 import { describe, expect, it, vi } from 'vitest'
 
-import { createInsight, defineProvider } from '../src/core/index.ts'
+import { createInsight, defineProvider, type Instrumentation } from '../src/core/index.ts'
 import {
     createHistory,
     type HistoryReadQuery,
@@ -10,7 +10,7 @@ import {
     type HistorySegment,
     type HistoryTarget,
 } from '../src/history/index.ts'
-import { defineLogAdapter } from '../src/logs/index.ts'
+import { defineLogAdapter, type NormalizedLogQuery } from '../src/logs/index.ts'
 import { defineMetricAdapter, type TimeRange } from '../src/metrics/index.ts'
 import { cloudflare } from '../src/providers/cloudflare/index.ts'
 import { defineTraceAdapter } from '../src/traces/index.ts'
@@ -22,6 +22,7 @@ const range: TimeRange = {
 
 class MemoryRepository implements HistoryRepository {
     readonly reads: HistoryReadQuery[] = []
+    readonly replacements: { range: TimeRange; size: number }[] = []
     readonly segments: HistorySegment[] = []
 
     async coverage(query: HistoryTarget & { range: TimeRange }) {
@@ -52,6 +53,7 @@ class MemoryRepository implements HistoryRepository {
         query: HistoryTarget & { range: TimeRange },
         segments: readonly HistorySegment[],
     ) {
+        this.replacements.push({ range: query.range, size: segments.length })
         this.#remove(query)
         this.segments.push(...segments)
     }
@@ -248,6 +250,84 @@ describe('generic History', () => {
         const result = await insight.query((q) => ({ logs: q.logs({ limit: 1, time: range }) }))
         expect(result.logs.data.logs[0]?.id).toBe('log-0')
         expect(fetcher).toHaveBeenCalledTimes(calls)
+    })
+
+    it('persists multi-page event capture in bounded time partitions', async () => {
+        const repository = new MemoryRepository()
+        const spans: { attributes: Record<string, boolean | number | string>; name: string }[] = []
+        const instrumentation: Instrumentation = {
+            async run(name, attributes, operation) {
+                const recorded = { attributes: { ...attributes }, name }
+                spans.push(recorded)
+                return operation({
+                    recordException: () => undefined,
+                    setAttribute: (key, value) => {
+                        recorded.attributes[key] = value
+                    },
+                })
+            },
+        }
+        const execute = vi.fn((query: NormalizedLogQuery) => ({
+            logs: [
+                {
+                    id: `${query.time.from}-${query.nativeCursor ?? 'first'}`,
+                    timestamp: query.time.from,
+                },
+            ],
+            ...(query.nativeCursor ? {} : { nativeCursor: 'next' }),
+        }))
+        const insight = createInsight({
+            history: createHistory({ capabilities: ['logs'], repository }),
+            instrumentation,
+            providers: [
+                defineProvider({
+                    adapters: { logs: defineLogAdapter({ execute }) },
+                    id: 'otel',
+                }),
+            ],
+        })
+        const threeWeeks = {
+            from: '2026-08-06T00:00:00.000Z',
+            to: '2026-08-27T00:00:00.000Z',
+        }
+
+        await expect(insight.history.sync({ range: threeWeeks })).resolves.toEqual({
+            fetched: 3,
+            skipped: 0,
+        })
+        expect(execute).toHaveBeenCalledTimes(6)
+        expect(repository.replacements).toEqual([
+            { range: { from: threeWeeks.from, to: '2026-08-13T00:00:00.000Z' }, size: 2 },
+            {
+                range: {
+                    from: '2026-08-13T00:00:00.000Z',
+                    to: '2026-08-20T00:00:00.000Z',
+                },
+                size: 2,
+            },
+            { range: { from: '2026-08-20T00:00:00.000Z', to: threeWeeks.to }, size: 2 },
+        ])
+        expect(
+            spans
+                .filter(({ name }) => name === 'insight.history.capture')
+                .map(({ attributes }) => attributes),
+        ).toEqual(
+            Array.from({ length: 3 }, () =>
+                expect.objectContaining({
+                    'insight.history.item.count': 2,
+                    'insight.history.item.peak': 2,
+                    'insight.history.page.count': 2,
+                }),
+            ),
+        )
+        expect(spans.find(({ name }) => name === 'insight.history.sync')?.attributes).toMatchObject(
+            { 'insight.history.partition.count': 3 },
+        )
+        await expect(insight.history.sync({ range: threeWeeks })).resolves.toEqual({
+            fetched: 0,
+            skipped: 1,
+        })
+        expect(repository.replacements).toHaveLength(3)
     })
 
     it('distinguishes reduced, empty, and not-preserved ranges', async () => {

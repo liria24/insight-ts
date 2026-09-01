@@ -154,6 +154,7 @@ export interface HistoryMaterializer<
     items(data: TData): readonly unknown[]
     limit?(query: TQuery): number | undefined
     materialize(query: TQuery, items: readonly unknown[]): AdapterExecutionResult<TData, TMeta>
+    partitionMs?: number
     range(query: TQuery): TimeRange | undefined
     read: 'all' | 'bounded'
     sortKey(item: unknown): string
@@ -281,6 +282,7 @@ export type HistoryRuntime<TController extends object = object> = TController & 
         source: RuntimeAdapter,
         query: unknown,
         live: () => Promise<AdapterExecutionResult<unknown, object>>,
+        options?: QueryExecutionOptions,
     ): Promise<AdapterExecutionResult<unknown, object>>
 }
 

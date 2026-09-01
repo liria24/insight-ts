@@ -6,7 +6,22 @@ import type {
 } from '../../history/index.ts'
 
 const mount = 'insight'
-const historyPrefix = 'history:v2'
+const historyPrefix = 'history:v3'
+
+interface HistoryPartitionIndex {
+    partitions: HistoryCoverage['range'][]
+    schemaVersion: 3
+}
+
+interface HistoryCursor {
+    id: string
+    key: string
+    sortKey: string
+}
+
+interface HistoryItemKey extends HistoryCursor {
+    range: HistoryCoverage['range']
+}
 
 export interface NitroStorage {
     getItem(key: string): Promise<unknown>
@@ -18,10 +33,10 @@ export interface NitroStorage {
 export const createNitroHistoryRepository = (storage: NitroStorage): HistoryRepository => {
     return {
         async coverage({ range, ...target }) {
-            const keys = (await storage.getKeys(coveragePrefix(target))).filter((key) =>
-                overlaps(keyRange(key, coveragePrefix(target)), range),
+            const partitions = await relevantPartitions(storage, target, range)
+            const values = await Promise.all(
+                partitions.map((partition) => storage.getItem(coverageKey(target, partition))),
             )
-            const values = await Promise.all(keys.map((key) => storage.getItem(key)))
             return values.flatMap((value) => {
                 if (value === null) return []
                 if (!isHistoryCoverage(value)) {
@@ -31,23 +46,38 @@ export const createNitroHistoryRepository = (storage: NitroStorage): HistoryRepo
             })
         },
         async delete({ range, ...target }) {
-            await removeOverlapping(storage, target, range)
+            const index = await readIndex(storage, target)
+            const retained = await Promise.all(
+                index.partitions.map(async (partition) =>
+                    overlaps(partition, range)
+                        ? clearRange(storage, target, partition, range)
+                        : true,
+                ),
+            )
+            await writeIndex(storage, target, {
+                ...index,
+                partitions: index.partitions.filter((_, position) => retained[position]),
+            })
         },
         async read({ cursor, limit, range, ...target }) {
-            const itemsPrefix = itemPrefix(target)
-            const keys = (await storage.getKeys(itemsPrefix))
-                .map((key) => ({ key, ...itemKeyData(key, itemsPrefix) }))
-                .filter((item) => overlaps(item.range, range))
-                .toSorted(
-                    (left, right) =>
-                        right.sortKey.localeCompare(left.sortKey) ||
-                        left.id.localeCompare(right.id),
+            const partitions = await relevantPartitions(storage, target, range)
+            const keys = (
+                await Promise.all(
+                    partitions.map(async (partition) => {
+                        const prefix = itemPrefix(target, partition)
+                        return (await storage.getKeys(prefix)).map((key) => ({
+                            key,
+                            ...itemKeyData(key, prefix),
+                        }))
+                    }),
                 )
-            const offset = cursor === undefined ? 0 : Number(cursor)
-            if (!Number.isSafeInteger(offset) || offset < 0) {
-                throw new TypeError('Insight History storage received an invalid cursor')
-            }
-            const pageKeys = keys.slice(offset, offset + limit)
+            )
+                .flat()
+                .filter((item) => overlaps(item.range, range))
+                .toSorted(compareItems)
+            const marker = cursor === undefined ? undefined : decodeCursor(cursor)
+            const remaining = marker ? keys.filter((item) => compareItems(item, marker) > 0) : keys
+            const pageKeys = remaining.slice(0, limit)
             const page = await Promise.all(pageKeys.map(({ key }) => storage.getItem(key)))
             const segments = page.flatMap((value) => {
                 if (value === null) return []
@@ -56,9 +86,10 @@ export const createNitroHistoryRepository = (storage: NitroStorage): HistoryRepo
                 }
                 return [value]
             })
-            const next = offset + page.length
             return {
-                ...(next < keys.length ? { next: String(next) } : {}),
+                ...(remaining.length > page.length && pageKeys.at(-1)
+                    ? { next: encodeCursor(pageKeys.at(-1)!) }
+                    : {}),
                 segments,
             }
         },
@@ -66,9 +97,16 @@ export const createNitroHistoryRepository = (storage: NitroStorage): HistoryRepo
             if (segments.some((segment) => !sameTarget(segment, target))) {
                 throw new TypeError('Insight History replacement contains the wrong target')
             }
-            const replacementKeys = new Set(segments.map(segmentKey))
+            const index = await readIndex(storage, target)
+            const retained = await Promise.all(
+                index.partitions.map(async (partition) =>
+                    overlaps(partition, range)
+                        ? clearRange(storage, target, partition, range)
+                        : true,
+                ),
+            )
             await Promise.all(
-                segments.map((segment) => storage.setItem(segmentKey(segment), segment)),
+                segments.map((segment) => storage.setItem(segmentKey(segment, range), segment)),
             )
             const first = segments[0]
             const coverage = first
@@ -78,22 +116,19 @@ export const createNitroHistoryRepository = (storage: NitroStorage): HistoryRepo
                       range,
                   }
                 : undefined
-            const nextCoverageKey = coverage ? coverageKey(target, coverage) : undefined
+            const nextCoverageKey = coverage ? coverageKey(target, coverage.range) : undefined
             if (coverage && nextCoverageKey) await storage.setItem(nextCoverageKey, coverage)
-
-            const existingItems = await storage.getKeys(itemPrefix(target))
-            const oldItems = existingItems.filter(
-                (key) =>
-                    overlaps(itemKeyData(key, itemPrefix(target)).range, range) &&
-                    !replacementKeys.has(key),
-            )
-            const existingCoverage = await storage.getKeys(coveragePrefix(target))
-            const oldCoverage = existingCoverage.filter(
-                (key) =>
-                    overlaps(keyRange(key, coveragePrefix(target)), range) &&
-                    key !== nextCoverageKey,
-            )
-            await Promise.all([...oldItems, ...oldCoverage].map((key) => storage.removeItem(key)))
+            await writeIndex(storage, target, {
+                schemaVersion: 3,
+                partitions: [
+                    ...new Map(
+                        [
+                            ...index.partitions.filter((_, position) => retained[position]),
+                            ...(segments.length > 0 ? [range] : []),
+                        ].map((partition) => [rangeKey(partition), partition]),
+                    ).values(),
+                ].toSorted((left, right) => left.from.localeCompare(right.from)),
+            })
         },
     }
 }
@@ -122,42 +157,23 @@ export const configureNitroHistory = (
     }
 }
 
-const removeOverlapping = async (
-    storage: NitroStorage,
-    target: HistoryTarget,
-    range: HistoryCoverage['range'],
-): Promise<void> => {
-    const items = (await storage.getKeys(itemPrefix(target))).filter((key) =>
-        overlaps(itemKeyData(key, itemPrefix(target)).range, range),
-    )
-    const coverage = (await storage.getKeys(coveragePrefix(target))).filter((key) =>
-        overlaps(keyRange(key, coveragePrefix(target)), range),
-    )
-    await Promise.all([...items, ...coverage].map((key) => storage.removeItem(key)))
-}
+const segmentKey = (segment: HistorySegment, partition: HistoryCoverage['range']): string =>
+    `${itemPrefix(segment, partition)}${encodeURIComponent(segment.sortKey)}:${rangeKey(segment.range)}:${encodeURIComponent(segment.id)}`
 
-const segmentKey = (segment: HistorySegment): string =>
-    `${itemPrefix(segment)}${encodeURIComponent(segment.sortKey)}:${rangeKey(segment.range)}:${encodeURIComponent(segment.id)}`
-
-const itemPrefix = (target: HistoryTarget): string => `${targetKey(target)}:item:`
-const coveragePrefix = (target: HistoryTarget): string => `${targetKey(target)}:coverage:`
-const coverageKey = (target: HistoryTarget, coverage: HistoryCoverage): string =>
-    `${coveragePrefix(target)}${rangeKey(coverage.range)}`
+const partitionPrefix = (target: HistoryTarget, range: HistoryCoverage['range']): string =>
+    `${targetKey(target)}:partition:${rangeKey(range)}:`
+const itemPrefix = (target: HistoryTarget, range: HistoryCoverage['range']): string =>
+    `${partitionPrefix(target, range)}item:`
+const coverageKey = (target: HistoryTarget, range: HistoryCoverage['range']): string =>
+    `${partitionPrefix(target, range)}coverage`
 const coverageId = (target: HistoryTarget, range: HistoryCoverage['range']): string =>
     `${target.scope}:${target.adapter}:${range.from}:${range.to}`
+const indexKey = (target: HistoryTarget): string => `${targetKey(target)}:partitions`
 
 const rangeKey = (range: HistoryCoverage['range']): string =>
     `${encodeURIComponent(range.from)}:${encodeURIComponent(range.to)}`
 
-const keyRange = (key: string, keyPrefix: string): HistoryCoverage['range'] => {
-    const parts = key.slice(keyPrefix.length).split(':')
-    const from = parts.at(-2)
-    const to = parts.at(-1)
-    if (!from || !to) throw new TypeError('Insight History storage contains an invalid key')
-    return { from: decodeURIComponent(from), to: decodeURIComponent(to) }
-}
-
-const itemKeyData = (key: string, keyPrefix: string) => {
+const itemKeyData = (key: string, keyPrefix: string): Omit<HistoryItemKey, 'key'> => {
     const parts = key.slice(keyPrefix.length).split(':')
     if (parts.length !== 4) throw new TypeError('Insight History storage contains an invalid key')
     return {
@@ -165,6 +181,76 @@ const itemKeyData = (key: string, keyPrefix: string) => {
         range: { from: decodeURIComponent(parts[1]!), to: decodeURIComponent(parts[2]!) },
         sortKey: decodeURIComponent(parts[0]!),
     }
+}
+
+const compareItems = (left: HistoryCursor, right: HistoryCursor): number =>
+    right.sortKey.localeCompare(left.sortKey) ||
+    left.id.localeCompare(right.id) ||
+    left.key.localeCompare(right.key)
+
+const encodeCursor = ({ id, key, sortKey }: HistoryCursor): string =>
+    JSON.stringify({ id, key, sortKey })
+
+const decodeCursor = (cursor: string): HistoryCursor => {
+    let value: unknown
+    try {
+        value = JSON.parse(cursor)
+    } catch {
+        throw new TypeError('Insight History storage received an invalid cursor')
+    }
+    if (
+        !isRecord(value) ||
+        typeof value.id !== 'string' ||
+        typeof value.key !== 'string' ||
+        typeof value.sortKey !== 'string'
+    ) {
+        throw new TypeError('Insight History storage received an invalid cursor')
+    }
+    return { id: value.id, key: value.key, sortKey: value.sortKey }
+}
+
+const readIndex = async (
+    storage: NitroStorage,
+    target: HistoryTarget,
+): Promise<HistoryPartitionIndex> => {
+    const value = await storage.getItem(indexKey(target))
+    if (value === null) return { partitions: [], schemaVersion: 3 }
+    if (!isPartitionIndex(value)) {
+        throw new TypeError('Insight History storage contains an invalid partition index')
+    }
+    return value
+}
+
+const writeIndex = async (
+    storage: NitroStorage,
+    target: HistoryTarget,
+    index: HistoryPartitionIndex,
+): Promise<void> => {
+    if (index.partitions.length === 0) await storage.removeItem(indexKey(target))
+    else await storage.setItem(indexKey(target), index)
+}
+
+const relevantPartitions = async (
+    storage: NitroStorage,
+    target: HistoryTarget,
+    range: HistoryCoverage['range'],
+): Promise<HistoryCoverage['range'][]> =>
+    (await readIndex(storage, target)).partitions.filter((partition) => overlaps(partition, range))
+
+const clearRange = async (
+    storage: NitroStorage,
+    target: HistoryTarget,
+    partition: HistoryCoverage['range'],
+    range: HistoryCoverage['range'],
+): Promise<boolean> => {
+    const prefix = itemPrefix(target, partition)
+    const keys = await storage.getKeys(prefix)
+    const removed = keys.filter((key) => overlaps(itemKeyData(key, prefix).range, range))
+    await Promise.all([
+        ...removed.map((key) => storage.removeItem(key)),
+        storage.removeItem(coverageKey(target, partition)),
+    ])
+    return removed.length < keys.length
 }
 
 const targetKey = (target: HistoryTarget): string =>
@@ -196,6 +282,18 @@ const isHistoryCoverage = (value: unknown): value is HistoryCoverage =>
     typeof value.range.from === 'string' &&
     typeof value.range.to === 'string' &&
     (value.provisional === undefined || typeof value.provisional === 'boolean')
+
+const isPartitionIndex = (value: unknown): value is HistoryPartitionIndex =>
+    isRecord(value) &&
+    value.schemaVersion === 3 &&
+    Array.isArray(value.partitions) &&
+    value.partitions.every(
+        (partition) =>
+            isRecord(partition) &&
+            typeof partition.from === 'string' &&
+            typeof partition.to === 'string' &&
+            partition.from < partition.to,
+    )
 
 const isHistorySegment = (value: unknown): value is HistorySegment => {
     if (!isRecord(value) || !isRecord(value.range) || !isRecord(value.fidelity)) return false

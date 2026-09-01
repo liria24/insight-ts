@@ -10,6 +10,8 @@ import type {
     HistoryRuntime,
     HistoryRuntimeContext,
     HistoryTransformation,
+    InstrumentationSpan,
+    QueryExecutionOptions,
     QueryQuality,
     RuntimeSource,
 } from '../core/types.ts'
@@ -141,7 +143,7 @@ class HistoryEngine implements HistoryRuntime<HistoryController> {
         options: { range: TimeRange } & HistorySelection,
     ): Promise<{ fetched: number; skipped: number }> {
         const range = normalizeTimeRange(options.range)
-        return this.#instrument('insight.history.sync', {}, async () => {
+        return this.#instrument('insight.history.sync', {}, async (span) => {
             let fetched = 0
             let skipped = 0
             for (const source of this.#select(options)) {
@@ -152,11 +154,12 @@ class HistoryEngine implements HistoryRuntime<HistoryController> {
                     skipped += 1
                     continue
                 }
-                for (const gap of gaps.flatMap((item) => this.#split(target, item))) {
+                for (const gap of gaps.flatMap((item) => this.#split(source, item))) {
                     await this.#capture(source, gap)
                     fetched += 1
                 }
             }
+            span.setAttribute('insight.history.partition.count', fetched)
             return { fetched, skipped }
         })
     }
@@ -165,7 +168,9 @@ class HistoryEngine implements HistoryRuntime<HistoryController> {
         source: RuntimeSource,
         input: unknown,
         live: () => Promise<AdapterExecutionResult<unknown, object>>,
+        execution: QueryExecutionOptions = {},
     ): Promise<AdapterExecutionResult<unknown, object>> {
+        execution.signal?.throwIfAborted()
         const materializer = source.definition.materialize
         const range = materializer?.range(input)
         if (!materializer || !range || !this.#sources.includes(source)) return live()
@@ -173,7 +178,9 @@ class HistoryEngine implements HistoryRuntime<HistoryController> {
         const target = historyTarget(source)
         const coverage = await this.#coverage(target, normalized)
         for (const gap of uncoveredRanges(normalized, coverage)) {
-            for (const part of this.#split(target, gap)) await this.#capture(source, part)
+            for (const part of this.#split(source, gap)) {
+                await this.#capture(source, part, execution)
+            }
         }
 
         const cursor = decodeCursor(materializer.cursor?.(input), target)
@@ -241,7 +248,24 @@ class HistoryEngine implements HistoryRuntime<HistoryController> {
         return { deleted }
     }
 
-    async #capture(source: RuntimeSource, range: TimeRange): Promise<void> {
+    async #capture(
+        source: RuntimeSource,
+        range: TimeRange,
+        execution?: QueryExecutionOptions,
+    ): Promise<void> {
+        return this.#instrument(
+            'insight.history.capture',
+            historyAttributes(historyTarget(source)),
+            (span) => this.#capturePartition(source, range, span, execution),
+        )
+    }
+
+    async #capturePartition(
+        source: RuntimeSource,
+        range: TimeRange,
+        span: InstrumentationSpan,
+        execution?: QueryExecutionOptions,
+    ): Promise<void> {
         const materializer = source.definition.materialize!
         const target = historyTarget(source)
         let query = materializer.capture(range)
@@ -257,7 +281,7 @@ class HistoryEngine implements HistoryRuntime<HistoryController> {
                     `History capture exceeded ${this.#maxPages} pages for "${source.id}"`,
                 )
             }
-            const [result] = await this.#context.execute([{ query, source }])
+            const [result] = await this.#context.execute([{ query, source }], execution)
             if (!result) throw new InsightError('HISTORY_CORRUPT', 'Missing History result')
             for (const [index, item] of materializer.items(result.data).entries()) {
                 items.set(materializer.itemId(item, index), item)
@@ -301,6 +325,9 @@ class HistoryEngine implements HistoryRuntime<HistoryController> {
                 sortKey: materializer.sortKey(data),
             }
         })
+        span.setAttribute('insight.history.page.count', page)
+        span.setAttribute('insight.history.item.count', items.size)
+        span.setAttribute('insight.history.item.peak', items.size)
         await this.#replace(
             target,
             range,
@@ -327,11 +354,11 @@ class HistoryEngine implements HistoryRuntime<HistoryController> {
     #instrument<T>(
         name: string,
         attributes: Readonly<Record<string, boolean | number | string>>,
-        operation: () => Promise<T>,
+        operation: (span: InstrumentationSpan) => Promise<T>,
     ): Promise<T> {
         return this.#context.instrumentation
             ? Promise.resolve(this.#context.instrumentation.run(name, attributes, operation))
-            : operation()
+            : operation(noopSpan)
     }
 
     #read(target: HistoryTarget, range: TimeRange, limit: number, cursor?: string) {
@@ -400,7 +427,8 @@ class HistoryEngine implements HistoryRuntime<HistoryController> {
         )
     }
 
-    #split(target: HistoryTarget, range: TimeRange): TimeRange[] {
+    #split(source: RuntimeSource, range: TimeRange): TimeRange[] {
+        const target = historyTarget(source)
         const boundaries = (this.#options.policies ?? [])
             .filter((policy) => policyMatches(policy, target, range) && policy.range)
             .flatMap(({ range: policyRange }) => {
@@ -408,6 +436,19 @@ class HistoryEngine implements HistoryRuntime<HistoryController> {
                 return [normalized.from, normalized.to]
             })
             .filter((value) => value > range.from && value < range.to)
+        const partitionMs = source.definition.materialize?.partitionMs
+        if (partitionMs !== undefined) {
+            positiveInteger(partitionMs, 'History partitionMs')
+            const from = Date.parse(range.from)
+            const to = Date.parse(range.to)
+            for (
+                let value = Math.ceil(from / partitionMs) * partitionMs;
+                value < to;
+                value += partitionMs
+            ) {
+                if (value > from) boundaries.push(new Date(value).toISOString())
+            }
+        }
         const points = [range.from, ...new Set(boundaries), range.to].toSorted()
         return points.slice(0, -1).map((from, index) => ({ from, to: points[index + 1]! }))
     }
@@ -431,6 +472,11 @@ class HistoryEngine implements HistoryRuntime<HistoryController> {
             }
         }
     }
+}
+
+const noopSpan: InstrumentationSpan = {
+    recordException: () => undefined,
+    setAttribute: () => undefined,
 }
 
 async function applyReductions(

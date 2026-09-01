@@ -108,8 +108,9 @@ ${historyImports}${cloudflareImports}import config from '#insight/server-config'
 
 let instance
 export const useInsight = () => {
+  if (instance) return instance
   ${providerSetup}
-  return instance ||= createInsight({ ...config, providers${historySetup} })
+  return instance = createInsight({ ...config, providers${historySetup} })
 }
 `
 }

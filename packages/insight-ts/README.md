@@ -92,8 +92,8 @@ const insight = createInsight({
 await insight.history.sync({ range: { from, to } })
 ```
 
-History exposes range-scoped Fidelity, bounded event pagination, compaction, and expiration. It is
-not a persistent query-result cache.
+History exposes range-scoped Fidelity, bounded event synchronization and pagination, compaction,
+and expiration. It is not a persistent query-result cache.
 
 ## Vue UI
 
@@ -119,9 +119,11 @@ Read the complete documentation at [insight.liria.me](https://insight.liria.me).
 
 - [Get started](https://insight.liria.me/getting-started/introduction)
 - [First query](https://insight.liria.me/getting-started/first-query)
+- [Query](https://insight.liria.me/query/introduction)
+- [Track](https://insight.liria.me/track/events)
+- [History](https://insight.liria.me/history/introduction)
 - [Providers](https://insight.liria.me/providers/cloudflare)
 - [UI](https://insight.liria.me/ui/stat)
-- [Guides](https://insight.liria.me/guides/data-model)
 - [API reference](https://insight.liria.me/reference/api)
 - [Live demo](https://insight.liria.me/demo)
 

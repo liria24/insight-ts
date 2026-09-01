@@ -6,8 +6,9 @@ import type {
     CapabilityContract,
     CapabilityExecutionResult,
     CreateInsightOptions,
-    EventDefinition,
     EventDefinitions,
+    EventDestination,
+    EventProperty,
     HistoryRuntime,
     InsightClient,
     InstrumentationSpan,
@@ -39,8 +40,8 @@ interface RuntimeScope {
     adapters: RuntimeAdapter[]
     builder: Record<string, RuntimeCapabilityAccessor>
     capabilities: Map<string, RuntimeCapability>
+    destinations: readonly EventDestination[]
     name: string
-    providers: readonly ProviderDefinition[]
 }
 
 interface Descriptor {
@@ -66,6 +67,7 @@ export const createInsight = <const TOptions extends CreateInsightOptions>(
     options: TOptions,
 ): InsightClient<TOptions> => {
     const now = options.now ?? (() => new Date())
+    const eventValidators = compileEvents(options.events)
     const scopes = runtimeScopes(options)
 
     const instrument = <T>(
@@ -153,25 +155,35 @@ export const createInsight = <const TOptions extends CreateInsightOptions>(
         requests: readonly PreparedAdapterRequest[],
         execution: QueryExecutionOptions,
     ): Promise<readonly AdapterExecutionResult<unknown, object>[]> => {
-        const direct = requests.filter(
-            (request) => !history?.handles(request.source, request.query),
-        )
-        const managed = requests.filter((request) =>
-            history?.handles(request.source, request.query),
-        )
-        const directResults = await executeNative(direct, execution)
-        const resultByKey = new Map(
-            direct.map(({ dedupeKey }, index) => [dedupeKey, directResults[index]!] as const),
-        )
-        await Promise.all(
+        const direct: PreparedAdapterRequest[] = []
+        const managed: PreparedAdapterRequest[] = []
+        for (const request of requests) {
+            const partition = history?.handles(request.source, request.query) ? managed : direct
+            partition.push(request)
+        }
+        const directExecution = executeNative(direct, execution)
+        const managedExecution = Promise.all(
             managed.map(async (request) => {
-                const value = await history!.query(request.source, request.query, async () => {
-                    const [result] = await executeNative([request], execution)
-                    return result!
-                })
-                resultByKey.set(request.dedupeKey, value)
+                const value = await history!.query(
+                    request.source,
+                    request.query,
+                    async () => {
+                        const [result] = await executeNative([request], execution)
+                        return result!
+                    },
+                    execution,
+                )
+                return [request.dedupeKey, value] as const
             }),
         )
+        const [directResults, managedResults] = await Promise.all([
+            directExecution,
+            managedExecution,
+        ])
+        const resultByKey = new Map([
+            ...direct.map(({ dedupeKey }, index) => [dedupeKey, directResults[index]!] as const),
+            ...managedResults,
+        ])
         return requests.map(({ dedupeKey }) => resultByKey.get(dedupeKey)!)
     }
 
@@ -225,14 +237,11 @@ export const createInsight = <const TOptions extends CreateInsightOptions>(
                 'insight.event.track',
                 { 'insight.event.name': name, 'insight.scope': scope.name },
                 async () => {
-                    const events: EventDefinitions | undefined = options.events
-                    const definition =
-                        events && Object.hasOwn(events, name) ? events[name] : undefined
-                    const normalized = validateEvent(name, definition, properties)
-                    const destinations = scope.providers.flatMap(({ events: destination }) =>
-                        destination ? [destination] : [],
-                    )
-                    if (destinations.length === 0) {
+                    const validator = eventValidators.get(name)
+                    if (!validator)
+                        throw new InsightError('INVALID_QUERY', `Unknown event: ${name}`)
+                    const normalized = validator(properties)
+                    if (scope.destinations.length === 0) {
                         throw new InsightError(
                             'CAPABILITY_UNAVAILABLE',
                             'No Provider event destination is configured in the Scope',
@@ -248,7 +257,7 @@ export const createInsight = <const TOptions extends CreateInsightOptions>(
                         timestamp: now().toISOString(),
                     }
                     await Promise.all(
-                        destinations.map(async (destination) => destination.track(event)),
+                        scope.destinations.map(async (destination) => destination.track(event)),
                     )
                 },
             )
@@ -364,6 +373,7 @@ function runtimeScope(name: string, providers: readonly ProviderDefinition[]): R
     const providerIds = new Set<string>()
     const adapters: RuntimeAdapter[] = []
     const capabilities = new Map<string, RuntimeCapability>()
+    const destinations: EventDestination[] = []
     for (const provider of providers) {
         if (!/^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$/.test(provider.id)) {
             throw new InsightError(
@@ -375,6 +385,8 @@ function runtimeScope(name: string, providers: readonly ProviderDefinition[]): R
             throw new InsightError('INVALID_QUERY', `Provider id "${provider.id}" is duplicated`)
         }
         providerIds.add(provider.id)
+        const destination = provider.events
+        if (destination) destinations.push(destination)
         for (const [key, value] of Object.entries(provider.adapters ?? {})) {
             if (!/^[a-z][A-Za-z0-9]*$/.test(key)) {
                 throw new InsightError(
@@ -426,7 +438,7 @@ function runtimeScope(name: string, providers: readonly ProviderDefinition[]): R
             value: (query: unknown): Descriptor => ({ [descriptor]: true, capability, query }),
         })
     }
-    return { adapters, builder, capabilities, name, providers }
+    return { adapters, builder, capabilities, destinations, name }
 }
 
 function adapterDefinition(value: unknown, key: string): CapabilityAdapterDefinition {
@@ -600,53 +612,69 @@ async function mapConcurrent<TInput, TOutput>(
     return results
 }
 
-function validateEvent(
-    name: string,
-    definition: EventDefinition | undefined,
-    properties: unknown,
-): Readonly<Record<string, unknown>> {
-    if (!definition) throw new InsightError('INVALID_QUERY', `Unknown event: ${name}`)
-    if (!definition.properties) {
-        if (
-            properties !== undefined &&
-            (!isRecord(properties) || Object.keys(properties).length > 0)
-        ) {
-            throw new InsightError('INVALID_QUERY', `Event "${name}" does not accept properties`)
+type EventValidator = (properties: unknown) => Readonly<Record<string, unknown>>
+
+function compileEvents(events: EventDefinitions | undefined): Map<string, EventValidator> {
+    const validators = new Map<string, EventValidator>()
+    for (const [name, definition] of Object.entries(events ?? {})) {
+        if (!definition.properties) {
+            validators.set(name, (properties) => {
+                if (
+                    properties !== undefined &&
+                    (!isRecord(properties) || Object.keys(properties).length > 0)
+                ) {
+                    throw new InsightError(
+                        'INVALID_QUERY',
+                        `Event "${name}" does not accept properties`,
+                    )
+                }
+                return {}
+            })
+            continue
         }
-        return {}
+        const properties = Object.entries(definition.properties).map(
+            ([property, expected]) => [property, compileEventProperty(expected)] as const,
+        )
+        const allowed = new Set(properties.map(([property]) => property))
+        validators.set(name, (input) => {
+            if (!isRecord(input)) {
+                throw new InsightError('INVALID_QUERY', `Event "${name}" requires properties`)
+            }
+            for (const property of Object.keys(input)) {
+                if (!allowed.has(property)) {
+                    throw new InsightError(
+                        'INVALID_QUERY',
+                        `Unknown property "${property}" for event "${name}"`,
+                    )
+                }
+            }
+            for (const [property, validate] of properties) {
+                if (!Object.hasOwn(input, property)) {
+                    throw new InsightError(
+                        'INVALID_QUERY',
+                        `Missing property "${property}" for event "${name}"`,
+                    )
+                }
+                if (!validate(input[property])) {
+                    throw new InsightError(
+                        'INVALID_QUERY',
+                        `Invalid property "${property}" for event "${name}"`,
+                    )
+                }
+            }
+            return Object.fromEntries(Object.entries(input))
+        })
     }
-    if (!isRecord(properties)) {
-        throw new InsightError('INVALID_QUERY', `Event "${name}" requires properties`)
+    return validators
+}
+
+const compileEventProperty = (expected: EventProperty): ((value: unknown) => boolean) => {
+    if (Array.isArray(expected)) {
+        const values = new Set(expected)
+        return (value) => typeof value === 'string' && values.has(value)
     }
-    for (const property of Object.keys(properties)) {
-        if (!Object.hasOwn(definition.properties, property)) {
-            throw new InsightError(
-                'INVALID_QUERY',
-                `Unknown property "${property}" for event "${name}"`,
-            )
-        }
-    }
-    for (const [property, expected] of Object.entries(definition.properties)) {
-        if (!Object.hasOwn(properties, property)) {
-            throw new InsightError(
-                'INVALID_QUERY',
-                `Missing property "${property}" for event "${name}"`,
-            )
-        }
-        const value = properties[property]
-        const valid = Array.isArray(expected)
-            ? typeof value === 'string' && expected.includes(value)
-            : expected === 'number'
-              ? typeof value === 'number' && Number.isFinite(value)
-              : typeof value === expected
-        if (!valid) {
-            throw new InsightError(
-                'INVALID_QUERY',
-                `Invalid property "${property}" for event "${name}"`,
-            )
-        }
-    }
-    return Object.fromEntries(Object.entries(properties))
+    if (expected === 'number') return (value) => typeof value === 'number' && Number.isFinite(value)
+    return (value) => typeof value === expected
 }
 
 function invalidAdapterKey(adapter: string): never {
