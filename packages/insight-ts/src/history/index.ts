@@ -177,7 +177,8 @@ class HistoryEngine implements HistoryRuntime<HistoryController> {
         const normalized = normalizeTimeRange(range)
         const target = historyTarget(source)
         const coverage = await this.#coverage(target, normalized)
-        for (const gap of uncoveredRanges(normalized, coverage)) {
+        const gaps = uncoveredRanges(normalized, coverage)
+        for (const gap of gaps) {
             for (const part of this.#split(source, gap)) {
                 await this.#capture(source, part, execution)
             }
@@ -195,13 +196,13 @@ class HistoryEngine implements HistoryRuntime<HistoryController> {
         )
         const materialized = materializer.materialize(input, items)
         const fidelity = fidelityBands(segments, normalized)
-        const remaining = uncoveredRanges(normalized, await this.#coverage(target, normalized)).map(
-            (missing) => ({
-                preservation: 'not-preserved' as const,
-                range: missing,
-                transformations: [],
-            }),
-        )
+        const currentCoverage =
+            gaps.length === 0 ? coverage : await this.#coverage(target, normalized)
+        const remaining = uncoveredRanges(normalized, currentCoverage).map((missing) => ({
+            preservation: 'not-preserved' as const,
+            range: missing,
+            transformations: [],
+        }))
         const quality = mergeQuality([
             ...segments.map(({ quality: value }) => value),
             materialized.quality,

@@ -1,4 +1,4 @@
-import { createInsight, defineProvider } from '../src/core/index.ts'
+import { createInsight, defineProvider, type ProviderDefinition } from '../src/core/index.ts'
 import { defineMetricAdapter, type MetricQuery } from '../src/metrics/index.ts'
 import {
     googleSearchConsole,
@@ -95,5 +95,12 @@ const obsolete: GoogleSearchConsoleOptions = {
     property: 'sc-domain:example.com',
 }
 
+const providerBatch: ProviderDefinition = {
+    // @ts-expect-error Provider batching belongs inside an adapter or Provider-local transport
+    execute: () => [],
+    id: 'app',
+}
+
 void obsolete
+void providerBatch
 void verifyPublicTypes

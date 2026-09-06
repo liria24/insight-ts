@@ -81,35 +81,24 @@ export const createInsight = <const TOptions extends CreateInsightOptions>(
         execution: QueryExecutionOptions = {},
     ): Promise<readonly AdapterExecutionResult<unknown, object>[]> => {
         execution.signal?.throwIfAborted()
-        const groups = new Map<ProviderDefinition, PreparedAdapterRequest[]>()
-        for (const request of requests) {
-            const group = groups.get(request.source.provider) ?? []
-            group.push(request)
-            groups.set(request.source.provider, group)
-        }
-        const results = new Map<string, AdapterExecutionResult<unknown, object>>()
-        await Promise.all(
-            [...groups].map(async ([provider, group]) => {
-                const executed = await instrument(
-                    'insight.provider.execute',
-                    {
-                        'insight.provider': provider.id,
-                        'insight.request.count': group.length,
-                    },
-                    async () => executeProvider(provider, group, execution),
-                )
-                if (executed.length !== group.length) {
-                    throw new InsightError(
-                        'INVALID_QUERY',
-                        `Provider "${provider.id}" returned ${executed.length} results for ${group.length} requests`,
-                    )
-                }
-                for (const [index, result] of executed.entries()) {
-                    results.set(group[index]!.dedupeKey, validateExecutionResult(result))
-                }
-            }),
+        return mapConcurrent(requests, concurrency, async ({ query, source }) =>
+            instrument(
+                'insight.provider.execute',
+                {
+                    'insight.provider': source.provider.id,
+                    'insight.request.count': 1,
+                },
+                async () =>
+                    validateExecutionResult(
+                        await source.definition.execute(query, {
+                            adapter: source.id,
+                            provider: source.provider.id,
+                            scope: source.scope,
+                            ...(execution.signal ? { signal: execution.signal } : {}),
+                        }),
+                    ),
+            ),
         )
-        return requests.map(({ dedupeKey }) => results.get(dedupeKey)!)
     }
 
     const executeAdapterRaw = async (
@@ -275,30 +264,6 @@ export const createInsight = <const TOptions extends CreateInsightOptions>(
     // Configuration validation and generated methods preserve the erased generic contract.
     // eslint-disable-next-line typescript/no-unsafe-type-assertion
     return client as unknown as InsightClient<TOptions>
-
-    async function executeProvider(
-        provider: ProviderDefinition,
-        requests: readonly PreparedAdapterRequest[],
-        execution: QueryExecutionOptions,
-    ): Promise<readonly AdapterExecutionResult<unknown, object>[]> {
-        const providerRequests = requests.map(({ query, source }) => ({
-            adapter: source.id,
-            execute: () =>
-                Promise.resolve(
-                    source.definition.execute(query, {
-                        adapter: source.id,
-                        provider: provider.id,
-                        scope: source.scope,
-                        ...(execution.signal ? { signal: execution.signal } : {}),
-                    }),
-                ),
-            key: source.key,
-            query,
-        }))
-        return provider.execute
-            ? provider.execute(providerRequests, execution)
-            : mapConcurrent(providerRequests, concurrency, ({ execute }) => execute())
-    }
 }
 
 function runtimeScopes(options: CreateInsightOptions): Map<string, RuntimeScope> {

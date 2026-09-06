@@ -5,7 +5,6 @@ import { describe, expect, expectTypeOf, it, vi } from 'vitest'
 import {
     createInsight,
     defineProvider,
-    type AdapterExecutionResult,
     type CapabilityAdapterDefinition,
     type CapabilityContract,
     type CapabilitySchema,
@@ -13,7 +12,6 @@ import {
     type EventProperties,
     type HistoryExtension,
     type Instrumentation,
-    type ProviderExecutionRequest,
     type QueryResult,
 } from '../src/core/index.ts'
 import { defineMetricAdapter, type MetricData, type TimeRange } from '../src/metrics/index.ts'
@@ -167,20 +165,15 @@ describe('canonical query planning', () => {
     })
 
     it('uses ordinary Promise concurrency for independent queries', async () => {
+        const execute = vi.fn(({ metrics }: { metrics: readonly string[] }) => ({
+            values: Object.fromEntries(metrics.map((key) => [key, 1])),
+        }))
         const adapter = defineMetricAdapter({
-            execute: ({ metrics }) => ({
-                values: Object.fromEntries(metrics.map((key) => [key, 1])),
-            }),
+            execute,
             metrics: { requests: {} },
         })
-        const execute = vi.fn(
-            async (
-                requests: readonly ProviderExecutionRequest[],
-            ): Promise<readonly AdapterExecutionResult<unknown, object>[]> =>
-                Promise.all(requests.map(({ execute: run }) => run())),
-        )
         const insight = createInsight({
-            providers: [defineProvider({ adapters: { traffic: adapter }, execute, id: 'batched' })],
+            providers: [defineProvider({ adapters: { traffic: adapter }, id: 'app' })],
         })
 
         const [first, second] = await Promise.all([
@@ -189,7 +182,6 @@ describe('canonical query planning', () => {
         ])
 
         expect(execute).toHaveBeenCalledTimes(2)
-        expect(execute.mock.calls.every(([requests]) => requests.length === 1)).toBe(true)
         expect(first.aggregate).toEqual(second.aggregate)
     })
 

@@ -170,23 +170,23 @@ const traceContract: TraceContract = {
     key: (query) => JSON.stringify(query),
     merge(query, contributions) {
         const context = requirePaginationContext(query)
+        const single =
+            context.adapters.length === 1 && contributions.length === 1
+                ? contributions[0]
+                : undefined
         const merged = mergeContinuation({
             compare: compareTraces,
-            contributions: contributions.map((contribution) => {
-                const index = context.adapters.findIndex(
-                    (adapter) => adapter === contribution.adapter.definition,
-                )
-                if (index < 0) {
-                    throw new InsightError('INVALID_QUERY', 'Invalid Trace contribution')
-                }
-                return {
-                    index,
-                    ...(contribution.result.nativeCursor
-                        ? { nativeCursor: contribution.result.nativeCursor }
-                        : {}),
-                    records: requireTraceData(contribution.result.data).traces,
-                }
-            }),
+            contributions: single
+                ? [traceContinuation(single, 0)]
+                : contributions.map((contribution) => {
+                      const index = context.adapters.findIndex(
+                          (adapter) => adapter === contribution.adapter.definition,
+                      )
+                      if (index < 0) {
+                          throw new InsightError('INVALID_QUERY', 'Invalid Trace contribution')
+                      }
+                      return traceContinuation(contribution, index)
+                  }),
             id: (trace) => trace.traceId,
             ...(query.limit === undefined ? {} : { limit: query.limit }),
             state: context.state,
@@ -195,11 +195,21 @@ const traceContract: TraceContract = {
             ? encodeContinuation('traces', context.key, merged.state)
             : undefined
         return {
-            contributions: contributions.map(({ result }) =>
-                result.quality ? { quality: result.quality } : {},
-            ),
+            ...(single
+                ? single.result.quality
+                    ? { quality: single.result.quality }
+                    : {}
+                : {
+                      contributions: contributions.map(({ result }) =>
+                          result.quality ? { quality: result.quality } : {},
+                      ),
+                  }),
             data: { traces: merged.records },
-            ...mergeTraceMeta(contributions),
+            ...(single
+                ? single.result.meta
+                    ? { meta: single.result.meta }
+                    : {}
+                : mergeTraceMeta(contributions)),
             ...(next ? { pagination: { next } } : {}),
         }
     },
@@ -236,6 +246,19 @@ const traceContract: TraceContract = {
             ...(query.where ? { where: query.where } : {}),
         }
     },
+}
+
+const traceContinuation = (contribution: CapabilityContribution, index: number) => {
+    // Trace adapters canonicalize their result before Core invokes the contract.
+    // eslint-disable-next-line typescript/no-unsafe-type-assertion
+    const data = contribution.result.data as TraceData
+    return {
+        index,
+        ...(contribution.result.nativeCursor
+            ? { nativeCursor: contribution.result.nativeCursor }
+            : {}),
+        records: data.traces,
+    }
 }
 
 interface TracePaginationContext {
@@ -493,13 +516,6 @@ const normalizeSpan = (span: TraceSpan, traceId: string): TraceSpan => {
             : {}),
         startTime: normalizeTimestamp(span.startTime, 'Span startTime'),
     }
-}
-
-const requireTraceData = (value: unknown): TraceData => {
-    if (!isRecord(value) || !Array.isArray(value.traces)) {
-        throw new InsightError('INVALID_QUERY', 'Trace adapter returned invalid data')
-    }
-    return { traces: normalizeTraces(value.traces) }
 }
 
 const validateStatus = (status: unknown, name: string): void => {

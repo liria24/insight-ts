@@ -609,6 +609,14 @@ const isRecord = (value: unknown): value is Record<string, unknown> =>
 const metricContract: MetricContract = {
     key: (query) => JSON.stringify(query),
     merge(query, contributions) {
+        const single = contributions.length === 1 ? contributions[0] : undefined
+        if (single) {
+            return {
+                data: single.result.data,
+                ...(single.result.meta ? { meta: single.result.meta } : {}),
+                ...(single.result.quality ? { quality: single.result.quality } : {}),
+            }
+        }
         const rows = includesRows(query.projection)
             ? new Map<
                   string,
@@ -625,7 +633,9 @@ const metricContract: MetricContract = {
             ? Object.fromEntries(query.metrics.map((metric) => [metric, null]))
             : undefined
         for (const contribution of contributions) {
-            const data = requireMetricData(contribution.result.data, query.projection)
+            // Metric adapters canonicalize their result before Core invokes the contract.
+            // eslint-disable-next-line typescript/no-unsafe-type-assertion
+            const data = contribution.result.data as MetricExecutionData
             if (aggregate && data.aggregate) {
                 for (const metric of query.metrics) {
                     if (Object.hasOwn(data.aggregate, metric)) {
@@ -635,7 +645,7 @@ const metricContract: MetricContract = {
             }
             if (rows) {
                 for (const point of data.rows ?? []) {
-                    const key = metricPointKey(point)
+                    const key = metricPointKey(point, query.dimensions)
                     const row = rows.get(key) ?? {
                         ...(point.dimensions ? { dimensions: point.dimensions } : {}),
                         ...(point.time ? { time: point.time } : {}),
@@ -651,9 +661,9 @@ const metricContract: MetricContract = {
             }
         }
         const mergedRows = rows
-            ? [...rows.values()].toSorted((left, right) =>
-                  metricPointKey(left).localeCompare(metricPointKey(right)),
-              )
+            ? [...rows]
+                  .toSorted(([left], [right]) => left.localeCompare(right))
+                  .map(([, row]) => row)
             : undefined
         return {
             contributions: contributions.map(({ result }) =>
@@ -938,22 +948,22 @@ const materializeMetricData = (
                     : { time: metricBucketStart(point.time, query.grain) }),
                 values: point.values,
             }
-            const key = metricPointKey(normalized)
+            const key = metricPointKey(normalized, query.dimensions)
             const group = groups.get(key) ?? []
             group.push(normalized)
             groups.set(key, group)
         }
     }
     const points = groups
-        ? [...groups.values()]
-              .map((group) => ({
+        ? [...groups]
+              .toSorted(([left], [right]) => left.localeCompare(right))
+              .map(([, group]) => ({
                   ...(group[0]?.dimensions ? { dimensions: group[0].dimensions } : {}),
                   ...(group[0]?.time ? { time: group[0].time } : {}),
                   values: Object.fromEntries(
                       query.metrics.map((metric) => [metric, resolve(metric, group)]),
                   ),
               }))
-              .toSorted((left, right) => metricPointKey(left).localeCompare(metricPointKey(right)))
         : []
     const limited = query.limit ? points.slice(0, query.limit) : points
     const scalar = (metric: string): number | null => {
@@ -1027,11 +1037,12 @@ const metricBucketStart = (value: string, grain: Grain): string => {
     return date.toISOString()
 }
 
-const metricPointKey = (point: { dimensions?: Partial<DimensionValues>; time?: string }): string =>
+const metricPointKey = (
+    point: { dimensions?: Partial<DimensionValues>; time?: string },
+    dimensions: readonly string[],
+): string =>
     `${point.time ?? ''}\0${JSON.stringify(
-        Object.entries(point.dimensions ?? {}).toSorted(([left], [right]) =>
-            left.localeCompare(right),
-        ),
+        dimensions.map((dimension) => point.dimensions?.[dimension] ?? null),
     )}`
 
 const mergeMetricMeta = (

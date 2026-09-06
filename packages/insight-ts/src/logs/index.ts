@@ -143,21 +143,23 @@ const logContract: LogContract = {
     key: (query) => JSON.stringify(query),
     merge(query, contributions) {
         const context = requirePaginationContext(query)
+        const single =
+            context.adapters.length === 1 && contributions.length === 1
+                ? contributions[0]
+                : undefined
         const merged = mergeContinuation({
             compare: compareLogs,
-            contributions: contributions.map((contribution) => {
-                const index = context.adapters.findIndex(
-                    (adapter) => adapter === contribution.adapter.definition,
-                )
-                if (index < 0) throw new InsightError('INVALID_QUERY', 'Invalid Log contribution')
-                return {
-                    index,
-                    ...(contribution.result.nativeCursor
-                        ? { nativeCursor: contribution.result.nativeCursor }
-                        : {}),
-                    records: requireLogData(contribution.result.data).logs,
-                }
-            }),
+            contributions: single
+                ? [logContinuation(single, 0)]
+                : contributions.map((contribution) => {
+                      const index = context.adapters.findIndex(
+                          (adapter) => adapter === contribution.adapter.definition,
+                      )
+                      if (index < 0) {
+                          throw new InsightError('INVALID_QUERY', 'Invalid Log contribution')
+                      }
+                      return logContinuation(contribution, index)
+                  }),
             id: (log) => log.id,
             ...(query.limit === undefined ? {} : { limit: query.limit }),
             state: context.state,
@@ -166,11 +168,21 @@ const logContract: LogContract = {
             ? encodeContinuation('logs', context.key, merged.state)
             : undefined
         return {
-            contributions: contributions.map(({ result }) =>
-                result.quality ? { quality: result.quality } : {},
-            ),
+            ...(single
+                ? single.result.quality
+                    ? { quality: single.result.quality }
+                    : {}
+                : {
+                      contributions: contributions.map(({ result }) =>
+                          result.quality ? { quality: result.quality } : {},
+                      ),
+                  }),
             data: { logs: merged.records },
-            ...mergeLogMeta(contributions),
+            ...(single
+                ? single.result.meta
+                    ? { meta: single.result.meta }
+                    : {}
+                : mergeLogMeta(contributions)),
             ...(next ? { pagination: { next } } : {}),
         }
     },
@@ -207,6 +219,19 @@ const logContract: LogContract = {
             ...(query.where ? { where: query.where } : {}),
         }
     },
+}
+
+const logContinuation = (contribution: CapabilityContribution, index: number) => {
+    // Log adapters canonicalize their result before Core invokes the contract.
+    // eslint-disable-next-line typescript/no-unsafe-type-assertion
+    const data = contribution.result.data as LogData
+    return {
+        index,
+        ...(contribution.result.nativeCursor
+            ? { nativeCursor: contribution.result.nativeCursor }
+            : {}),
+        records: data.logs,
+    }
 }
 
 interface LogPaginationContext {
@@ -423,13 +448,6 @@ const normalizeLogs = (logs: unknown): readonly LogRecord[] => {
             timestamp: normalizeTimestamp(record.timestamp, 'Log timestamp'),
         }
     })
-}
-
-const requireLogData = (value: unknown): LogData => {
-    if (!isRecord(value) || !Array.isArray(value.logs)) {
-        throw new InsightError('INVALID_QUERY', 'Log adapter returned invalid data')
-    }
-    return { logs: normalizeLogs(value.logs) }
 }
 
 const commonFilters = (adapters: readonly LogAdapterDefinition[]): readonly LogFilterField[] =>

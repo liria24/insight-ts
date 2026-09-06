@@ -30,8 +30,6 @@ export type {
     InstrumentationSpan,
     Provider,
     ProviderDefinition,
-    ProviderExecutionContext,
-    ProviderExecutionRequest,
     QueryExecutionOptions,
     QueryQuality,
     QueryPagination,

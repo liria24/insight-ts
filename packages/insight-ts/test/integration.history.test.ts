@@ -21,11 +21,13 @@ const range: TimeRange = {
 }
 
 class MemoryRepository implements HistoryRepository {
+    readonly coverageReads: (HistoryTarget & { range: TimeRange })[] = []
     readonly reads: HistoryReadQuery[] = []
     readonly replacements: { range: TimeRange; size: number }[] = []
     readonly segments: HistorySegment[] = []
 
     async coverage(query: HistoryTarget & { range: TimeRange }) {
+        this.coverageReads.push(query)
         return this.#matching(query)
     }
 
@@ -156,6 +158,7 @@ describe('generic History', () => {
             metrics: metrics.mock.calls.length,
             traces: traces.mock.calls.length,
         }
+        const coverageReads = repository.coverageReads.length
         const [logResult, metricResult, traceResult] = await Promise.all([
             insight.logs({ time: range }),
             insight.metrics({ metrics: ['requests'], time: { ...range, grain: 'day' } }),
@@ -170,6 +173,7 @@ describe('generic History', () => {
             metrics: metrics.mock.calls.length,
             traces: traces.mock.calls.length,
         }).toEqual(calls)
+        expect(repository.coverageReads).toHaveLength(coverageReads + 3)
         expect(logResult.meta.fidelity).toEqual([
             expect.objectContaining({ preservation: 'full', range }),
         ])

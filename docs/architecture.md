@@ -31,8 +31,8 @@ Vue UI ──> UI Core + private renderer
 The user-facing workflows are Query, Track, and History. A default Scope is implicit. Named Scopes
 created with `insight.scope(name)` are logical analysis boundaries, not Provider or backend names.
 
-Core owns Scope resolution, bounded execution, abort handling, generic capability contracts,
-Provider request grouping, public result construction, cross-cutting Quality, events, and a small
+Core owns Scope resolution, bounded Adapter execution, abort handling, generic capability contracts,
+public result construction, cross-cutting Quality, events, and a small
 instrumentation port. It does not classify capabilities with a closed Metrics/Logs/Traces union.
 
 A capability contract owns canonical query normalization, planning, exact deduplication,
@@ -89,7 +89,8 @@ prototype-safe. Core reserves names required by the client, including `scope`, `
 `history`, and rejects collisions before I/O.
 
 Capability normalization is deterministic and I/O-free. Equivalent normalized plans execute once,
-and Provider implementations may batch compatible requests. External I/O may scale with compatible
+and Provider implementations may coalesce compatible requests inside their own transports. Providers
+have no generic batch-execution hook. External I/O may scale with compatible
 Provider request groups, never with result rows, metrics, or dimension values. `AbortSignal` is an
 execution option and reaches Provider execution.
 
@@ -100,7 +101,9 @@ optional execution tuning belongs under a Provider-specific `advanced` namespace
 
 Every result is serializable data. Core exposes canonical capability fields directly and adds a
 `meta` field with `queriedAt`, conservative Quality, optional pagination, and capability metadata.
-Adapter execution may retain internal `data` envelopes and contribution topology. Provider sampling,
+Adapters validate and canonicalize native results once. Capability composition reuses that canonical
+data and performs cross-adapter work only when a semantic merge requires it. Adapter execution may
+retain internal `data` envelopes and contribution topology. Provider sampling,
 approximation, thresholding, freshness, partial results, and meaningful native limitations must not
 be erased.
 

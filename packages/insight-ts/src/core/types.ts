@@ -176,17 +176,6 @@ export interface Instrumentation {
     ): Awaitable<T>
 }
 
-export interface ProviderExecutionRequest {
-    adapter: string
-    execute(): Promise<AdapterExecutionResult<unknown, object>>
-    key: string
-    query: unknown
-}
-
-export interface ProviderExecutionContext {
-    signal?: AbortSignal
-}
-
 export interface Event {
     context?: { spanId?: string; traceId?: string }
     id: string
@@ -206,10 +195,6 @@ export interface ProviderDefinition<
 > {
     adapters?: TAdapters
     events?: EventDestination
-    execute?(
-        requests: readonly ProviderExecutionRequest[],
-        context: ProviderExecutionContext,
-    ): Awaitable<readonly AdapterExecutionResult<unknown, object>[]>
     id: TId
 }
 

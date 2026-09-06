@@ -30,6 +30,12 @@ const core = createInsight({
 })
 
 describe('Core query', () => {
+    test('execute one canonical contribution', async ({ bench }) => {
+        await bench('execute', async () => {
+            await core.metrics({ metrics: ['value'], time })
+        }).run()
+    })
+
     test('normalize and execute concurrent capability calls', async ({ bench }) => {
         await bench('execute', async () => {
             await Promise.all([
