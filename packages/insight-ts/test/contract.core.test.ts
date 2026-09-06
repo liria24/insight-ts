@@ -541,15 +541,24 @@ describe('Metric adapter boundary', () => {
 describe('events and instrumentation', () => {
     it('routes Track through the selected Scope without exposing query values', async () => {
         const track = vi.fn<EventDestination['track']>()
+        let insideInsightSpan = false
         const calls: {
             attributes: Readonly<Record<string, boolean | number | string>>
             name: string
         }[] = []
         const instrumentation: Instrumentation = {
-            activeTraceContext: () => ({ spanId: 'span', traceId: 'trace' }),
+            activeTraceContext: () => {
+                expect(insideInsightSpan).toBe(false)
+                return { spanId: 'span', traceId: 'trace' }
+            },
             async run(name, attributes, operation) {
                 calls.push({ attributes, name })
-                return operation({ recordException() {}, setAttribute() {} })
+                insideInsightSpan = true
+                try {
+                    return await operation({ recordException() {}, setAttribute() {} })
+                } finally {
+                    insideInsightSpan = false
+                }
             },
         }
         const options = {

@@ -3,10 +3,18 @@ import memoryDriver from 'unstorage/drivers/memory'
 import { describe, expect, it, vi } from 'vitest'
 
 import {
+    createInsight as createCoreInsight,
+    defineProvider,
+    type EventDestination,
+} from '../src/core/index.ts'
+import { createBrowserInsight } from '../src/integrations/browser/index.ts'
+import {
+    createNitroEventRelay,
     createNitroHistoryRepository,
     configureNitroHistory,
 } from '../src/integrations/nitro/index.ts'
 import {
+    createBrowserRelayTemplate,
     createServerRuntimeTemplate,
     createServerRuntimeTypeTemplate,
 } from '../src/integrations/nuxt/module.ts'
@@ -23,6 +31,82 @@ describe('Nitro and Nuxt integration', () => {
         expect(source).toContain("createNitroHistoryRepository(useStorage('insight'))")
         expect(source).toContain('capabilities: ["metrics"]')
         expect(source).not.toContain('h3')
+    })
+
+    it('generates the default browser route with explicit Scope selection', () => {
+        const defaultRelay = createBrowserRelayTemplate({})
+        expect(defaultRelay).toContain('fromWebHandler(createNitroEventRelay({')
+        expect(defaultRelay).toContain('const client = useInsight()')
+
+        const scopedRelay = createBrowserRelayTemplate({ scope: 'production' })
+        expect(scopedRelay).toContain('useInsight().scope("production")')
+    })
+
+    it('relays a browser batch through bounded validation and server Track', async () => {
+        const delivered = vi.fn<EventDestination['track']>()
+        const events = { signup: { properties: { plan: 'string' } } } as const
+        const insight = createCoreInsight({
+            events,
+            providers: [defineProvider({ events: { track: delivered }, id: 'events' })],
+        })
+        const relay = createNitroEventRelay({
+            events,
+            track(name, properties) {
+                if (name !== 'signup' || typeof properties.plan !== 'string') {
+                    throw new TypeError('Invalid test event')
+                }
+                return insight.track(name, { plan: properties.plan })
+            },
+        })
+        const send = vi.fn<typeof fetch>()
+        send.mockImplementation((input, init) => {
+            const path = input instanceof Request ? input.url : input.toString()
+            return relay(new Request(new URL(path, 'https://app.example'), init))
+        })
+        const browser = createBrowserInsight<{ signup: { plan: string } }>({
+            fetch: send,
+            flushIntervalMs: 10_000,
+        })
+
+        browser.track('signup', { plan: 'pro' })
+        await browser.flush()
+
+        expect(delivered).toHaveBeenCalledWith(
+            expect.objectContaining({
+                id: expect.any(String),
+                name: 'signup',
+                origin: 'server',
+                properties: { plan: 'pro' },
+                timestamp: expect.any(String),
+            }),
+        )
+
+        const invalid = await relay(
+            new Request('https://app.example/api/_insight/events', {
+                body: JSON.stringify({
+                    events: [
+                        { name: 'signup', properties: { plan: 'free' } },
+                        { id: 'client-id', name: 'signup', properties: { plan: 'pro' } },
+                    ],
+                }),
+                headers: { 'content-type': 'application/json' },
+                method: 'POST',
+            }),
+        )
+        expect(invalid.status).toBe(400)
+        expect(delivered).toHaveBeenCalledOnce()
+
+        const oversized = await relay(
+            new Request('https://app.example/api/_insight/events', {
+                body: JSON.stringify({
+                    events: [{ name: 'signup', properties: { plan: 'x'.repeat(64 * 1024) } }],
+                }),
+                headers: { 'content-type': 'application/json' },
+                method: 'POST',
+            }),
+        )
+        expect(oversized.status).toBe(413)
+        expect(delivered).toHaveBeenCalledOnce()
     })
 
     it('configures Cloudflare from Nuxt runtime config with a typed Source', () => {

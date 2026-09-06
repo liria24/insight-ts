@@ -179,11 +179,17 @@ Provider-owned and are not initialized twice when a host integration already own
 
 Server Track validates exact event names, required properties, property types, and extra fields,
 then generates the ID, timestamp, and `origin`. Multiple configured destinations receive the same
-validated event and destination failure is observable to the caller.
+validated event. Core captures optional trace context before opening its own tracking span. A
+destination that rejects with a retryable `ProviderError` is retried once with the same event;
+successful destinations are not repeated. Delivery is at least once rather than transactional:
+destinations should handle a repeated event ID idempotently where their native API permits it, and a
+new application call to `track()` creates a new operation and ID.
 
 Browser delivery is best-effort, same-origin, size-bounded telemetry. The relay rejects unknown
 events and properties, invalid types, client-supplied system fields, oversized bodies, and oversized
-batches. Client telemetry is not authoritative business state.
+batches before delivery. The Nuxt module mounts the default `/api/_insight/events` relay and routes
+each accepted event through canonical server Track; multiple-Scope applications select the relay
+Scope explicitly. Client telemetry is not authoritative business state.
 
 Analytics Engine writes one bounded native data point per validated event. Its index and blobs obey
 native byte limits; property-level querying is outside the current contract.

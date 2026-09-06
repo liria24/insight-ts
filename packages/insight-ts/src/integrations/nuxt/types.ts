@@ -4,6 +4,10 @@ export interface NuxtInsightHistoryOptions {
     tasks?: boolean
 }
 
+export interface NuxtInsightBrowserOptions {
+    scope?: string
+}
+
 export interface NuxtCloudflareProviderOptions {
     webAnalytics?: boolean
 }
@@ -13,6 +17,7 @@ export interface NuxtInsightProviderOptions {
 }
 
 export interface NuxtInsightModuleOptions {
+    browser?: false | NuxtInsightBrowserOptions
     history?: NuxtInsightHistoryOptions
     providers?: NuxtInsightProviderOptions
 }

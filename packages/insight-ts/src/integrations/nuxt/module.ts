@@ -4,6 +4,7 @@ import { pathToFileURL } from 'node:url'
 
 import {
     addServerImports,
+    addServerHandler,
     addServerTemplate,
     addTemplate,
     addTypeTemplate,
@@ -23,6 +24,10 @@ interface ServerRuntimeTypeTemplateOptions {
     cloudflareWebAnalytics: boolean
     history: boolean
     userConfigPath?: string
+}
+
+interface BrowserRelayTemplateOptions {
+    scope?: string
 }
 
 const module: NuxtModule<NuxtInsightModuleOptions> = defineNuxtModule<NuxtInsightModuleOptions>({
@@ -65,6 +70,20 @@ const module: NuxtModule<NuxtInsightModuleOptions> = defineNuxtModule<NuxtInsigh
         addServerImports([
             { from: '#insight/server', name: 'useInsight', typeFrom: runtimeTypes.dst },
         ])
+
+        if (options.browser !== false) {
+            const relay = addTemplate({
+                filename: 'insight/event-relay.mjs',
+                getContents: () =>
+                    createBrowserRelayTemplate(
+                        options.browser && options.browser.scope
+                            ? { scope: options.browser.scope }
+                            : {},
+                    ),
+                write: true,
+            })
+            addServerHandler({ handler: relay.dst, route: '/api/_insight/events' })
+        }
 
         if (!options.history) return
         let handlers: { syncHandler: string } | undefined
@@ -144,6 +163,24 @@ ${cloudflareImport}import type { ${coreTypes} } from 'insight-ts'
 ${cloudflareProvider}
 type RuntimeConfig = (${runtimeConfig})${history ? ' & { history: HistoryExtension }' : ''}
 export declare const useInsight: () => InsightClient<RuntimeConfig>
+`
+}
+
+export const createBrowserRelayTemplate = ({ scope }: BrowserRelayTemplateOptions): string => {
+    const client = scope ? `useInsight().scope(${JSON.stringify(scope)})` : 'useInsight()'
+    return `import { fromWebHandler } from 'h3'
+import { createNitroEventRelay } from 'insight-ts/nitro'
+import config from '#insight/server-config'
+import { useInsight } from '#insight/server'
+
+export default fromWebHandler(createNitroEventRelay({
+  events: config.events,
+  track(name, properties) {
+    const client = ${client}
+    if (typeof client.track !== 'function') throw new TypeError('Insight browser relay requires insight.browser.scope when using multiple Scopes')
+    return client.track(name, properties)
+  },
+}))
 `
 }
 

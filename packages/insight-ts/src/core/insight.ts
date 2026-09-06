@@ -1,4 +1,4 @@
-import { InsightError } from './errors.ts'
+import { InsightError, ProviderError } from './errors.ts'
 import {
     decodeContinuation,
     encodeContinuation,
@@ -403,8 +403,9 @@ export const createInsight = <const TOptions extends CreateInsightOptions>(
         })
         Object.defineProperty(client, 'track', {
             enumerable: true,
-            value: async (name: string, properties?: Readonly<Record<string, unknown>>) =>
-                instrument(
+            value: async (name: string, properties?: Readonly<Record<string, unknown>>) => {
+                const context = options.instrumentation?.activeTraceContext?.()
+                return instrument(
                     'insight.event.track',
                     { 'insight.event.name': name, 'insight.scope': scope.name },
                     async () => {
@@ -418,7 +419,6 @@ export const createInsight = <const TOptions extends CreateInsightOptions>(
                                 'No Provider event destination is configured in the Scope',
                             )
                         }
-                        const context = options.instrumentation?.activeTraceContext?.()
                         const event = {
                             ...(context ? { context } : {}),
                             id: crypto.randomUUID(),
@@ -427,11 +427,10 @@ export const createInsight = <const TOptions extends CreateInsightOptions>(
                             properties: normalized,
                             timestamp: now().toISOString(),
                         }
-                        await Promise.all(
-                            scope.destinations.map(async (destination) => destination.track(event)),
-                        )
+                        await deliverEvent(scope.destinations, event)
                     },
-                ),
+                )
+            },
         })
         for (const capability of scope.capabilities.values()) {
             Object.defineProperty(client, capability.name, {
@@ -682,7 +681,7 @@ function mergeQuality(values: readonly (QueryQuality | undefined)[]): QueryQuali
 
 type EventValidator = (properties: unknown) => Readonly<Record<string, unknown>>
 
-function compileEvents(events: EventDefinitions | undefined): Map<string, EventValidator> {
+export function compileEvents(events: EventDefinitions | undefined): Map<string, EventValidator> {
     const validators = new Map<string, EventValidator>()
     for (const [name, definition] of Object.entries(events ?? {})) {
         if (!definition.properties) {
@@ -734,6 +733,40 @@ function compileEvents(events: EventDefinitions | undefined): Map<string, EventV
         })
     }
     return validators
+}
+
+async function deliverEvent(
+    destinations: readonly EventDestination[],
+    event: Parameters<EventDestination['track']>[0],
+): Promise<void> {
+    const deliveries = destinations.map((destination) => ({
+        destination,
+        error: undefined as unknown,
+        failed: false,
+    }))
+    const attempt = async (delivery: (typeof deliveries)[number]): Promise<void> => {
+        try {
+            await delivery.destination.track(event)
+            delivery.failed = false
+        } catch (error) {
+            delivery.error = error
+            delivery.failed = true
+        }
+    }
+
+    await Promise.all(deliveries.map(attempt))
+    await Promise.all(
+        deliveries
+            .filter(
+                (delivery) =>
+                    delivery.failed &&
+                    delivery.error instanceof ProviderError &&
+                    delivery.error.retryable === true,
+            )
+            .map(attempt),
+    )
+    const failed = deliveries.find((delivery) => delivery.failed)
+    if (failed) throw failed.error
 }
 
 const compileEventProperty = (expected: EventProperty): ((value: unknown) => boolean) => {

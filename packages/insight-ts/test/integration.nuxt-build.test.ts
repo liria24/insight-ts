@@ -30,6 +30,8 @@ describe('Nuxt bundle isolation', () => {
                 expect(text.includes('@tanstack/charts')).toBe(ui)
                 expect(text.includes('InsightAreaChart')).toBe(ui)
                 expect(text.includes('--insight-chart-1')).toBe(ui)
+                expect(text).toContain('/api/_insight/events')
+                expect(text).toContain('createNitroEventRelay')
                 expect(text.includes("from 'insight-ts/history'")).toBe(history)
                 expect(text).not.toContain('vue/ui/vapor')
                 expect(text).not.toContain('vapor: true')
