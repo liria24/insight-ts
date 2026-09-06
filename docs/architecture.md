@@ -107,9 +107,11 @@ retain internal `data` envelopes and contribution topology. Provider sampling,
 approximation, thresholding, freshness, partial results, and meaningful native limitations must not
 be erased.
 
-Pageable results expose only opaque `meta.pagination.next`. A cursor is size-bounded, bound to one
-logical result and normalized query, and resumes only that result. Missing `next` is terminal; no
-separate `hasMore` claim is inferred. Repeated native cursors are rejected.
+Applications continue pageable results with `insight.next(result)`. QueryResults remain plain
+serializable data and carry only opaque, size-bounded state under `meta.pagination.next`. The state
+binds the original query to its logical Scope, capability, single adapter, and current native
+position; it never carries canonical result records or accumulated emitted IDs. Terminal results
+omit pagination, and repeated native cursors are rejected.
 
 Authentication is host-owned. In particular, Google Search Console accepts a
 `getAccessToken` callback and stores no OAuth credentials or login routes.
@@ -143,8 +145,9 @@ incompatible reconstruction executes wholly against the live Provider.
 
 Logs and Traces use portable common fields guided by OpenTelemetry conventions without exposing
 OTel or Provider-native paths in ordinary queries. Arbitrary attributes retain non-portable data.
-Results merge deterministically, deduplicate by stable canonical IDs, and share the same bounded
-continuation model.
+Terminal results merge deterministically and deduplicate by stable canonical IDs. Single-adapter
+results support bounded continuation. Multi-adapter queries that require native continuation fail
+with `UNSUPPORTED_OPERATION` until a bounded algorithm is justified by a concrete use case.
 
 ### Provider compatibility
 

@@ -48,9 +48,8 @@ const rowResult = await insight.metrics({
 if (rowResult.rows[0]?.values.value !== 42 || 'aggregate' in rowResult) throw new Error('Packed Metric projection failed')
 // @ts-expect-error rows-only results do not expose aggregate
 void rowResult.aggregate
-const nextLogCursor = logResult.meta.pagination?.next
-if (nextLogCursor) {
-  await insight.logs({ cursor: nextLogCursor, time: { from: '2026-08-01', to: '2026-08-02' } })
+if (logResult.meta.pagination) {
+  await insight.next(logResult)
 }
 
 const webOnly = cloudflare({

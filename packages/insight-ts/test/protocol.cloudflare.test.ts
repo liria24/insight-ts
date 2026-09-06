@@ -318,12 +318,7 @@ describe('Cloudflare adapters', () => {
             severity: 'error',
         } as const
         const first = await insight.logs({ limit: 2, time, where })
-        const second = await insight.logs({
-            cursor: first.meta.pagination!.next!,
-            limit: 2,
-            time,
-            where,
-        })
+        const second = await insight.next(first)
 
         const parameters = recordBody(recordBody(bodies[0]).parameters)
         expect(parameters.filterCombination).toBe('and')

@@ -58,6 +58,7 @@ console.log(traffic.aggregate.pageViews)
 Configured canonical Metrics and dimensions are inferred across Provider adapters without `as const` or explicit generics.
 Metric queries can request `aggregate`, `rows`, or `both`; ungrouped scalar queries default to
 `aggregate`, while grouped and time-series queries default to `both`.
+Paginated Logs and Traces continue with `await insight.next(result)` without repeating the query.
 
 ## Why Insight.ts?
 
@@ -80,7 +81,7 @@ Core does not require a framework, History engine, UI renderer, or OpenTelemetry
 Built-in support currently includes:
 
 - **Cloudflare Web Analytics** — page views, visits, dimensions, filters, and quality metadata
-- **Cloudflare Workers Observability** — canonical Logs, Traces, and telemetry Metrics with opaque pagination
+- **Cloudflare Workers Observability** — canonical Logs, Traces, and telemetry Metrics with result-local continuation
 - **Cloudflare Analytics Engine** — Metric queries, event delivery, or both
 - **Google Search Console** — Search Analytics metrics with data-state and quality metadata
 - **Application-defined adapters** — canonical Metric, Log, and Trace adapters through focused entrypoints and custom Providers through `defineProvider()`

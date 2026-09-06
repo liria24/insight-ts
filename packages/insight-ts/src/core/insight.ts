@@ -1,4 +1,10 @@
 import { InsightError } from './errors.ts'
+import {
+    decodeContinuation,
+    encodeContinuation,
+    invalidContinuation,
+    type Continuation,
+} from './pagination.ts'
 import type {
     AdapterExecutionResult,
     AdapterRequest,
@@ -11,10 +17,10 @@ import type {
     EventProperty,
     HistoryRuntime,
     InsightClient,
+    InsightCursor,
     InstrumentationSpan,
     ProviderDefinition,
     QueryExecutionOptions,
-    QueryPagination,
     QueryQuality,
     QueryResult,
     RuntimeAdapter,
@@ -163,18 +169,30 @@ export const createInsight = <const TOptions extends CreateInsightOptions>(
         capability: RuntimeCapability,
         input: unknown,
         execution: QueryExecutionOptions,
+        continuation?: Continuation,
     ): Promise<QueryResult<Record<PropertyKey, unknown>, object>> => {
         const { adapters, contract, name, scope } = capability
-        const query = contract.normalize(
+        const normalized = contract.normalize(
             input,
             adapters.map(({ definition }) => definition),
         )
-        if (typeof contract.key(query) !== 'string') {
+        const queryKey = contract.key(normalized)
+        if (typeof queryKey !== 'string') {
             throw new InsightError(
                 'INVALID_QUERY',
                 `Capability "${name}" returned a non-string query key`,
             )
         }
+        if (continuation && continuation.queryKey !== queryKey) throw invalidContinuation()
+        if (continuation && !contract.continue) {
+            throw new InsightError(
+                'UNSUPPORTED_OPERATION',
+                `Capability "${name}" does not support pagination`,
+            )
+        }
+        const query = continuation
+            ? contract.continue!(normalized, continuation.nativeCursor)
+            : normalized
         const plans = adapters.flatMap((source) => {
             const plan = contract.plan(query, source.definition)
             if (plan === undefined) return []
@@ -188,22 +206,77 @@ export const createInsight = <const TOptions extends CreateInsightOptions>(
                 },
             ]
         })
+        if (continuation) {
+            if (
+                plans.length !== 1 ||
+                continuation.binding !== (await continuationBinding(plans[0]!.source.id))
+            ) {
+                throw invalidContinuation()
+            }
+        }
         const executed = await executePlans(plans, execution)
-        return queryResult(
-            contract.merge(
-                query,
-                plans.map((plan, index) => ({
-                    adapter: plan.source,
-                    plan: plan.query,
-                    result: executed[index]!,
-                })),
-            ),
-            now(),
+        const merged = contract.merge(
+            query,
+            plans.map((plan, index) => ({
+                adapter: plan.source,
+                plan: plan.query,
+                result: executed[index]!,
+            })),
         )
+        const nativeCursor = validateExecutionResult(merged).nativeCursor
+        if (continuation && nativeCursor === continuation.nativeCursor) {
+            throw new InsightError('INVALID_QUERY', 'Adapter returned a repeated native cursor')
+        }
+        if (nativeCursor && !contract.continue) {
+            throw new InsightError(
+                'UNSUPPORTED_OPERATION',
+                `Capability "${name}" does not support pagination`,
+            )
+        }
+        if (nativeCursor && plans.length !== 1) {
+            throw new InsightError(
+                'UNSUPPORTED_OPERATION',
+                'Multi-adapter pagination is not supported',
+            )
+        }
+        const next = nativeCursor
+            ? encodeContinuation({
+                  binding: await continuationBinding(plans[0]!.source.id),
+                  capability: name,
+                  nativeCursor,
+                  query: continuation?.query ?? requireQuery(input),
+                  queryKey,
+                  scope,
+              })
+            : undefined
+        return queryResult(merged, now(), next)
     }
 
     const scopedClient = (scope: RuntimeScope) => {
         const client: Record<string, unknown> = Object.create(null)
+        Object.defineProperty(client, 'next', {
+            enumerable: true,
+            value: async (result: unknown, execution: QueryExecutionOptions = {}) => {
+                const continuation = resultContinuation(result)
+                if (continuation.scope !== scope.name) throw invalidContinuation()
+                const capability = scope.capabilities.get(continuation.capability)
+                if (!capability) throw invalidContinuation()
+                return instrument(
+                    'insight.query',
+                    { 'insight.scope': scope.name },
+                    async (span) => {
+                        execution.signal?.throwIfAborted()
+                        span.setAttribute('insight.query.count', 1)
+                        return executeCapability(
+                            capability,
+                            continuation.query,
+                            execution,
+                            continuation,
+                        )
+                    },
+                )
+            },
+        })
         Object.defineProperty(client, 'track', {
             enumerable: true,
             value: async (name: string, properties?: Readonly<Record<string, unknown>>) =>
@@ -371,6 +444,7 @@ function adapterDefinition(value: unknown, key: string): CapabilityAdapterDefini
 function queryResult(
     value: CapabilityExecutionResult,
     queriedAt: Date,
+    next?: InsightCursor,
 ): QueryResult<Record<PropertyKey, unknown>, object> {
     const result = validateExecutionResult(value)
     const data = requireRecord(result.data, 'Capability data')
@@ -386,12 +460,11 @@ function queryResult(
         parseQuality(result.quality),
         ...contributions.map(({ quality: contribution }) => contribution),
     ])
-    const pagination = parsePagination(value.pagination)
     return {
         ...data,
         meta: {
             ...meta,
-            ...(pagination ? { pagination } : {}),
+            ...(next ? { pagination: { next } } : {}),
             ...(quality ? { quality } : {}),
             queriedAt: queriedAt.toISOString(),
         },
@@ -424,15 +497,6 @@ function parseContributions(value: unknown): readonly { quality?: QueryQuality }
             ? {}
             : { quality: parseQuality(contribution.quality)! }
     })
-}
-
-function parsePagination(value: unknown): QueryPagination | undefined {
-    if (value === undefined) return undefined
-    const pagination = requireRecord(value, 'Query pagination')
-    if (pagination.next !== undefined && typeof pagination.next !== 'string') {
-        throw new InsightError('INVALID_QUERY', 'Query pagination next must be an opaque string')
-    }
-    return typeof pagination.next === 'string' ? { next: pagination.next } : {}
 }
 
 function parseQuality(value: unknown): QueryQuality | undefined {
@@ -585,6 +649,31 @@ function invalidAdapterKey(adapter: string): never {
 function requireRecord(value: unknown, name: string): Record<string, unknown> {
     if (!isRecord(value)) throw new InsightError('INVALID_QUERY', `${name} must be an object`)
     return value
+}
+
+function requireQuery(value: unknown): object {
+    if (!isRecord(value)) {
+        throw new InsightError('UNSUPPORTED_OPERATION', 'Pagination query is not serializable')
+    }
+    return value
+}
+
+function resultContinuation(value: unknown): Continuation {
+    if (!isRecord(value) || !isRecord(value.meta) || !isRecord(value.meta.pagination)) {
+        throw new InsightError('INVALID_QUERY', 'Query result has no continuation')
+    }
+    const next = value.meta.pagination.next
+    if (typeof next !== 'string' || next.length === 0) {
+        throw new InsightError('INVALID_QUERY', 'Query result has no continuation')
+    }
+    return decodeContinuation(next)
+}
+
+async function continuationBinding(adapter: string): Promise<string> {
+    const digest = new Uint8Array(
+        await crypto.subtle.digest('SHA-256', new TextEncoder().encode(adapter)),
+    )
+    return [...digest.subarray(0, 16)].map((byte) => byte.toString(16).padStart(2, '0')).join('')
 }
 
 function isRecord(value: unknown): value is Record<PropertyKey, unknown> {

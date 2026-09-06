@@ -177,7 +177,7 @@ describe('generic History', () => {
         await expect(insight.history.sync({ range })).resolves.toEqual({ fetched: 0, skipped: 3 })
     })
 
-    it('keeps event reads bounded and continues with opaque query cursors', async () => {
+    it('keeps event reads bounded across result continuation', async () => {
         const repository = new MemoryRepository()
         const execute = vi.fn(() => ({
             logs: [1, 2, 3].map((value) => ({
@@ -198,11 +198,7 @@ describe('generic History', () => {
         const providerCalls = execute.mock.calls.length
 
         const first = await insight.logs({ limit: 2, time: range })
-        const second = await insight.logs({
-            cursor: first.meta.pagination!.next!,
-            limit: 2,
-            time: range,
-        })
+        const second = await insight.next(first)
 
         expect(first.logs.map(({ id }) => id)).toEqual(['log-3', 'log-2'])
         expect(second.logs.map(({ id }) => id)).toEqual(['log-1'])

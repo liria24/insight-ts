@@ -1,4 +1,5 @@
 import { createInsight, defineProvider, type ProviderDefinition } from '../src/core/index.ts'
+import { defineLogAdapter } from '../src/logs/index.ts'
 import { defineMetricAdapter, type MetricQuery } from '../src/metrics/index.ts'
 import {
     googleSearchConsole,
@@ -8,6 +9,7 @@ import {
 const time = { from: '2026-08-01', to: '2026-08-02' }
 const provider = defineProvider({
     adapters: {
+        logs: defineLogAdapter({ execute: () => ({ logs: [] }) }),
         usage: defineMetricAdapter({
             dimensions: { country: 'string' },
             execute: () => ({ values: { requests: 1 } }),
@@ -28,6 +30,12 @@ async function verifyPublicTypes() {
     })
     const requests: number | null | undefined = result.aggregate.requests
     void requests
+
+    const firstLogs = await insight.logs({ limit: 10, time })
+    const nextLogs: typeof firstLogs = await insight.next(firstLogs)
+    void nextLogs.logs[0]?.id
+    // @ts-expect-error cursors are continued through insight.next(result)
+    await insight.logs({ cursor: firstLogs.meta.pagination?.next, limit: 10, time })
 
     const aggregate = await insight.metrics({
         metrics: ['requests'],

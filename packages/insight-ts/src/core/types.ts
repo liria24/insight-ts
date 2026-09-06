@@ -24,7 +24,7 @@ interface CapabilityResultContribution {
 }
 
 export interface QueryPagination {
-    next?: InsightCursor
+    next: InsightCursor
 }
 
 export type QueryResult<TData extends object, TMeta extends object = Record<never, never>> = Omit<
@@ -87,11 +87,11 @@ export interface CapabilityExecutionResult<
     TMeta extends object = object,
 > extends AdapterExecutionResult<TData, TMeta> {
     contributions?: readonly CapabilityResultContribution[]
-    pagination?: QueryPagination
 }
 
 export interface CapabilityContract<TName extends string = string, TNormalized = unknown> {
     readonly name: TName
+    continue?(query: TNormalized, nativeCursor: string): TNormalized
     key(query: TNormalized): string
     merge(
         query: TNormalized,
@@ -375,7 +375,8 @@ type TrackArguments<
 type CapabilityMethod<TAdapters, TName extends string> = <
     const TQuery extends QueryForSchema<SchemaFor<TAdapters, TName>>,
 >(
-    query: TQuery,
+    query: TQuery &
+        Record<Exclude<keyof TQuery, keyof QueryForSchema<SchemaFor<TAdapters, TName>>>, never>,
     options?: QueryExecutionOptions,
 ) => Promise<
     QueryResult<
@@ -395,6 +396,10 @@ type ScopedInsightClient<
     TOptions extends CreateInsightOptions,
     TProviders extends readonly ProviderDefinition[],
 > = CapabilityMethods<TProviders> & {
+    next<TResult extends QueryResult<object, object>>(
+        result: TResult,
+        options?: QueryExecutionOptions,
+    ): Promise<TResult>
     track<TName extends EventName<TOptions>>(
         name: TName,
         ...arguments_: TrackArguments<TOptions, TName>

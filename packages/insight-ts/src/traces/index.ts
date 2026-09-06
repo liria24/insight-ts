@@ -1,21 +1,12 @@
 import { InsightError } from '../core/errors.ts'
-import {
-    decodeContinuation,
-    encodeContinuation,
-    initialContinuation,
-    mergeContinuation,
-    shouldFetchContinuation,
-    type ContinuationState,
-} from '../core/pagination.ts'
+import { mergePage } from '../core/pagination.ts'
 import { normalizeTimeRange, normalizeTimestamp, type TimeRange } from '../core/time.ts'
 import type {
     AdapterExecutionContext,
     CapabilityAdapterDefinition,
     CapabilityContract,
-    CapabilityContribution,
     CapabilitySchema,
     HistoryMaterializer,
-    InsightCursor,
     QueryQuality,
 } from '../core/types.ts'
 
@@ -90,7 +81,6 @@ export interface TraceData {
 export type TraceMeta = Record<never, never>
 
 export interface TraceQuery {
-    cursor?: InsightCursor
     limit?: number
     time: TimeRange
     where?: TraceWhere
@@ -103,7 +93,6 @@ export interface CanonicalTraceFilter {
 }
 
 export interface NormalizedTraceQuery {
-    cursor?: InsightCursor
     limit?: number
     nativeCursor?: string
     time: TimeRange
@@ -164,33 +153,31 @@ export const defineTraceAdapter = (options: TraceAdapterOptions): TraceAdapterDe
 }
 
 const traceContract: TraceContract = {
+    continue: (query, nativeCursor) => ({ ...query, nativeCursor }),
     key: (query) => JSON.stringify(query),
     merge(query, contributions) {
-        const context = requirePaginationContext(query)
-        const single =
-            context.adapters.length === 1 && contributions.length === 1
-                ? contributions[0]
-                : undefined
-        const merged = mergeContinuation({
+        if (contributions.length > 1 && contributions.some(({ result }) => result.nativeCursor)) {
+            throw new InsightError(
+                'UNSUPPORTED_OPERATION',
+                'Multi-adapter Trace pagination is not supported',
+            )
+        }
+        const records = contributions.map(({ result }) => {
+            // Trace adapters canonicalize their result before Core invokes the contract.
+            // eslint-disable-next-line typescript/no-unsafe-type-assertion
+            const data = result.data as TraceData
+            return data.traces
+        })
+        const traces = mergePage({
             compare: compareTraces,
-            contributions: single
-                ? [traceContinuation(single, 0)]
-                : contributions.map((contribution) => {
-                      const index = context.adapters.findIndex(
-                          (adapter) => adapter === contribution.adapter.definition,
-                      )
-                      if (index < 0) {
-                          throw new InsightError('INVALID_QUERY', 'Invalid Trace contribution')
-                      }
-                      return traceContinuation(contribution, index)
-                  }),
             id: (trace) => trace.traceId,
             ...(query.limit === undefined ? {} : { limit: query.limit }),
-            state: context.state,
+            pages: records,
         })
-        const next = merged.state
-            ? encodeContinuation('traces', context.key, merged.state)
-            : undefined
+        const single = contributions.length === 1 ? contributions[0] : undefined
+        if (single && query.limit !== undefined && records[0]!.length > query.limit) {
+            throw new InsightError('INVALID_QUERY', 'Trace adapter exceeded the requested limit')
+        }
         return {
             ...(single
                 ? single.result.quality
@@ -201,75 +188,25 @@ const traceContract: TraceContract = {
                           result.quality ? { quality: result.quality } : {},
                       ),
                   }),
-            data: { traces: merged.records },
-            ...(next ? { pagination: { next } } : {}),
+            data: { traces },
+            ...(single?.result.nativeCursor ? { nativeCursor: single.result.nativeCursor } : {}),
         }
     },
     name: 'traces',
     normalize(input, adapters) {
         const traces = traceAdapters(adapters)
-        const query = normalizeTraceQuery(input, commonFilters(traces), commonAttributes(traces))
-        const key = logicalTraceKey(query)
-        tracePagination.set(query, {
-            adapters: traces,
-            key,
-            state: query.cursor
-                ? decodeContinuation({
-                      adapters: traces.length,
-                      capability: 'traces',
-                      cursor: query.cursor,
-                      query: key,
-                      records: normalizeTraces,
-                  })
-                : initialContinuation(traces.length),
-        })
-        return query
+        return normalizeTraceQuery(input, commonFilters(traces), commonAttributes(traces))
     },
     plan(query, adapter) {
         if (!isTraceAdapter(adapter)) return undefined
-        const context = requirePaginationContext(query)
-        const index = context.adapters.indexOf(adapter)
-        const page = context.state.pages[index]
-        if (index < 0 || !page || !shouldFetchContinuation(page, query.limit)) return undefined
         return {
             ...(query.limit === undefined ? {} : { limit: query.limit }),
-            ...(page.nativeCursor ? { nativeCursor: page.nativeCursor } : {}),
+            ...(query.nativeCursor ? { nativeCursor: query.nativeCursor } : {}),
             time: query.time,
             ...(query.where ? { where: query.where } : {}),
         }
     },
 }
-
-const traceContinuation = (contribution: CapabilityContribution, index: number) => {
-    // Trace adapters canonicalize their result before Core invokes the contract.
-    // eslint-disable-next-line typescript/no-unsafe-type-assertion
-    const data = contribution.result.data as TraceData
-    return {
-        index,
-        ...(contribution.result.nativeCursor
-            ? { nativeCursor: contribution.result.nativeCursor }
-            : {}),
-        records: data.traces,
-    }
-}
-
-interface TracePaginationContext {
-    adapters: readonly TraceAdapterDefinition[]
-    key: string
-    state: ContinuationState<TraceRecord>
-}
-
-const tracePagination = new WeakMap<object, TracePaginationContext>()
-const requirePaginationContext = (query: NormalizedTraceQuery): TracePaginationContext => {
-    const context = tracePagination.get(query)
-    if (!context) throw new InsightError('INVALID_QUERY', 'Missing Trace pagination state')
-    return context
-}
-const logicalTraceKey = ({
-    cursor: _cursor,
-    nativeCursor: _native,
-    ...query
-}: NormalizedTraceQuery) => JSON.stringify(query)
 const compareTraces = (left: TraceRecord, right: TraceRecord): number =>
     right.startTime.localeCompare(left.startTime) || left.traceId.localeCompare(right.traceId)
 
@@ -341,11 +278,7 @@ const normalizeTraceQuery = (
     if (query.limit !== undefined && (!Number.isInteger(query.limit) || Number(query.limit) <= 0)) {
         throw new InsightError('INVALID_QUERY', 'Query limit must be a positive integer')
     }
-    if (query.cursor !== undefined && typeof query.cursor !== 'string') {
-        throw new InsightError('INVALID_QUERY', 'Trace cursor must be an opaque string')
-    }
     return {
-        ...(typeof query.cursor === 'string' ? { cursor: query.cursor } : {}),
         ...(typeof query.limit === 'number' ? { limit: query.limit } : {}),
         time: normalizeTimeRange({ from: time.from, to: time.to }),
         ...(query.where === undefined
