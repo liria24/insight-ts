@@ -20,28 +20,26 @@ const insight = createInsight({ providers: [provider] })
 const scoped = createInsight({ scopes: { production: [provider], staging: [provider] } })
 
 async function verifyPublicTypes() {
-    const result = await insight.query((q) => ({
-        usage: q.metrics({
-            dimensions: ['country'],
-            metrics: ['requests'],
-            time,
-            where: { country: { in: ['JP'] } },
-        }),
-    }))
-    const requests: number | null | undefined = result.usage.data.values.requests
+    const result = await insight.metrics({
+        dimensions: ['country'],
+        metrics: ['requests'],
+        time,
+        where: { country: { in: ['JP'] } },
+    })
+    const requests: number | null | undefined = result.aggregate.requests
     void requests
 
-    scoped.scope('production')
+    await scoped.scope('production').metrics({ metrics: ['requests'], time })
     // @ts-expect-error Scope names are inferred as literals
     scoped.scope('preview')
     // @ts-expect-error unsupported Metric names are rejected
-    await insight.query((q) => ({ invalid: q.metrics({ metrics: ['errors'], time }) }))
-    await insight.query((q) => ({
-        // @ts-expect-error unsupported dimensions are rejected
-        invalid: q.metrics({ dimensions: ['service'], metrics: ['requests'], time }),
-    }))
-    // @ts-expect-error Provider/Source accessors are not part of the canonical query DSL
-    await insight.query((q) => ({ invalid: q.source.app.usage({}) }))
+    await insight.metrics({ metrics: ['errors'], time })
+    // @ts-expect-error unsupported dimensions are rejected
+    await insight.metrics({ dimensions: ['service'], metrics: ['requests'], time })
+    // @ts-expect-error Provider/Source accessors are not part of the canonical API
+    insight.source.app.usage({})
+    // @ts-expect-error obsolete selection API is not exported
+    void insight.query
     // @ts-expect-error obsolete report access is not exported
     insight.reports('app.usage')
 }

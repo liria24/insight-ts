@@ -127,8 +127,8 @@ describe('Nitro and Nuxt integration', () => {
             observedAt: '2026-08-28T00:00:00.000Z',
             range: { from: '2026-08-01T00:00:00.000Z', to: '2026-09-01T00:00:00.000Z' },
             data: {
-                points: [],
-                values: { requests: 0 },
+                aggregate: { requests: 0 },
+                rows: [],
             },
             schemaVersion: 2 as const,
             scope: 'default',

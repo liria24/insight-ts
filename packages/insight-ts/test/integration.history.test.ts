@@ -156,21 +156,21 @@ describe('generic History', () => {
             metrics: metrics.mock.calls.length,
             traces: traces.mock.calls.length,
         }
-        const result = await insight.query((q) => ({
-            logs: q.logs({ time: range }),
-            metrics: q.metrics({ metrics: ['requests'], time: { ...range, grain: 'day' } }),
-            traces: q.traces({ time: range }),
-        }))
+        const [logResult, metricResult, traceResult] = await Promise.all([
+            insight.logs({ time: range }),
+            insight.metrics({ metrics: ['requests'], time: { ...range, grain: 'day' } }),
+            insight.traces({ time: range }),
+        ])
 
-        expect(result.logs.data.logs.map(({ id }) => id)).toEqual(['log-2', 'log-1'])
-        expect(result.metrics.data.values.requests).toBe(5)
-        expect(result.traces.data.traces[0]?.traceId).toBe('trace-1')
+        expect(logResult.logs.map(({ id }) => id)).toEqual(['log-2', 'log-1'])
+        expect(metricResult.aggregate.requests).toBe(5)
+        expect(traceResult.traces[0]?.traceId).toBe('trace-1')
         expect({
             logs: logs.mock.calls.length,
             metrics: metrics.mock.calls.length,
             traces: traces.mock.calls.length,
         }).toEqual(calls)
-        expect(result.logs.meta.fidelity).toEqual([
+        expect(logResult.meta.fidelity).toEqual([
             expect.objectContaining({ preservation: 'full', range }),
         ])
         await expect(insight.history.sync({ range })).resolves.toEqual({ fetched: 0, skipped: 3 })
@@ -196,14 +196,16 @@ describe('generic History', () => {
         await insight.history.sync({ range })
         const providerCalls = execute.mock.calls.length
 
-        const first = await insight.query((q) => ({ logs: q.logs({ limit: 2, time: range }) }))
-        const second = await insight.query((q) => ({
-            logs: q.logs({ cursor: first.logs.meta.pagination!.next!, limit: 2, time: range }),
-        }))
+        const first = await insight.logs({ limit: 2, time: range })
+        const second = await insight.logs({
+            cursor: first.meta.pagination!.next!,
+            limit: 2,
+            time: range,
+        })
 
-        expect(first.logs.data.logs.map(({ id }) => id)).toEqual(['log-3', 'log-2'])
-        expect(second.logs.data.logs.map(({ id }) => id)).toEqual(['log-1'])
-        expect(second.logs.meta.pagination).toBeUndefined()
+        expect(first.logs.map(({ id }) => id)).toEqual(['log-3', 'log-2'])
+        expect(second.logs.map(({ id }) => id)).toEqual(['log-1'])
+        expect(second.meta.pagination).toBeUndefined()
         expect(repository.reads.map(({ limit }) => limit)).toEqual([2, 2])
         expect(execute).toHaveBeenCalledTimes(providerCalls)
     })
@@ -247,8 +249,8 @@ describe('generic History', () => {
         expect(fetcher).toHaveBeenCalledTimes(2)
         expect(repository.segments).toHaveLength(1001)
         const calls = fetcher.mock.calls.length
-        const result = await insight.query((q) => ({ logs: q.logs({ limit: 1, time: range }) }))
-        expect(result.logs.data.logs[0]?.id).toBe('log-0')
+        const result = await insight.logs({ limit: 1, time: range })
+        expect(result.logs[0]?.id).toBe('log-0')
         expect(fetcher).toHaveBeenCalledTimes(calls)
     })
 
@@ -354,9 +356,9 @@ describe('generic History', () => {
             ],
         })
         await reduced.history.sync({ range })
-        const empty = await reduced.query((q) => ({ logs: q.logs({ time: range }) }))
-        expect(empty.logs.data.logs).toEqual([])
-        expect(empty.logs.meta.fidelity).toEqual([
+        const empty = await reduced.logs({ time: range })
+        expect(empty.logs).toEqual([])
+        expect(empty.meta.fidelity).toEqual([
             expect.objectContaining({ preservation: 'reduced', range }),
         ])
 
@@ -373,9 +375,9 @@ describe('generic History', () => {
                 }),
             ],
         })
-        const missing = await partial.query((q) => ({ logs: q.logs({ time: range }) }))
-        expect(missing.logs.meta.quality).toEqual({ partial: true })
-        expect(missing.logs.meta.fidelity).toContainEqual({
+        const missing = await partial.logs({ time: range })
+        expect(missing.meta.quality).toEqual({ partial: true })
+        expect(missing.meta.fidelity).toContainEqual({
             preservation: 'not-preserved',
             range,
             transformations: [],
@@ -437,17 +439,18 @@ describe('generic History', () => {
         await insight.history.sync({ range: firstDay })
         execute.mockClear()
 
-        const result = await insight.query((q) => ({
-            requests: q.metrics({ metrics: ['requests'], time: { ...range, grain: 'day' } }),
-        }))
+        const result = await insight.metrics({
+            metrics: ['requests'],
+            time: { ...range, grain: 'day' },
+        })
 
         expect(execute).toHaveBeenCalledOnce()
         expect(execute).toHaveBeenCalledWith(
             expect.objectContaining({ time: { from: firstDay.to, to: range.to } }),
             expect.any(Object),
         )
-        expect(result.requests.data.values.requests).toBe(2)
-        expect(result.requests.meta.fidelity).toEqual([
+        expect(result.aggregate.requests).toBe(2)
+        expect(result.meta.fidelity).toEqual([
             expect.objectContaining({ preservation: 'full', range: firstDay }),
             expect.objectContaining({
                 preservation: 'full',
@@ -507,9 +510,9 @@ describe('generic History', () => {
             history: createHistory({ capabilities: ['metrics'], repository: looping }),
             providers: [provider],
         })
-        await expect(
-            loop.query((q) => ({ requests: q.metrics({ metrics: ['requests'], time: range }) })),
-        ).rejects.toMatchObject({ code: 'HISTORY_CORRUPT' })
+        await expect(loop.metrics({ metrics: ['requests'], time: range })).rejects.toMatchObject({
+            code: 'HISTORY_CORRUPT',
+        })
 
         const corrupt: HistoryRepository = {
             ...looping,
@@ -518,7 +521,7 @@ describe('generic History', () => {
                     {
                         adapter: 'wrong.metrics',
                         capability: 'metrics',
-                        data: { values: { requests: 1 } },
+                        data: { aggregate: { requests: 1 } },
                         fidelity: { preservation: 'full', transformations: [] },
                         id: 'corrupt',
                         observedAt: range.to,
@@ -535,9 +538,7 @@ describe('generic History', () => {
             providers: [provider],
         })
         await expect(
-            corrupted.query((q) => ({
-                requests: q.metrics({ metrics: ['requests'], time: range }),
-            })),
+            corrupted.metrics({ metrics: ['requests'], time: range }),
         ).rejects.toMatchObject({ code: 'HISTORY_CORRUPT' })
     })
 
@@ -559,21 +560,17 @@ describe('generic History', () => {
         })
         await insight.history.sync({ range })
         await expect(
-            insight.query((q) => ({
-                latency: q.metrics({
-                    metrics: ['latencyP95'],
-                    time: { ...range, grain: 'week' },
-                }),
-            })),
+            insight.metrics({
+                metrics: ['latencyP95'],
+                time: { ...range, grain: 'week' },
+            }),
         ).rejects.toMatchObject({ code: 'UNSAFE_ROLLUP' })
         const calls = execute.mock.calls.length
-        await insight.query((q) => ({
-            filtered: q.metrics({
-                metrics: ['requests'],
-                time: range,
-                where: { service: 'api' },
-            }),
-        }))
+        await insight.metrics({
+            metrics: ['requests'],
+            time: range,
+            where: { service: 'api' },
+        })
         expect(execute).toHaveBeenCalledTimes(calls + 1)
     })
 })

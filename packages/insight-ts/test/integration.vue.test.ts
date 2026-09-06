@@ -35,27 +35,24 @@ interface Events {
 }
 
 const data: MetricQueryResult<'pageViews' | 'visits', 'country'> = {
-    data: {
-        points: [
-            {
-                dimensions: { country: 'JP' },
-                time: '2026-08-26T00:00:00.000Z',
-                values: { pageViews: 1_240, visits: 800 },
-            },
-            {
-                dimensions: { country: 'US' },
-                time: '2026-08-27T00:00:00.000Z',
-                values: { pageViews: 1_386, visits: 901 },
-            },
-        ],
-        values: { pageViews: 2_626, visits: 1_701 },
-    },
+    aggregate: { pageViews: 2_626, visits: 1_701 },
     meta: {
-        contributions: [],
         quality: { approximate: true, sampled: true, sampleRate: 0.25 },
         queriedAt: '2026-08-29T00:00:00.000Z',
         temporal: { bucketTimezone: 'UTC', grain: 'day' },
     },
+    rows: [
+        {
+            dimensions: { country: 'JP' },
+            time: '2026-08-26T00:00:00.000Z',
+            values: { pageViews: 1_240, visits: 800 },
+        },
+        {
+            dimensions: { country: 'US' },
+            time: '2026-08-27T00:00:00.000Z',
+            values: { pageViews: 1_386, visits: 901 },
+        },
+    ],
 }
 
 describe('Vue integration', () => {
@@ -77,7 +74,7 @@ describe('Vue integration', () => {
         expect(injected).toBe(insight)
     })
 
-    it('uses data-only Metric Source props with inferred selections', () => {
+    it('uses data-only Metric Source props with inferred fields', () => {
         expectTypeOf<InsightStatProps>().not.toHaveProperty('metric')
         expectTypeOf<InsightSparklineProps>().not.toHaveProperty('metric')
         expectTypeOf<InsightBarChartProps<typeof data>>().not.toHaveProperty('metric')

@@ -40,21 +40,19 @@ const insight = createInsight({
     ],
 })
 
-const dashboard = await insight.query((q) => ({
-    traffic: q.metrics({
-        metrics: ['pageViews', 'visits'],
-        time: {
-            from: '2026-08-01T00:00:00.000Z',
-            to: '2026-08-08T00:00:00.000Z',
-            grain: 'day',
-        },
-        where: {
-            country: { in: ['JP', 'US'] },
-        },
-    }),
-}))
+const traffic = await insight.metrics({
+    metrics: ['pageViews', 'visits'],
+    time: {
+        from: '2026-08-01T00:00:00.000Z',
+        to: '2026-08-08T00:00:00.000Z',
+        grain: 'day',
+    },
+    where: {
+        country: { in: ['JP', 'US'] },
+    },
+})
 
-console.log(dashboard.traffic.data.values.pageViews)
+console.log(traffic.aggregate.pageViews)
 ```
 
 Configured canonical Metrics and dimensions are inferred across Provider adapters without `as const` or explicit generics.
@@ -63,7 +61,7 @@ Configured canonical Metrics and dimensions are inferred across Provider adapter
 
 ### Typed end to end
 
-A Scope's adapters define the canonical fields they can execute. TypeScript carries that information through `insight.query()`, while runtime capability intersections reject incompatible cross-adapter dimensions and filters before I/O.
+A Scope's adapters define the canonical fields they can execute. TypeScript carries that information through direct capability methods such as `insight.metrics()`, while runtime capability intersections reject incompatible cross-adapter dimensions and filters before I/O.
 
 ### Provider details stay visible
 

@@ -8,21 +8,27 @@ const now = new Date('2026-08-21T12:00:00.000Z')
 describe('Demo analytics range', () => {
     it('renders direct MDC examples with literal data on every UI page', async () => {
         const pages = {
-            '2.stat.md': { fixture: 'values: { pageViews: 4140 }', tag: 'insight-stat' },
+            '2.stat.md': { fixture: 'aggregate: { pageViews: 4140 }', tag: 'insight-stat' },
             '3.line-chart.md': {
-                fixture: 'values: { pageViews: 4140 }',
+                fixture: 'aggregate: { pageViews: 4140 }',
                 tag: 'insight-line-chart',
             },
             '4.area-chart.md': {
-                fixture: 'values: { pageViews: 4140 }',
+                fixture: 'aggregate: { pageViews: 4140 }',
                 tag: 'insight-area-chart',
             },
             '5.breakdown-table.md': {
-                fixture: 'values: { pageViews: 4140 }',
+                fixture: 'aggregate: { pageViews: 4140 }',
                 tag: 'insight-breakdown-table',
             },
-            '6.bar-chart.md': { fixture: 'values: { pageViews: 4140 }', tag: 'insight-bar-chart' },
-            '7.sparkline.md': { fixture: 'values: { pageViews: 4140 }', tag: 'insight-sparkline' },
+            '6.bar-chart.md': {
+                fixture: 'aggregate: { pageViews: 4140 }',
+                tag: 'insight-bar-chart',
+            },
+            '7.sparkline.md': {
+                fixture: 'aggregate: { pageViews: 4140 }',
+                tag: 'insight-sparkline',
+            },
             '8.quality-notice.md': {
                 fixture: 'sampleRate: 0.25',
                 tag: 'insight-quality-notice',
@@ -40,7 +46,7 @@ describe('Demo analytics range', () => {
                 expect(example).toContain(`:::${tag}{:data='`)
                 expect(example).toContain(fixture)
                 if (file !== '8.quality-notice.md') {
-                    expect(example).toContain('"values":{"pageViews":4140}')
+                    expect(example).toContain('"aggregate":{"pageViews":4140}')
                     expect(example).not.toContain('"pageViews":{"points"')
                 }
                 expect(example).toContain('#code')
@@ -104,10 +110,10 @@ describe('Demo analytics range', () => {
         expect(source).toContain('Explore the live demo')
     })
 
-    it('resolves presets and executes deterministic demo Sources through insight.query', async () => {
+    it('resolves presets and executes deterministic demo Sources', async () => {
         const query = resolveDemoReportQuery({ range: '7d' }, now)
         const result = await createDemoFixture(query, now)
-        const pageViews = result.analytics.trafficSeries.data.points ?? []
+        const pageViews = result.analytics.trafficSeries.rows ?? []
 
         expect(query).toEqual({
             grain: 'day',
@@ -118,10 +124,10 @@ describe('Demo analytics range', () => {
         })
         expect(pageViews).toHaveLength(7)
         expect(result.online).toBeGreaterThan(0)
-        expect(result.analytics.trafficSummary.data.values.pageViews).toBe(1421)
+        expect(result.analytics.trafficSummary.aggregate.pageViews).toBe(1421)
         expect(result.execution.capabilities).toContain('logs')
-        expect(result.logs.data.logs).toHaveLength(3)
-        expect(result.trace.data.traces[0]?.spans).toHaveLength(4)
+        expect(result.logs.logs).toHaveLength(3)
+        expect(result.trace.traces[0]?.spans).toHaveLength(4)
     })
 
     it('keeps Source-owned renderers demo-local and shows all five sections', async () => {
@@ -147,7 +153,7 @@ describe('Demo analytics range', () => {
         expect(fixture).toContain('defineMetricAdapter')
         expect(fixture).toContain('defineLogAdapter')
         expect(fixture).toContain('defineTraceAdapter')
-        expect(fixture).toContain('insight.query')
+        expect(fixture).toContain('Promise.all')
         expect(endpoint).toContain('createDemoFixture')
         expect(endpoint).not.toContain('Provider fallback')
     })

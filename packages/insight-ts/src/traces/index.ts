@@ -195,10 +195,9 @@ const traceContract: TraceContract = {
             ? encodeContinuation('traces', context.key, merged.state)
             : undefined
         return {
-            contributions: contributions.map(({ result }) => ({
-                fields: traceFields(requireTraceData(result.data).traces),
-                ...(result.quality ? { quality: result.quality } : {}),
-            })),
+            contributions: contributions.map(({ result }) =>
+                result.quality ? { quality: result.quality } : {},
+            ),
             data: { traces: merged.records },
             ...mergeTraceMeta(contributions),
             ...(next ? { pagination: { next } } : {}),
@@ -524,8 +523,6 @@ const validateCount = (count: unknown, name: string): void => {
         throw new InsightError('INVALID_QUERY', `${name} must be a non-negative integer`)
     }
 }
-const traceFields = (traces: readonly TraceRecord[]): readonly string[] =>
-    [...new Set(traces.flatMap((trace) => Object.keys(trace)))].toSorted()
 const commonFilters = (adapters: readonly TraceAdapterDefinition[]): readonly TraceFilterField[] =>
     adapters.length === 0
         ? []

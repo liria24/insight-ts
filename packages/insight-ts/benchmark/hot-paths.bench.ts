@@ -30,16 +30,16 @@ const core = createInsight({
 })
 
 describe('Core query', () => {
-    test('normalize, deduplicate, and execute a selection', async ({ bench }) => {
+    test('normalize and execute concurrent capability calls', async ({ bench }) => {
         await bench('execute', async () => {
-            await core.query((q) => ({
-                first: q.metrics({ metrics: ['value'], time }),
-                second: q.metrics({ metrics: ['value'], time }),
-                third: q.metrics({
+            await Promise.all([
+                core.metrics({ metrics: ['value'], time }),
+                core.metrics({ metrics: ['value'], time }),
+                core.metrics({
                     metrics: ['value'],
                     time: { ...time, to: '2026-01-09T00:00:00.000Z' },
                 }),
-            }))
+            ])
         }).run()
     })
 })
@@ -187,27 +187,23 @@ describe('History', () => {
 
     test('read an already-covered range', async ({ bench }) => {
         await bench('execute', async () => {
-            await coveredHistory.query((q) => ({
-                report: q.metrics({
-                    dimensions: ['service'],
-                    metrics: ['errorRate', 'requests'],
-                    time: { ...time, grain: 'day' },
-                }),
-            }))
+            await coveredHistory.metrics({
+                dimensions: ['service'],
+                metrics: ['errorRate', 'requests'],
+                time: { ...time, grain: 'day' },
+            })
         }).run()
     })
 })
 
 const uiResult = {
-    data: {
-        points: Array.from({ length: 500 }, (_, index) => ({
-            dimensions: { service: index % 2 === 0 ? 'api' : 'worker' },
-            time: new Date(Date.parse(time.from) + index * 60_000).toISOString(),
-            values: { errors: index + 1, latency: index + 2, requests: index },
-        })),
-        values: { errors: 501, latency: 502, requests: 500 },
-    },
-    meta: { contributions: [], queriedAt: time.to },
+    aggregate: { errors: 501, latency: 502, requests: 500 },
+    meta: { queriedAt: time.to },
+    rows: Array.from({ length: 500 }, (_, index) => ({
+        dimensions: { service: index % 2 === 0 ? 'api' : 'worker' },
+        time: new Date(Date.parse(time.from) + index * 60_000).toISOString(),
+        values: { errors: index + 1, latency: index + 2, requests: index },
+    })),
 }
 
 describe('UI Core', () => {

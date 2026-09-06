@@ -10,23 +10,8 @@ import {
 } from '../src/ui-core/index.ts'
 
 const data: MetricQueryResult<'pageViews' | 'visits', 'country'> = {
-    data: {
-        points: [
-            {
-                dimensions: { country: 'US' },
-                time: '2026-08-02T00:00:00.000Z',
-                values: { pageViews: 13, visits: 9 },
-            },
-            {
-                dimensions: { country: 'JP' },
-                time: '2026-08-01T00:00:00.000Z',
-                values: { pageViews: 12, visits: 8 },
-            },
-        ],
-        values: { pageViews: 25, visits: 17 },
-    },
+    aggregate: { pageViews: 25, visits: 17 },
     meta: {
-        contributions: [],
         fidelity: [
             {
                 preservation: 'reduced',
@@ -40,6 +25,18 @@ const data: MetricQueryResult<'pageViews' | 'visits', 'country'> = {
         quality: { partial: true, sampled: true, sampleRate: 0.5 },
         queriedAt: '2026-08-03T00:00:00.000Z',
     },
+    rows: [
+        {
+            dimensions: { country: 'US' },
+            time: '2026-08-02T00:00:00.000Z',
+            values: { pageViews: 13, visits: 9 },
+        },
+        {
+            dimensions: { country: 'JP' },
+            time: '2026-08-01T00:00:00.000Z',
+            values: { pageViews: 12, visits: 8 },
+        },
+    ],
 }
 
 describe('UI Core contract', () => {

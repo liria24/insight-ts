@@ -103,33 +103,31 @@ describe('Cloudflare adapters', () => {
             },
         })
         const insight = createInsight({ providers: [provider] })
-        const dashboard = await insight.query((q) => ({
-            traffic: q.metrics({
-                dimensions: ['path'],
-                metrics: ['pageViews', 'visits'],
-                time,
-                where: {
-                    country: {
-                        eq: 'JP',
-                        in: ['JP', 'US'],
-                        ne: 'CA',
-                        notIn: ['GB'],
-                    },
+        const traffic = await insight.metrics({
+            dimensions: ['path'],
+            metrics: ['pageViews', 'visits'],
+            time,
+            where: {
+                country: {
+                    eq: 'JP',
+                    in: ['JP', 'US'],
+                    ne: 'CA',
+                    notIn: ['GB'],
                 },
-            }),
-        }))
+            },
+        })
 
-        expect(dashboard.traffic.data).toEqual({
-            points: [
+        expect(traffic).toMatchObject({
+            aggregate: { pageViews: 12, visits: 8 },
+            rows: [
                 {
                     dimensions: { path: '/docs' },
                     time: '2026-08-01T10:00:00.000Z',
                     values: { pageViews: 12, visits: 8 },
                 },
             ],
-            values: { pageViews: 12, visits: 8 },
         })
-        expect(dashboard.traffic.meta.quality).toMatchObject({
+        expect(traffic.meta.quality).toMatchObject({
             approximate: true,
             sampled: true,
             sampleRate: 0.25,
@@ -251,17 +249,13 @@ describe('Cloudflare adapters', () => {
             service: 'api',
             severity: 'error',
         } as const
-        const first = await insight.query((q) => ({
-            logs: q.logs({ limit: 2, time, where }),
-        }))
-        const second = await insight.query((q) => ({
-            logs: q.logs({
-                cursor: first.logs.meta.pagination!.next!,
-                limit: 2,
-                time,
-                where,
-            }),
-        }))
+        const first = await insight.logs({ limit: 2, time, where })
+        const second = await insight.logs({
+            cursor: first.meta.pagination!.next!,
+            limit: 2,
+            time,
+            where,
+        })
 
         const parameters = recordBody(recordBody(bodies[0]).parameters)
         expect(parameters.filterCombination).toBe('and')
@@ -283,7 +277,7 @@ describe('Cloudflare adapters', () => {
             ['$metadata.textNotIn', 'not_in', 'string', 'three,four'],
         ])
         expect(bodies[1]).toMatchObject({ offset: 'event-2', offsetDirection: 'next' })
-        expect(first.logs.data.logs[0]).toMatchObject({
+        expect(first.logs[0]).toMatchObject({
             body: { message: 'failed' },
             id: 'event-1',
             service: 'api',
@@ -291,14 +285,14 @@ describe('Cloudflare adapters', () => {
             spanId: 'span-1',
             traceId: 'trace-1',
         })
-        expect(first.logs.meta.quality).toMatchObject({
+        expect(first.meta.quality).toMatchObject({
             approximate: true,
             partial: true,
             sampled: true,
             sampleRate: 0.25,
         })
-        expect(second.logs.data.logs.map(({ id }) => id)).toEqual(['event-3'])
-        expect(second.logs.meta.pagination).toBeUndefined()
+        expect(second.logs.map(({ id }) => id)).toEqual(['event-3'])
+        expect(second.meta.pagination).toBeUndefined()
 
         const source = provider.adapters.workersLogs
         await expect(
@@ -368,38 +362,36 @@ describe('Cloudflare adapters', () => {
         })
         const insight = createInsight({ providers: [provider] })
 
-        const result = await insight.query((q) => ({
-            traces: q.traces({
-                time,
-                where: {
-                    attributes: {
-                        boolEq: true,
-                        boolIn: { in: [true, false] },
-                        boolNe: { ne: false },
-                        boolNotIn: { notIn: [false, true] },
-                    },
-                    durationMs: {
-                        eq: 10,
-                        gt: 30,
-                        gte: 40,
-                        in: [70, 80],
-                        lt: 50,
-                        lte: 60,
-                        ne: 20,
-                        notIn: [90, 100],
-                    },
-                    service: {
-                        eq: 'api',
-                        in: ['api', 'jobs'],
-                        ne: 'web',
-                        notIn: ['web'],
-                    },
-                    status: 'error',
+        const result = await insight.traces({
+            time,
+            where: {
+                attributes: {
+                    boolEq: true,
+                    boolIn: { in: [true, false] },
+                    boolNe: { ne: false },
+                    boolNotIn: { notIn: [false, true] },
                 },
-            }),
-        }))
+                durationMs: {
+                    eq: 10,
+                    gt: 30,
+                    gte: 40,
+                    in: [70, 80],
+                    lt: 50,
+                    lte: 60,
+                    ne: 20,
+                    notIn: [90, 100],
+                },
+                service: {
+                    eq: 'api',
+                    in: ['api', 'jobs'],
+                    ne: 'web',
+                    notIn: ['web'],
+                },
+                status: 'error',
+            },
+        })
 
-        expect(result.traces.data.traces).toEqual([
+        expect(result.traces).toEqual([
             expect.objectContaining({
                 durationMs: 120,
                 name: 'GET /checkout',
@@ -475,22 +467,20 @@ describe('Cloudflare adapters', () => {
             ],
         })
 
-        const result = await insight.query((q) => ({
-            workers: q.metrics({
-                metrics: ['workerDurationP95', 'workerInvocations'],
-                time,
-            }),
-        }))
+        const result = await insight.metrics({
+            metrics: ['workerDurationP95', 'workerInvocations'],
+            time,
+        })
 
-        expect(result.workers.data.values).toEqual({
+        expect(result.aggregate).toEqual({
             workerDurationP95: 120,
             workerInvocations: 50,
         })
-        expect(result.workers.data.points?.[0]?.values).toEqual({
+        expect(result.rows?.[0]?.values).toEqual({
             workerDurationP95: 120,
             workerInvocations: 50,
         })
-        expect(result.workers.meta.quality).toMatchObject({
+        expect(result.meta.quality).toMatchObject({
             approximate: true,
             sampled: true,
             sampleRate: 0.5,
@@ -537,7 +527,7 @@ describe('Cloudflare adapters', () => {
                 scope: 'default',
             },
         )
-        expect(result.data.values).toEqual({ events: 2 })
+        expect(result.data.aggregate).toEqual({ events: 2 })
         expect(fetcher).toHaveBeenCalledOnce()
     })
 

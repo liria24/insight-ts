@@ -105,33 +105,31 @@ describe('Google Search Console adapter', () => {
             property: 'sc-domain:example.com',
         })
         const insight = createInsight({ providers: [provider] })
-        const dashboard = await insight.query((q) => ({
-            search: q.metrics({
-                dimensions: ['query'],
-                metrics: ['clicks', 'impressions', 'ctr', 'averagePosition'],
-                time,
-                where: {
-                    country: 'jpn',
-                    device: 'MOBILE',
-                    page: { contains: '/docs', eq: '/docs/start', ne: '/private' },
-                    searchAppearance: 'AMP_BLUE_LINK',
-                },
-            }),
-        }))
+        const result = await insight.metrics({
+            dimensions: ['query'],
+            metrics: ['clicks', 'impressions', 'ctr', 'averagePosition'],
+            time,
+            where: {
+                country: 'jpn',
+                device: 'MOBILE',
+                page: { contains: '/docs', eq: '/docs/start', ne: '/private' },
+                searchAppearance: 'AMP_BLUE_LINK',
+            },
+        })
 
         expect(getAccessToken).toHaveBeenCalledOnce()
         expect(fetcher).toHaveBeenCalledOnce()
-        expect(dashboard.search.data.values).toEqual({
+        expect(result.aggregate).toEqual({
             averagePosition: 3,
             clicks: 4,
             ctr: 0.5,
             impressions: 8,
         })
-        expect(dashboard.search.data.points?.[0]).toMatchObject({
+        expect(result.rows?.[0]).toMatchObject({
             dimensions: { query: 'insight ts' },
             values: { averagePosition: 3, clicks: 4, ctr: 0.5, impressions: 8 },
         })
-        expect(dashboard.search.meta).toMatchObject({
+        expect(result.meta).toMatchObject({
             quality: { partial: true },
             temporal: { sourceTimezone: 'America/Los_Angeles' },
         })
@@ -216,7 +214,7 @@ describe('Google Search Console adapter', () => {
         )
 
         expect(fetcher).toHaveBeenCalledOnce()
-        expect(result.data.values.clicks).toBe(3)
+        expect(result.data.aggregate.clicks).toBe(3)
         expect(result.quality?.warnings).toContainEqual(
             expect.objectContaining({ code: 'execution-limit' }),
         )

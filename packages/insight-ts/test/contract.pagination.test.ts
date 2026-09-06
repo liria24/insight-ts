@@ -44,22 +44,21 @@ describe('per-result pagination', () => {
             ],
         })
 
-        const first = await insight.query((q) => ({
-            errors: q.logs({ limit: 2, time }),
-            overview: q.metrics({ metrics: ['requests'], time }),
-        }))
-        const firstCursor = first.errors.meta.pagination?.next
+        const [errors, overview] = await Promise.all([
+            insight.logs({ limit: 2, time }),
+            insight.metrics({ metrics: ['requests'], time }),
+        ])
+        const first = { errors, overview }
+        const firstCursor = errors.meta.pagination?.next
         if (!firstCursor) throw new Error('Expected the first Log cursor')
-        expect(first.errors.data.logs.map(({ id }) => id)).toEqual(['a4', 'b3'])
+        expect(errors.logs.map(({ id }) => id)).toEqual(['a4', 'b3'])
         expect(JSON.parse(JSON.stringify(first))).toEqual(first)
         expect(firstCursor).not.toContain('provider-a-page-2')
 
-        const second = await insight.query((q) => ({
-            errors: q.logs({ cursor: firstCursor, limit: 2, time }),
-        }))
-        const secondCursor = second.errors.meta.pagination?.next
+        const second = await insight.logs({ cursor: firstCursor, limit: 2, time })
+        const secondCursor = second.meta.pagination?.next
         if (!secondCursor) throw new Error('Expected the second Log cursor')
-        expect(second.errors.data.logs.map(({ id }) => id)).toEqual(['a2', 'b1'])
+        expect(second.logs.map(({ id }) => id)).toEqual(['a2', 'b1'])
         expect(firstLogs).toHaveBeenLastCalledWith(
             expect.objectContaining({ nativeCursor: 'provider-a-page-2' }),
             expect.any(Object),
@@ -69,11 +68,9 @@ describe('per-result pagination', () => {
             expect.any(Object),
         )
 
-        const third = await insight.query((q) => ({
-            errors: q.logs({ cursor: secondCursor, limit: 2, time }),
-        }))
-        expect(third.errors.data.logs.map(({ id }) => id)).toEqual(['a0', 'b-1'])
-        expect(third.errors.meta.pagination).toBeUndefined()
+        const third = await insight.logs({ cursor: secondCursor, limit: 2, time })
+        expect(third.logs.map(({ id }) => id)).toEqual(['a0', 'b-1'])
+        expect(third.meta.pagination).toBeUndefined()
         expect(metrics).toHaveBeenCalledOnce()
         expect(firstLogs).toHaveBeenCalledTimes(2)
         expect(secondLogs).toHaveBeenCalledTimes(2)
@@ -92,13 +89,13 @@ describe('per-result pagination', () => {
                 }),
             ],
         })
-        const first = await insight.query((q) => ({ page: q.logs({ limit: 1, time }) }))
-        const cursor = first.page.meta.pagination?.next
+        const first = await insight.logs({ limit: 1, time })
+        const cursor = first.meta.pagination?.next
         if (!cursor) throw new Error('Expected a Log cursor')
 
-        await expect(
-            insight.query((q) => ({ page: q.logs({ cursor, limit: 2, time }) })),
-        ).rejects.toMatchObject({ code: 'INVALID_QUERY' })
+        await expect(insight.logs({ cursor, limit: 2, time })).rejects.toMatchObject({
+            code: 'INVALID_QUERY',
+        })
         expect(execute).toHaveBeenCalledOnce()
     })
 
@@ -115,8 +112,8 @@ describe('per-result pagination', () => {
                 }),
             ],
         })
-        const first = await insight.query((q) => ({ page: q.logs({ limit: 1, time }) }))
-        const cursor = first.page.meta.pagination?.next
+        const first = await insight.logs({ limit: 1, time })
+        const cursor = first.meta.pagination?.next
         if (!cursor) throw new Error('Expected a Log cursor')
         const position = Math.min(24, cursor.length - 1)
         const tampered = `${cursor.slice(0, position)}${cursor[position] === 'a' ? 'b' : 'a'}${cursor.slice(position + 1)}`
@@ -128,9 +125,9 @@ describe('per-result pagination', () => {
             tampered,
             `insight:v1:${'a'.repeat(1_100_000)}`,
         ]) {
-            await expect(
-                insight.query((q) => ({ page: q.logs({ cursor: invalid, limit: 1, time }) })),
-            ).rejects.toMatchObject({ code: 'INVALID_QUERY' })
+            await expect(insight.logs({ cursor: invalid, limit: 1, time })).rejects.toMatchObject({
+                code: 'INVALID_QUERY',
+            })
         }
         expect(execute).toHaveBeenCalledTimes(calls)
     })
@@ -145,13 +142,13 @@ describe('per-result pagination', () => {
                 }),
             ],
         })
-        const first = await insight.query((q) => ({ page: q.logs({ limit: 1, time }) }))
-        const cursor = first.page.meta.pagination?.next
+        const first = await insight.logs({ limit: 1, time })
+        const cursor = first.meta.pagination?.next
         if (!cursor) throw new Error('Expected a Log cursor')
 
-        await expect(
-            insight.query((q) => ({ page: q.logs({ cursor, limit: 1, time }) })),
-        ).rejects.toMatchObject({ code: 'INVALID_QUERY' })
+        await expect(insight.logs({ cursor, limit: 1, time })).rejects.toMatchObject({
+            code: 'INVALID_QUERY',
+        })
         expect(execute).toHaveBeenCalledTimes(2)
     })
 
@@ -172,23 +169,19 @@ describe('per-result pagination', () => {
                 }),
             ],
         })
-        const first = await insight.query((q) => ({ page: q.traces({ limit: 1, time }) }))
-        const firstCursor = first.page.meta.pagination?.next
+        const first = await insight.traces({ limit: 1, time })
+        const firstCursor = first.meta.pagination?.next
         if (!firstCursor) throw new Error('Expected the first Trace cursor')
 
-        const second = await insight.query((q) => ({
-            page: q.traces({ cursor: firstCursor, limit: 1, time }),
-        }))
-        const secondCursor = second.page.meta.pagination?.next
+        const second = await insight.traces({ cursor: firstCursor, limit: 1, time })
+        const secondCursor = second.meta.pagination?.next
         if (!secondCursor) throw new Error('Expected the second Trace cursor')
-        expect(second.page.data.traces.map(({ traceId }) => traceId)).toEqual(['t1'])
+        expect(second.traces.map(({ traceId }) => traceId)).toEqual(['t1'])
         expect(execute).toHaveBeenCalledOnce()
 
-        const third = await insight.query((q) => ({
-            page: q.traces({ cursor: secondCursor, limit: 1, time }),
-        }))
-        expect(third.page.data.traces.map(({ traceId }) => traceId)).toEqual(['t0'])
-        expect(third.page.meta.pagination).toBeUndefined()
+        const third = await insight.traces({ cursor: secondCursor, limit: 1, time })
+        expect(third.traces.map(({ traceId }) => traceId)).toEqual(['t0'])
+        expect(third.meta.pagination).toBeUndefined()
         expect(execute).toHaveBeenCalledTimes(2)
     })
 })

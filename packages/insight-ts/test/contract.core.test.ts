@@ -6,6 +6,9 @@ import {
     createInsight,
     defineProvider,
     type AdapterExecutionResult,
+    type CapabilityAdapterDefinition,
+    type CapabilityContract,
+    type CapabilitySchema,
     type EventDestination,
     type EventProperties,
     type HistoryExtension,
@@ -19,6 +22,39 @@ const time = {
     from: '2026-08-01T00:00:00.000Z',
     to: '2026-08-02T00:00:00.000Z',
 } satisfies TimeRange
+
+const usageContract: CapabilityContract<'usage', { account: string }> = {
+    key: ({ account }) => account,
+    merge: (_query, [contribution]) => ({
+        data: contribution?.result.data ?? { spent: 0 },
+    }),
+    name: 'usage',
+    normalize(input) {
+        if (
+            typeof input !== 'object' ||
+            input === null ||
+            !('account' in input) ||
+            typeof input.account !== 'string'
+        ) {
+            throw new TypeError('Usage query requires an account')
+        }
+        return { account: input.account }
+    },
+    plan: (query) => query,
+}
+
+const usageAdapter: CapabilityAdapterDefinition<
+    'usage',
+    CapabilitySchema<{ account: string }, { spent: number }>,
+    { account: string },
+    { account: string },
+    { spent: number }
+> = {
+    contract: usageContract,
+    execute: ({ account }) => ({ data: { spent: account.length } }),
+    key: ({ account }) => account,
+    normalize: (query) => query,
+}
 
 describe('canonical query planning', () => {
     it('fans one Metric query across adapters and merges rows deterministically', async () => {
@@ -69,39 +105,28 @@ describe('canonical query planning', () => {
             ],
         })
 
-        const result = await insight.query((q) => ({
-            overview: q.metrics({
-                dimensions: ['country'],
-                metrics: ['requests', 'errors'],
-                time,
-            }),
-        }))
+        const result = await insight.metrics({
+            dimensions: ['country'],
+            metrics: ['requests', 'errors'],
+            time,
+        })
 
-        expectTypeOf(result.overview.data).toEqualTypeOf<MetricData>()
+        expectTypeOf(result).toMatchTypeOf<QueryResult<MetricData>>()
         expect(requests).toHaveBeenCalledOnce()
         expect(errors).toHaveBeenCalledOnce()
-        expect(result.overview).toEqual({
-            data: {
-                points: [
-                    {
-                        dimensions: { country: 'JP' },
-                        time: '2026-08-01T01:00:00.000Z',
-                        values: { errors: 1, requests: 7 },
-                    },
-                ],
-                values: { errors: 1, requests: 7 },
-            },
+        expect(result).toEqual({
+            aggregate: { errors: 1, requests: 7 },
             meta: {
-                contributions: [
-                    {
-                        fields: ['requests'],
-                        quality: { sampled: true, sampleRate: 0.5 },
-                    },
-                    { fields: ['errors'] },
-                ],
                 quality: { sampled: true, sampleRate: 0.5 },
                 queriedAt: '2026-08-02T00:00:00.000Z',
             },
+            rows: [
+                {
+                    dimensions: { country: 'JP' },
+                    time: '2026-08-01T01:00:00.000Z',
+                    values: { errors: 1, requests: 7 },
+                },
+            ],
         })
     })
 
@@ -132,18 +157,16 @@ describe('canonical query planning', () => {
         })
 
         await expect(
-            insight.query((q) => ({
-                invalid: q.metrics({
-                    dimensions: ['country'],
-                    metrics: ['requests', 'errors'],
-                    time,
-                }),
-            })),
+            insight.metrics({
+                dimensions: ['country'],
+                metrics: ['requests', 'errors'],
+                time,
+            }),
         ).rejects.toMatchObject({ code: 'UNSUPPORTED_DIMENSION' })
         expect(execute).not.toHaveBeenCalled()
     })
 
-    it('deduplicates exact plans and batches compatible Provider requests', async () => {
+    it('uses ordinary Promise concurrency for independent queries', async () => {
         const adapter = defineMetricAdapter({
             execute: ({ metrics }) => ({
                 values: Object.fromEntries(metrics.map((key) => [key, 1])),
@@ -160,14 +183,65 @@ describe('canonical query planning', () => {
             providers: [defineProvider({ adapters: { traffic: adapter }, execute, id: 'batched' })],
         })
 
-        const result = await insight.query((q) => ({
-            first: q.metrics({ metrics: ['requests'], time }),
-            second: q.metrics({ metrics: ['requests'], time }),
-        }))
+        const [first, second] = await Promise.all([
+            insight.metrics({ metrics: ['requests'], time }),
+            insight.metrics({ metrics: ['requests'], time }),
+        ])
 
-        expect(execute).toHaveBeenCalledOnce()
-        expect(execute.mock.calls[0]?.[0]).toHaveLength(1)
-        expect(result.first).toEqual(result.second)
+        expect(execute).toHaveBeenCalledTimes(2)
+        expect(execute.mock.calls.every(([requests]) => requests.length === 1)).toBe(true)
+        expect(first.aggregate).toEqual(second.aggregate)
+    })
+
+    it('exposes custom capabilities directly and reserves client method names', async () => {
+        const insight = createInsight({
+            providers: [defineProvider({ adapters: { usage: usageAdapter }, id: 'app' })],
+        })
+
+        const result = await insight.usage({ account: 'acme' })
+
+        expectTypeOf(result.spent).toEqualTypeOf<number>()
+        expect(result.spent).toBe(4)
+        for (const name of ['history', 'next', 'scope', 'then', 'track']) {
+            expect(() =>
+                createInsight({
+                    providers: [
+                        defineProvider({
+                            adapters: {
+                                reserved: {
+                                    ...usageAdapter,
+                                    contract: { ...usageContract, name },
+                                },
+                            },
+                            id: 'app',
+                        }),
+                    ],
+                }),
+            ).toThrow('reserved')
+        }
+    })
+
+    it('rejects capability data that collides with public metadata', async () => {
+        const insight = createInsight({
+            providers: [
+                defineProvider({
+                    adapters: {
+                        usage: {
+                            ...usageAdapter,
+                            contract: {
+                                ...usageContract,
+                                merge: () => ({ data: { meta: 'private' } }),
+                            },
+                        },
+                    },
+                    id: 'app',
+                }),
+            ],
+        })
+
+        await expect(insight.usage({ account: 'acme' })).rejects.toMatchObject({
+            code: 'INVALID_QUERY',
+        })
     })
 
     it('overlaps direct and History-managed plans after one ownership pass', async () => {
@@ -208,16 +282,14 @@ describe('canonical query planning', () => {
             ],
         })
 
-        const result = await insight.query(
-            (q) => ({
-                mixed: q.metrics({ metrics: ['direct', 'managed'], time }),
-            }),
+        const result = await insight.metrics(
+            { metrics: ['direct', 'managed'], time },
             { signal: controller.signal },
         )
 
         expect(overlapped).toBe(true)
         expect(handles).toHaveBeenCalledTimes(2)
-        expect(result.mixed.data.values).toEqual({ direct: 1, managed: 2 })
+        expect(result.aggregate).toEqual({ direct: 1, managed: 2 })
     })
 
     it('selects logical Scopes without changing the query DSL', async () => {
@@ -235,15 +307,13 @@ describe('canonical query planning', () => {
             scopes: { production: [provider(10)], staging: [provider(1)] },
         })
 
-        const production = await insight.scope('production').query((q) => ({
-            requests: q.metrics({ metrics: ['requests'], time }),
-        }))
-        const staging = await insight.scope('staging').query((q) => ({
-            requests: q.metrics({ metrics: ['requests'], time }),
-        }))
+        const production = await insight
+            .scope('production')
+            .metrics({ metrics: ['requests'], time })
+        const staging = await insight.scope('staging').metrics({ metrics: ['requests'], time })
 
-        expect(production.requests.data.values.requests).toBe(10)
-        expect(staging.requests.data.values.requests).toBe(1)
+        expect(production.aggregate.requests).toBe(10)
+        expect(staging.aggregate.requests).toBe(1)
         const invalidScope = () => {
             // @ts-expect-error Scope names are inferred from configuration
             insight.scope('provider')
@@ -273,9 +343,7 @@ describe('canonical query planning', () => {
         const insight = createInsight({
             providers: [defineProvider({ adapters: { first: adapter('requests') }, id: 'first' })],
         })
-        await insight.query((q) => ({ requests: q.metrics({ metrics: ['requests'], time }) }), {
-            signal: controller.signal,
-        })
+        await insight.metrics({ metrics: ['requests'], time }, { signal: controller.signal })
     })
 })
 
@@ -328,8 +396,8 @@ describe('Metric adapter boundary', () => {
             { adapter: 'demo.metrics', provider: 'demo', scope: 'default' },
         )
 
-        expect(result.data.points?.[0]?.time).toBe('2026-08-01T10:00:00.000Z')
-        expect(result.data.points?.[0]?.dimensions).toBe(dimensions)
+        expect(result.data.rows?.[0]?.time).toBe('2026-08-01T10:00:00.000Z')
+        expect(result.data.rows?.[0]?.dimensions).toBe(dimensions)
         const invalidQueries = () => {
             adapter.normalize({
                 metrics: ['requests'],
@@ -382,9 +450,7 @@ describe('events and instrumentation', () => {
         expectTypeOf<SearchProperties>().toEqualTypeOf<{ readonly resultCount: number }>()
         const insight = createInsight(options)
 
-        await insight.query((q) => ({
-            secret: q.metrics({ metrics: ['requests'], time: { ...time, to: '2026-08-02' } }),
-        }))
+        await insight.metrics({ metrics: ['requests'], time: { ...time, to: '2026-08-02' } })
         await insight.track('search', { resultCount: 4 })
 
         expect(track).toHaveBeenCalledWith(
@@ -428,4 +494,4 @@ describe('events and instrumentation', () => {
     })
 })
 
-expectTypeOf<QueryResult<{ value: number }>>().toMatchTypeOf<QueryResult<unknown>>()
+expectTypeOf<QueryResult<{ value: number }>>().toMatchTypeOf<QueryResult<object>>()

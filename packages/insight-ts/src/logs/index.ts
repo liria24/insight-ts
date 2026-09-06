@@ -166,10 +166,9 @@ const logContract: LogContract = {
             ? encodeContinuation('logs', context.key, merged.state)
             : undefined
         return {
-            contributions: contributions.map(({ result }) => ({
-                fields: logFields(requireLogData(result.data).logs),
-                ...(result.quality ? { quality: result.quality } : {}),
-            })),
+            contributions: contributions.map(({ result }) =>
+                result.quality ? { quality: result.quality } : {},
+            ),
             data: { logs: merged.records },
             ...mergeLogMeta(contributions),
             ...(next ? { pagination: { next } } : {}),
@@ -432,9 +431,6 @@ const requireLogData = (value: unknown): LogData => {
     }
     return { logs: normalizeLogs(value.logs) }
 }
-
-const logFields = (logs: readonly LogRecord[]): readonly string[] =>
-    [...new Set(logs.flatMap((log) => Object.keys(log)))].toSorted()
 
 const commonFilters = (adapters: readonly LogAdapterDefinition[]): readonly LogFilterField[] =>
     adapters.length === 0

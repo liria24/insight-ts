@@ -31,8 +31,8 @@ Vue UI ──> UI Core + private renderer
 The user-facing workflows are Query, Track, and History. A default Scope is implicit. Named Scopes
 created with `insight.scope(name)` are logical analysis boundaries, not Provider or backend names.
 
-Core owns Scope resolution, lazy selection, bounded execution, abort handling, generic capability
-contracts, Provider request grouping, result envelopes, cross-cutting Quality, events, and a small
+Core owns Scope resolution, bounded execution, abort handling, generic capability contracts,
+Provider request grouping, public result construction, cross-cutting Quality, events, and a small
 instrumentation port. It does not classify capabilities with a closed Metrics/Logs/Traces union.
 
 A capability contract owns canonical query normalization, planning, exact deduplication,
@@ -78,13 +78,15 @@ Runtime dependencies remain external so optional entries stay isolated.
 
 ## Query and Provider contracts
 
-Queries select canonical capabilities with `q.metrics()`, `q.logs()`, `q.traces()`, or another
-registered contract. They never select a Provider or adapter. `insight.query()` is lazy: only the
-descriptors returned by its selection callback execute.
+Configured canonical capabilities become direct client methods such as `insight.metrics()`,
+`insight.logs()`, and `insight.traces()`. Custom contracts use the same generic mechanism. One call
+represents one logical query; applications use `Promise.all()` for independent concurrent work.
+Queries never select a Provider or adapter.
 
 Provider IDs use strict ASCII kebab-case, while Scope, adapter, and capability keys use lower
-camel-case identifiers. Configuration is validated once and generated query builders remain
-prototype-safe.
+camel-case identifiers. Configuration is validated once and generated capability methods remain
+prototype-safe. Core reserves names required by the client, including `scope`, `track`, `next`, and
+`history`, and rejects collisions before I/O.
 
 Capability normalization is deterministic and I/O-free. Equivalent normalized plans execute once,
 and Provider implementations may batch compatible requests. External I/O may scale with compatible
@@ -96,10 +98,11 @@ native metrics, dimensions, filters, grain, ranges, pagination, limits, and cred
 network I/O. Semantic Provider options such as data state remain normal top-level configuration;
 optional execution tuning belongs under a Provider-specific `advanced` namespace.
 
-Every result is serializable data. Core constructs the `QueryResult` envelope and validates shared
-Quality. `meta.contributions` preserves merged field-level Quality without exposing adapter IDs.
-Provider sampling, approximation, thresholding, freshness, partial results, and meaningful native
-limitations must not be erased.
+Every result is serializable data. Core exposes canonical capability fields directly and adds a
+`meta` field with `queriedAt`, conservative Quality, optional pagination, and capability metadata.
+Adapter execution may retain internal `data` envelopes and contribution topology. Provider sampling,
+approximation, thresholding, freshness, partial results, and meaningful native limitations must not
+be erased.
 
 Pageable results expose only opaque `meta.pagination.next`. A cursor is size-bounded, bound to one
 logical result and normalized query, and resumes only that result. Missing `next` is terminal; no
@@ -118,10 +121,11 @@ A canonical Metric name has exactly one owner in a Scope. A query may combine Me
 adapters, but selected dimensions and filters must be supported by every contributor. Incompatible
 queries and duplicate ownership fail before I/O.
 
-`MetricData` is row-major: each point has one optional time, one optional dimensions object, and
-selected Metric values. Values are `number | null`. Units and structured aggregation describe
-semantics, not presentation. Cross-partition rollup adds additive values, recomputes ratios from
-supporting Metrics, and rejects unsafe percentile or other non-additive rollups.
+`MetricData` exposes a query-wide `aggregate` and optional grouped `rows`. Each row has one optional
+time, one optional dimensions object, and selected Metric values under `row.values`. `aggregate` is
+not inferred by reducing `rows`. Values are `number | null`. Units and structured aggregation
+describe semantics, not presentation. Cross-partition rollup adds additive values, recomputes ratios
+from supporting Metrics, and rejects unsafe percentile or other non-additive rollups.
 
 ### Logs and Traces
 

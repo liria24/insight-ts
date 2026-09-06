@@ -39,14 +39,12 @@ describe('Metrics contract', () => {
             providers: [defineProvider({ adapters: { usage: adapter }, id: 'app' })],
         })
 
-        const result = await insight.query((q) => ({
-            usage: q.metrics({
-                dimensions: ['country'],
-                metrics: ['requests'],
-                time,
-                where: { country: 'JP' },
-            }),
-        }))
+        const result = await insight.metrics({
+            dimensions: ['country'],
+            metrics: ['requests'],
+            time,
+            where: { country: 'JP' },
+        })
 
         expect(execute).toHaveBeenCalledWith(
             expect.objectContaining({
@@ -55,16 +53,17 @@ describe('Metrics contract', () => {
             }),
             expect.any(Object),
         )
-        expect(result.usage.data).toEqual({
-            points: [
+        expect(result).toMatchObject({
+            aggregate: { requests: 7 },
+            rows: [
                 {
                     dimensions,
                     time: '2026-08-01T10:00:00.000Z',
                     values: { requests: 7 },
                 },
             ],
-            values: { requests: 7 },
         })
+        expect(result).not.toHaveProperty('data')
     })
 
     it('normalizes equivalent filters and rejects unsupported Metrics before I/O', async () => {
@@ -94,13 +93,11 @@ describe('Metrics contract', () => {
         })
 
         await expect(
-            insight.query((q) => ({
-                invalid: q.metrics({
-                    // @ts-expect-error runtime contract rejects invalid JavaScript callers
-                    metrics: ['missing'],
-                    time,
-                }),
-            })),
+            insight.metrics({
+                // @ts-expect-error runtime contract rejects invalid JavaScript callers
+                metrics: ['missing'],
+                time,
+            }),
         ).rejects.toMatchObject({ code: 'UNSUPPORTED_METRIC' })
         expect(execute).not.toHaveBeenCalled()
     })

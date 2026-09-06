@@ -113,9 +113,9 @@ export const tableCellValue = (
 export const createStatModel = (
     result: MetricQueryResult,
 ): { metric: string; value: number | null } | undefined => {
-    const metric = Object.keys(result.data.values)[0]
+    const metric = Object.keys(result.aggregate)[0]
     if (!metric) return undefined
-    return { metric, value: result.data.values[metric] ?? null }
+    return { metric, value: result.aggregate[metric] ?? null }
 }
 
 export const createDataNotices = (quality: QueryQuality | undefined): DataNotice[] => {
@@ -155,8 +155,8 @@ export const createSeriesModel = (
         yAxis?: YAxisOptions
     },
 ): SeriesModel => {
-    const metrics = Object.keys(result.data.values)
-    const points = seriesPoints(result.data)
+    const metrics = Object.keys(result.aggregate)
+    const points = seriesPoints(result)
     const series = metrics.map((metric, index) => ({
         color: options.colors[index % options.colors.length] ?? 'currentColor',
         metric,
@@ -192,8 +192,8 @@ export const createSeriesModel = (
 }
 
 export const createBreakdownModel = (result: MetricQueryResult): BreakdownModel => {
-    const metrics = Object.keys(result.data.values)
-    const rows = breakdownRows(result.data, metrics)
+    const metrics = Object.keys(result.aggregate)
+    const rows = breakdownRows(result, metrics)
     const dimensions = [...new Set(rows.flatMap(({ dimensions: values }) => Object.keys(values)))]
     return { dimensions, metrics, rows }
 }
@@ -207,7 +207,7 @@ export const createChartTooltipModel = (
     xAxis?: XAxisOptions,
     yAxis?: YAxisOptions,
 ): ChartTooltipModel | undefined => {
-    const point = seriesPoints(result.data)[index]
+    const point = seriesPoints(result)[index]
     if (!point) return undefined
     return {
         label: formatTime(point.time, locale, timezone, xAxis),
@@ -243,17 +243,17 @@ export const formatSeriesPointTime = (
     timezone?: Timezone,
     options?: XAxisOptions,
 ): string => {
-    const point = seriesPoints(result.data)[index]
+    const point = seriesPoints(result)[index]
     return point ? formatTime(point.time, locale, timezone, options) : ''
 }
 
 export const seriesPoints = (data: MetricData): MetricSeriesPoint[] =>
-    (data.points ?? [])
+    (data.rows ?? [])
         .filter((point): point is MetricSeriesPoint => point.time !== undefined)
         .toSorted((left, right) => left.time.localeCompare(right.time))
 
 const breakdownRows = (data: MetricData, metrics: readonly string[]): MetricTableRow[] => {
-    return (data.points ?? []).flatMap((point) =>
+    return (data.rows ?? []).flatMap((point) =>
         point.dimensions
             ? [
                   {

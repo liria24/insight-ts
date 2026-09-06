@@ -38,21 +38,19 @@ const insight = createInsight({
     ],
 })
 
-const dashboard = await insight.query((q) => ({
-    traffic: q.metrics({
-        metrics: ['pageViews', 'visits'],
-        time: {
-            from: '2026-08-01T00:00:00.000Z',
-            to: '2026-08-08T00:00:00.000Z',
-            grain: 'day',
-        },
-        where: {
-            country: { in: ['JP', 'US'] },
-        },
-    }),
-}))
+const traffic = await insight.metrics({
+    metrics: ['pageViews', 'visits'],
+    time: {
+        from: '2026-08-01T00:00:00.000Z',
+        to: '2026-08-08T00:00:00.000Z',
+        grain: 'day',
+    },
+    where: {
+        country: { in: ['JP', 'US'] },
+    },
+})
 
-console.log(dashboard.traffic.data.values.pageViews)
+console.log(traffic.aggregate.pageViews)
 ```
 
 Configured canonical Metrics and dimensions are inferred across Provider adapters without `as const` or explicit generics.

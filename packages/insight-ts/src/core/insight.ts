@@ -13,7 +13,6 @@ import type {
     InsightClient,
     InstrumentationSpan,
     ProviderDefinition,
-    QueryContribution,
     QueryExecutionOptions,
     QueryPagination,
     QueryQuality,
@@ -21,9 +20,9 @@ import type {
     RuntimeAdapter,
 } from './types.ts'
 
-const descriptor = Symbol('insight.query')
 const concurrency = 8
 const defaultScope = 'default'
+const reservedCapabilityNames = new Set(['history', 'next', 'scope', 'then', 'track'])
 const noopSpan: InstrumentationSpan = {
     recordException() {},
     setAttribute() {},
@@ -38,30 +37,14 @@ interface RuntimeCapability {
 
 interface RuntimeScope {
     adapters: RuntimeAdapter[]
-    builder: Record<string, RuntimeCapabilityAccessor>
     capabilities: Map<string, RuntimeCapability>
     destinations: readonly EventDestination[]
     name: string
 }
 
-interface Descriptor {
-    [descriptor]: true
-    capability: RuntimeCapability
-    query: unknown
-}
-
 interface PreparedAdapterRequest extends AdapterRequest {
     dedupeKey: string
 }
-
-interface PreparedCapabilityRequest {
-    capability: RuntimeCapability
-    dedupeKey: string
-    plans: readonly PreparedAdapterRequest[]
-    query: unknown
-}
-
-type RuntimeCapabilityAccessor = (query: unknown) => Descriptor
 
 export const createInsight = <const TOptions extends CreateInsightOptions>(
     options: TOptions,
@@ -187,82 +170,96 @@ export const createInsight = <const TOptions extends CreateInsightOptions>(
         return requests.map(({ dedupeKey }) => resultByKey.get(dedupeKey)!)
     }
 
-    const executeCapabilitySelection = async (
-        descriptors: readonly Descriptor[],
+    const executeCapability = async (
+        capability: RuntimeCapability,
+        input: unknown,
         execution: QueryExecutionOptions,
-    ): Promise<readonly QueryResult<unknown, object>[]> => {
-        const prepared = prepareCapabilities(descriptors)
-        const plans = new Map<string, PreparedAdapterRequest>()
-        for (const request of prepared.unique) {
-            for (const plan of request.plans) plans.set(plan.dedupeKey, plan)
-        }
-        const uniquePlans = [...plans.values()]
-        const executed = await executePlans(uniquePlans, execution)
-        const resultByPlan = new Map(
-            uniquePlans.map(({ dedupeKey }, index) => [dedupeKey, executed[index]!] as const),
+    ): Promise<QueryResult<Record<PropertyKey, unknown>, object>> => {
+        const { adapters, contract, name, scope } = capability
+        const query = contract.normalize(
+            input,
+            adapters.map(({ definition }) => definition),
         )
-        const resultByRequest = new Map<string, QueryResult<unknown, object>>()
-        for (const request of prepared.unique) {
-            const merged = request.capability.contract.merge(
-                request.query,
-                request.plans.map((plan) => ({
+        if (typeof contract.key(query) !== 'string') {
+            throw new InsightError(
+                'INVALID_QUERY',
+                `Capability "${name}" returned a non-string query key`,
+            )
+        }
+        const plans = adapters.flatMap((source) => {
+            const plan = contract.plan(query, source.definition)
+            if (plan === undefined) return []
+            const adapterKey = source.definition.key(plan)
+            if (typeof adapterKey !== 'string') invalidAdapterKey(source.id)
+            return [
+                {
+                    dedupeKey: `${scope}\0${source.id}\0${adapterKey}`,
+                    query: plan,
+                    source,
+                },
+            ]
+        })
+        const executed = await executePlans(plans, execution)
+        return queryResult(
+            contract.merge(
+                query,
+                plans.map((plan, index) => ({
                     adapter: plan.source,
                     plan: plan.query,
-                    result: resultByPlan.get(plan.dedupeKey)!,
+                    result: executed[index]!,
                 })),
-            )
-            resultByRequest.set(request.dedupeKey, queryResult(merged, now()))
-        }
-        return prepared.keys.map((key) => resultByRequest.get(key)!)
+            ),
+            now(),
+        )
     }
 
-    const scopedClient = (scope: RuntimeScope) => ({
-        async query(
-            select: (builder: Record<string, RuntimeCapabilityAccessor>) => unknown,
-            execution: QueryExecutionOptions = {},
-        ) {
-            return instrument('insight.query', { 'insight.scope': scope.name }, async (span) => {
-                execution.signal?.throwIfAborted()
-                const entries = selectionEntries(select(scope.builder))
-                span.setAttribute('insight.query.count', entries.length)
-                const values = await executeCapabilitySelection(
-                    entries.map(([, value]) => value),
-                    execution,
-                )
-                return Object.fromEntries(entries.map(([name], index) => [name, values[index]]))
-            })
-        },
-        async track(name: string, properties?: Readonly<Record<string, unknown>>) {
-            return instrument(
-                'insight.event.track',
-                { 'insight.event.name': name, 'insight.scope': scope.name },
-                async () => {
-                    const validator = eventValidators.get(name)
-                    if (!validator)
-                        throw new InsightError('INVALID_QUERY', `Unknown event: ${name}`)
-                    const normalized = validator(properties)
-                    if (scope.destinations.length === 0) {
-                        throw new InsightError(
-                            'CAPABILITY_UNAVAILABLE',
-                            'No Provider event destination is configured in the Scope',
+    const scopedClient = (scope: RuntimeScope) => {
+        const client: Record<string, unknown> = Object.create(null)
+        Object.defineProperty(client, 'track', {
+            enumerable: true,
+            value: async (name: string, properties?: Readonly<Record<string, unknown>>) =>
+                instrument(
+                    'insight.event.track',
+                    { 'insight.event.name': name, 'insight.scope': scope.name },
+                    async () => {
+                        const validator = eventValidators.get(name)
+                        if (!validator)
+                            throw new InsightError('INVALID_QUERY', `Unknown event: ${name}`)
+                        const normalized = validator(properties)
+                        if (scope.destinations.length === 0) {
+                            throw new InsightError(
+                                'CAPABILITY_UNAVAILABLE',
+                                'No Provider event destination is configured in the Scope',
+                            )
+                        }
+                        const context = options.instrumentation?.activeTraceContext?.()
+                        const event = {
+                            ...(context ? { context } : {}),
+                            id: crypto.randomUUID(),
+                            name,
+                            origin: 'server' as const,
+                            properties: normalized,
+                            timestamp: now().toISOString(),
+                        }
+                        await Promise.all(
+                            scope.destinations.map(async (destination) => destination.track(event)),
                         )
-                    }
-                    const context = options.instrumentation?.activeTraceContext?.()
-                    const event = {
-                        ...(context ? { context } : {}),
-                        id: crypto.randomUUID(),
-                        name,
-                        origin: 'server' as const,
-                        properties: normalized,
-                        timestamp: now().toISOString(),
-                    }
-                    await Promise.all(
-                        scope.destinations.map(async (destination) => destination.track(event)),
-                    )
-                },
-            )
-        },
-    })
+                    },
+                ),
+        })
+        for (const capability of scope.capabilities.values()) {
+            Object.defineProperty(client, capability.name, {
+                enumerable: true,
+                value: (query: unknown, execution: QueryExecutionOptions = {}) =>
+                    instrument('insight.query', { 'insight.scope': scope.name }, async (span) => {
+                        execution.signal?.throwIfAborted()
+                        span.setAttribute('insight.query.count', 1)
+                        return executeCapability(capability, query, execution)
+                    }),
+            })
+        }
+        return client
+    }
 
     const client = options.scopes
         ? {
@@ -275,50 +272,9 @@ export const createInsight = <const TOptions extends CreateInsightOptions>(
           }
         : { ...(history ? { history } : {}), ...scopedClient(scopes.get(defaultScope)!) }
 
-    // Configuration validation and the generated builders preserve the erased generic contract.
+    // Configuration validation and generated methods preserve the erased generic contract.
     // eslint-disable-next-line typescript/no-unsafe-type-assertion
     return client as unknown as InsightClient<TOptions>
-
-    function prepareCapabilities(descriptors: readonly Descriptor[]) {
-        const keys: string[] = []
-        const unique = new Map<string, PreparedCapabilityRequest>()
-        for (const selected of descriptors) {
-            const { adapters, contract, name, scope } = selected.capability
-            const query = contract.normalize(
-                selected.query,
-                adapters.map(({ definition }) => definition),
-            )
-            const queryKey = contract.key(query)
-            if (typeof queryKey !== 'string') {
-                throw new InsightError(
-                    'INVALID_QUERY',
-                    `Capability "${name}" returned a non-string query key`,
-                )
-            }
-            const plans = adapters.flatMap((source) => {
-                const plan = contract.plan(query, source.definition)
-                if (plan === undefined) return []
-                const adapterKey = source.definition.key(plan)
-                if (typeof adapterKey !== 'string') invalidAdapterKey(source.id)
-                return [
-                    {
-                        dedupeKey: `${scope}\0${source.id}\0${adapterKey}`,
-                        query: plan,
-                        source,
-                    },
-                ]
-            })
-            const dedupeKey = `${scope}\0${name}\0${queryKey}`
-            keys.push(dedupeKey)
-            unique.set(dedupeKey, {
-                capability: selected.capability,
-                dedupeKey,
-                plans,
-                query,
-            })
-        }
-        return { keys, unique: [...unique.values()] }
-    }
 
     async function executeProvider(
         provider: ProviderDefinition,
@@ -402,6 +358,12 @@ function runtimeScope(name: string, providers: readonly ProviderDefinition[]): R
                     `Capability name "${contract.name}" must use lower camel case`,
                 )
             }
+            if (reservedCapabilityNames.has(contract.name)) {
+                throw new InsightError(
+                    'INVALID_QUERY',
+                    `Capability name "${contract.name}" is reserved by the Insight client`,
+                )
+            }
             const adapter = {
                 definition,
                 id: `${provider.id}.${key}`,
@@ -428,17 +390,10 @@ function runtimeScope(name: string, providers: readonly ProviderDefinition[]): R
             }
         }
     }
-    // Object.create(null) keeps generated capability names prototype-safe without a Proxy.
-    // eslint-disable-next-line typescript/no-unsafe-type-assertion
-    const builder = Object.create(null) as Record<string, RuntimeCapabilityAccessor>
     for (const capability of capabilities.values()) {
         capability.contract.validate?.(capability.adapters.map(({ definition }) => definition))
-        Object.defineProperty(builder, capability.name, {
-            enumerable: true,
-            value: (query: unknown): Descriptor => ({ [descriptor]: true, capability, query }),
-        })
     }
-    return { adapters, builder, capabilities, destinations, name }
+    return { adapters, capabilities, destinations, name }
 }
 
 function adapterDefinition(value: unknown, key: string): CapabilityAdapterDefinition {
@@ -448,26 +403,18 @@ function adapterDefinition(value: unknown, key: string): CapabilityAdapterDefini
     return value
 }
 
-function selectionEntries(value: unknown): [string, Descriptor][] {
-    if (!isRecord(value)) {
-        throw new InsightError('INVALID_QUERY', 'Query selection must return an object')
-    }
-    return Object.entries(value).map(([name, selected]) => {
-        if (!isDescriptor(selected)) {
-            throw new InsightError(
-                'INVALID_QUERY',
-                `Query selection "${name}" must be created with a canonical capability method`,
-            )
-        }
-        return [name, selected]
-    })
-}
-
 function queryResult(
     value: CapabilityExecutionResult,
     queriedAt: Date,
-): QueryResult<unknown, object> {
+): QueryResult<Record<PropertyKey, unknown>, object> {
     const result = validateExecutionResult(value)
+    const data = requireRecord(result.data, 'Capability data')
+    if (Object.hasOwn(data, 'meta')) {
+        throw new InsightError(
+            'INVALID_QUERY',
+            'Capability data cannot define the reserved meta field',
+        )
+    }
     const meta = result.meta === undefined ? {} : requireRecord(result.meta, 'Capability metadata')
     const contributions = parseContributions(value.contributions)
     const quality = mergeQuality([
@@ -476,10 +423,9 @@ function queryResult(
     ])
     const pagination = parsePagination(value.pagination)
     return {
-        data: result.data,
+        ...data,
         meta: {
             ...meta,
-            contributions,
             ...(pagination ? { pagination } : {}),
             ...(quality ? { quality } : {}),
             queriedAt: queriedAt.toISOString(),
@@ -502,26 +448,16 @@ function validateExecutionResult(value: unknown): AdapterExecutionResult<unknown
     return value as unknown as AdapterExecutionResult<unknown, object>
 }
 
-function parseContributions(value: unknown): readonly QueryContribution[] {
+function parseContributions(value: unknown): readonly { quality?: QueryQuality }[] {
     if (value === undefined) return []
     if (!Array.isArray(value)) {
         throw new InsightError('INVALID_QUERY', 'Query contributions must be an array')
     }
     return value.map((item) => {
         const contribution = requireRecord(item, 'Query contribution')
-        if (
-            contribution.fields !== undefined &&
-            (!Array.isArray(contribution.fields) ||
-                contribution.fields.some((field) => typeof field !== 'string'))
-        ) {
-            throw new InsightError('INVALID_QUERY', 'Query contribution fields must be strings')
-        }
-        return {
-            ...(Array.isArray(contribution.fields) ? { fields: [...contribution.fields] } : {}),
-            ...(contribution.quality === undefined
-                ? {}
-                : { quality: parseQuality(contribution.quality)! }),
-        }
+        return contribution.quality === undefined
+            ? {}
+            : { quality: parseQuality(contribution.quality)! }
     })
 }
 
@@ -689,9 +625,6 @@ function requireRecord(value: unknown, name: string): Record<string, unknown> {
 function isRecord(value: unknown): value is Record<PropertyKey, unknown> {
     return typeof value === 'object' && value !== null && !Array.isArray(value)
 }
-
-const isDescriptor = (value: unknown): value is Descriptor =>
-    isRecord(value) && value[descriptor] === true
 
 const isAdapterDefinition = (value: unknown): value is CapabilityAdapterDefinition =>
     isRecord(value) &&

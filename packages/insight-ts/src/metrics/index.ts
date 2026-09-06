@@ -143,8 +143,8 @@ export interface MetricPoint<TMetric extends string = string, TDimension extends
 }
 
 export interface MetricData<TMetric extends string = string, TDimension extends string = string> {
-    readonly points?: readonly MetricPoint<TMetric, TDimension>[]
-    readonly values: MetricValues<TMetric>
+    readonly aggregate: MetricValues<TMetric>
+    readonly rows?: readonly MetricPoint<TMetric, TDimension>[]
 }
 
 export interface MetricQuery<
@@ -521,14 +521,14 @@ const whereOperators = new Set<string>([
 const isWhereOperator = (value: string): value is WhereOperator => whereOperators.has(value)
 
 const metricData = (query: NormalizedMetricQuery, output: MetricAdapterOutput): MetricData => {
-    const points = (output.points ?? []).map((point) => ({
+    const rows = (output.points ?? []).map((point) => ({
         ...(point.dimensions ? { dimensions: point.dimensions } : {}),
         ...(point.time ? { time: normalizeTimestamp(point.time, 'Metric point time') } : {}),
         values: selectedMetricValues(query.metrics, point.values, 'point'),
     }))
     return {
-        ...(points.length > 0 ? { points } : {}),
-        values: selectedMetricValues(query.metrics, output.values, 'value'),
+        aggregate: selectedMetricValues(query.metrics, output.values, 'value'),
+        ...(rows.length > 0 ? { rows } : {}),
     }
 }
 
@@ -581,15 +581,17 @@ const metricContract: MetricContract = {
                 values: Record<string, number | null>
             }
         >()
-        const values: Record<string, number | null> = Object.fromEntries(
+        const aggregate: Record<string, number | null> = Object.fromEntries(
             query.metrics.map((metric) => [metric, null]),
         )
         for (const contribution of contributions) {
             const data = requireMetricData(contribution.result.data)
             for (const metric of query.metrics) {
-                if (Object.hasOwn(data.values, metric)) values[metric] = data.values[metric] ?? null
+                if (Object.hasOwn(data.aggregate, metric)) {
+                    aggregate[metric] = data.aggregate[metric] ?? null
+                }
             }
-            for (const point of data.points ?? []) {
+            for (const point of data.rows ?? []) {
                 const key = metricPointKey(point)
                 const row = rows.get(key) ?? {
                     ...(point.dimensions ? { dimensions: point.dimensions } : {}),
@@ -604,15 +606,14 @@ const metricContract: MetricContract = {
                 rows.set(key, row)
             }
         }
-        const points = [...rows.values()].toSorted((left, right) =>
+        const mergedRows = [...rows.values()].toSorted((left, right) =>
             metricPointKey(left).localeCompare(metricPointKey(right)),
         )
         return {
-            contributions: contributions.map(({ result }) => ({
-                fields: Object.keys(requireMetricData(result.data).values),
-                ...(result.quality ? { quality: result.quality } : {}),
-            })),
-            data: { ...(points.length > 0 ? { points } : {}), values },
+            contributions: contributions.map(({ result }) =>
+                result.quality ? { quality: result.quality } : {},
+            ),
+            data: { aggregate, ...(mergedRows.length > 0 ? { rows: mergedRows } : {}) },
             ...mergeMetricMeta(contributions),
         }
     },
@@ -712,12 +713,12 @@ const defaultedOperators = (definition: DimensionInput): Set<WhereOperator> =>
     )
 
 const requireMetricData = (value: unknown): MetricData => {
-    if (!isRecord(value) || !isRecord(value.values)) {
+    if (!isRecord(value) || !isRecord(value.aggregate)) {
         throw new InsightError('INVALID_QUERY', 'Metric adapter returned invalid data')
     }
-    const points = value.points
-    if (points !== undefined && !Array.isArray(points)) {
-        throw new InsightError('INVALID_QUERY', 'Metric adapter returned invalid points')
+    const rows = value.rows
+    if (rows !== undefined && !Array.isArray(rows)) {
+        throw new InsightError('INVALID_QUERY', 'Metric adapter returned invalid rows')
     }
     // Metric adapters construct this value at the canonical boundary.
     // eslint-disable-next-line typescript/no-unsafe-type-assertion
@@ -776,10 +777,10 @@ const metricHistoryMaterializer = (
 }
 
 const mergeStoredMetricData = (values: readonly MetricData[]): MetricData => {
-    const points = values.flatMap((value) => value.points ?? [])
+    const rows = values.flatMap((value) => value.rows ?? [])
     return {
-        ...(points.length > 0 ? { points } : {}),
-        values: Object.assign({}, ...values.map((value) => value.values)),
+        aggregate: Object.assign({}, ...values.map((value) => value.aggregate)),
+        ...(rows.length > 0 ? { rows } : {}),
     }
 }
 
@@ -806,7 +807,7 @@ const materializeMetricData = (
         )
     }
     const groups = new Map<string, MetricPoint[]>()
-    for (const point of data.points ?? []) {
+    for (const point of data.rows ?? []) {
         if (point.time && (point.time < query.time.from || point.time >= query.time.to)) continue
         const normalized: MetricPoint = {
             ...(query.dimensions.length > 0
@@ -849,16 +850,16 @@ const materializeMetricData = (
                   scalar(definition.aggregation.numerator),
                   scalar(definition.aggregation.denominator),
               )
-            : (data.values[metric] ?? null)
+            : (data.aggregate[metric] ?? null)
     }
     return {
-        ...(limited.length > 0 ? { points: limited } : {}),
-        values: Object.fromEntries(
+        aggregate: Object.fromEntries(
             query.metrics.map((metric) => [
                 metric,
-                data.points?.length ? resolve(metric, data.points) : scalar(metric),
+                data.rows?.length ? resolve(metric, data.rows) : scalar(metric),
             ]),
         ),
+        ...(limited.length > 0 ? { rows: limited } : {}),
     }
 }
 

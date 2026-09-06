@@ -262,118 +262,139 @@ export async function executeDemoQuery(
         from: new Date(now.valueOf() - 5 * 60 * 1000).toISOString(),
         to: now.toISOString(),
     }
-    const result = await insight.query((q) => ({
-        billing: q.billing({ time: query.range }),
-        countries: q.metrics({
+    const [
+        billing,
+        countries,
+        devices,
+        funnel,
+        logs,
+        observabilitySeries,
+        observabilitySummary,
+        productRevenue,
+        productSeries,
+        productSummary,
+        recentTraffic,
+        referrers,
+        searchPages,
+        searchQueries,
+        searchSeries,
+        searchSummary,
+        topPages,
+        trace,
+        trafficSeries,
+        trafficSummary,
+    ] = await Promise.all([
+        insight.billing({ time: query.range }),
+        insight.metrics({
             dimensions: ['country'],
             limit: 4,
             metrics: ['pageViews'],
             time: query.range,
         }),
-        devices: q.metrics({
+        insight.metrics({
             dimensions: ['device'],
             limit: 3,
             metrics: ['visits'],
             time: query.range,
         }),
-        funnel: q.funnel({ time: query.range }),
-        logs: q.logs({ limit: 3, time: query.range }),
-        observabilitySeries: q.metrics({
+        insight.funnel({ time: query.range }),
+        insight.logs({ limit: 3, time: query.range }),
+        insight.metrics({
             metrics: ['requestRate', 'errorRate', 'latencyP95'],
             time: { ...query.range, grain: query.grain },
         }),
-        observabilitySummary: q.metrics({
+        insight.metrics({
             metrics: ['requestRate', 'errorRate', 'latencyP95'],
             time: query.range,
         }),
-        productRevenue: q.metrics({
+        insight.metrics({
             dimensions: ['plan'],
             metrics: ['mrr'],
             time: query.range,
         }),
-        productSeries: q.metrics({
+        insight.metrics({
             metrics: ['signups', 'activeTeams'],
             time: { ...query.range, grain: query.grain },
         }),
-        productSummary: q.metrics({
+        insight.metrics({
             metrics: ['signups', 'activeTeams'],
             time: query.range,
         }),
-        recentTraffic: q.metrics({ metrics: ['visits'], time: recent }),
-        referrers: q.metrics({
+        insight.metrics({ metrics: ['visits'], time: recent }),
+        insight.metrics({
             dimensions: ['referer'],
             limit: 4,
             metrics: ['visits'],
             time: query.range,
         }),
-        searchPages: q.metrics({
+        insight.metrics({
             dimensions: ['page'],
             limit: 3,
             metrics: ['clicks', 'impressions'],
             time: query.range,
         }),
-        searchQueries: q.metrics({
+        insight.metrics({
             dimensions: ['query'],
             limit: 3,
             metrics: ['clicks', 'impressions'],
             time: query.range,
         }),
-        searchSeries: q.metrics({
+        insight.metrics({
             metrics: ['clicks', 'impressions', 'ctr'],
             time: { ...query.range, grain: query.grain },
         }),
-        searchSummary: q.metrics({
+        insight.metrics({
             metrics: ['clicks', 'impressions', 'ctr', 'averagePosition'],
             time: query.range,
         }),
-        topPages: q.metrics({
+        insight.metrics({
             dimensions: ['path'],
             limit: 5,
             metrics: ['pageViews'],
             time: query.range,
         }),
-        trace: q.traces({ time: query.range, where: { traceId } }),
-        trafficSeries: q.metrics({
+        insight.traces({ time: query.range, where: { traceId } }),
+        insight.metrics({
             metrics: ['pageViews', 'visits'],
             time: { ...query.range, grain: query.grain },
         }),
-        trafficSummary: q.metrics({
+        insight.metrics({
             metrics: ['pageViews', 'visits'],
             time: query.range,
         }),
-    }))
+    ])
     return {
         analytics: {
-            countries: result.countries,
-            devices: result.devices,
-            referrers: result.referrers,
-            searchPages: result.searchPages,
-            searchQueries: result.searchQueries,
-            searchSeries: result.searchSeries,
-            searchSummary: result.searchSummary,
-            topPages: result.topPages,
-            trafficSeries: result.trafficSeries,
-            trafficSummary: result.trafficSummary,
+            countries,
+            devices,
+            referrers,
+            searchPages,
+            searchQueries,
+            searchSeries,
+            searchSummary,
+            topPages,
+            trafficSeries,
+            trafficSummary,
         },
-        billing: result.billing,
+        billing,
         execution: {
             capabilities: ['metrics', 'logs', 'traces', 'billing', 'funnel'],
             queriedAt: now.toISOString(),
         },
-        funnel: result.funnel,
-        logs: result.logs,
-        observability: { series: result.observabilitySeries, summary: result.observabilitySummary },
-        online: Math.max(0, Math.round(result.recentTraffic.data.values.visits ?? 0)),
+        funnel,
+        logs,
+        observability: { series: observabilitySeries, summary: observabilitySummary },
+        online: Math.max(0, Math.round(recentTraffic.aggregate.visits ?? 0)),
         product: {
-            revenue: result.productRevenue,
-            series: result.productSeries,
-            summary: result.productSummary,
+            revenue: productRevenue,
+            series: productSeries,
+            summary: productSummary,
         },
-        trace: result.trace,
+        trace,
     }
 }
 
-function defineDemoAdapter<const TName extends string, TQuery extends object, TData>(
+function defineDemoAdapter<const TName extends string, TQuery extends object, TData extends object>(
     name: TName,
     normalize: (input: unknown) => TQuery,
     execute: (query: TQuery) => Promise<TData> | TData,
@@ -383,7 +404,7 @@ function defineDemoAdapter<const TName extends string, TQuery extends object, TD
         merge: (_query, contributions) => {
             const contribution = contributions[0]
             if (!contribution) throw new TypeError(`Missing ${name} fixture result`)
-            return { contributions: [{}], data: contribution.result.data }
+            return { data: contribution.result.data }
         },
         name,
         normalize,

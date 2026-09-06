@@ -37,13 +37,11 @@ describe('Vue chart hydration', () => {
 
 function createData(): MetricQueryResult<'visits'> {
     return {
-        data: {
-            points: [
-                { time: '2026-08-26T00:00:00.000Z', values: { visits: 10 } },
-                { time: '2026-08-27T00:00:00.000Z', values: { visits: 15 } },
-            ],
-            values: { visits: 25 },
-        },
-        meta: { contributions: [], queriedAt: '2026-08-29T00:00:00.000Z' },
+        aggregate: { visits: 25 },
+        meta: { queriedAt: '2026-08-29T00:00:00.000Z' },
+        rows: [
+            { time: '2026-08-26T00:00:00.000Z', values: { visits: 10 } },
+            { time: '2026-08-27T00:00:00.000Z', values: { visits: 15 } },
+        ],
     }
 }

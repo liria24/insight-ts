@@ -16,9 +16,9 @@ const props = withDefaults(defineProps<InsightBarChartProps>(), {
     locale: 'en-US',
 })
 
-const metric = computed(() => Object.keys(props.data.data.values)[0] ?? '')
+const metric = computed(() => Object.keys(props.data.aggregate)[0] ?? '')
 const rows = computed(() =>
-    (props.data.data.points ?? []).flatMap((point) => {
+    (props.data.rows ?? []).flatMap((point) => {
         const label = point.dimensions?.[props.dimension]
         const value = point.values[metric.value]
         return label === undefined || value === null || value === undefined

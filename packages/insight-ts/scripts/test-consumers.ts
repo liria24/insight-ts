@@ -34,15 +34,15 @@ const value = defineMetricAdapter({
 const logs = defineLogAdapter({ execute: () => ({ logs: [{ id: 'log-1', timestamp: '2026-08-01' }] }) })
 const traces = defineTraceAdapter({ execute: () => ({ traces: [{ startTime: '2026-08-01', traceId: 'trace-1' }] }) })
 const insight = createInsight({ providers: [defineProvider({ adapters: { logs, traces, value }, id: 'app' })] })
-const result = await insight.query((q) => ({
-  logs: q.logs({ time: { from: '2026-08-01', to: '2026-08-02' } }),
-  traces: q.traces({ time: { from: '2026-08-01', to: '2026-08-02' } }),
-  value: q.metrics({ metrics: ['value'], time: { from: '2026-08-01', to: '2026-08-02' } }),
-}))
-if (result.value.data.values.value !== 42 || result.logs.data.logs[0]?.id !== 'log-1' || result.traces.data.traces[0]?.traceId !== 'trace-1') throw new Error('Packed Core runtime failed')
-const nextLogCursor = result.logs.meta.pagination?.next
+const [logResult, traceResult, valueResult] = await Promise.all([
+  insight.logs({ time: { from: '2026-08-01', to: '2026-08-02' } }),
+  insight.traces({ time: { from: '2026-08-01', to: '2026-08-02' } }),
+  insight.metrics({ metrics: ['value'], time: { from: '2026-08-01', to: '2026-08-02' } }),
+])
+if (valueResult.aggregate.value !== 42 || logResult.logs[0]?.id !== 'log-1' || traceResult.traces[0]?.traceId !== 'trace-1') throw new Error('Packed Core runtime failed')
+const nextLogCursor = logResult.meta.pagination?.next
 if (nextLogCursor) {
-  await insight.query((q) => ({ logs: q.logs({ cursor: nextLogCursor, time: { from: '2026-08-01', to: '2026-08-02' } }) }))
+  await insight.logs({ cursor: nextLogCursor, time: { from: '2026-08-01', to: '2026-08-02' } })
 }
 
 const webOnly = cloudflare({
@@ -57,28 +57,22 @@ const searchInsight = createInsight({ providers: [googleSearchConsole({
 })] })
 
 async function verifyPublishedTypes() {
-  const { traffic } = await cloudflareInsight.query((q) => ({
-    traffic: q.metrics({
-      dimensions: ['path'], metrics: ['pageViews'],
-      time: { from: '2026-08-01T00:00:00.000Z', to: '2026-08-02T00:00:00.000Z' },
-      where: { country: { in: ['JP'] } },
-    }),
-  }))
-  const pageViews: number | null = traffic.data.values.pageViews
+  const traffic = await cloudflareInsight.metrics({
+    dimensions: ['path'], metrics: ['pageViews'],
+    time: { from: '2026-08-01T00:00:00.000Z', to: '2026-08-02T00:00:00.000Z' },
+    where: { country: { in: ['JP'] } },
+  })
+  const pageViews: number | null = traffic.aggregate.pageViews
   void pageViews
   // @ts-expect-error an unconfigured canonical Metric is absent
-  cloudflareInsight.query((q) => ({ invalid: q.metrics({ metrics: ['events'], time: { from: '', to: '' } }) }))
+  cloudflareInsight.metrics({ metrics: ['events'], time: { from: '', to: '' } })
   // @ts-expect-error unsupported metric
-  cloudflareInsight.query((q) => ({ invalid: q.metrics({ metrics: ['clicks'], time: { from: '', to: '' } }) }))
+  cloudflareInsight.metrics({ metrics: ['clicks'], time: { from: '', to: '' } })
   // @ts-expect-error unsupported dimension
-  cloudflareInsight.query((q) => ({ invalid: q.metrics({ dimensions: ['query'], metrics: ['visits'], time: { from: '', to: '' } }) }))
+  cloudflareInsight.metrics({ dimensions: ['query'], metrics: ['visits'], time: { from: '', to: '' } })
 
-  fullCloudflare.query((q) => ({
-    overview: q.metrics({ metrics: ['events', 'visits'], time: { from: '', to: '' } }),
-  }))
-  await searchInsight.query((q) => ({
-    search: q.metrics({ metrics: ['clicks'], time: { from: '', to: '' } }),
-  }))
+  fullCloudflare.metrics({ metrics: ['events', 'visits'], time: { from: '', to: '' } })
+  await searchInsight.metrics({ metrics: ['clicks'], time: { from: '', to: '' } })
 }
 void verifyPublishedTypes
 `,
@@ -140,19 +134,16 @@ const {
   InsightQualityNotice, InsightSparkline, InsightStat,
 } = await import('insight-ts/vue/ui')
 const data = {
-  data: {
-    points: [
-      { dimensions: { country: 'JP' }, time: '2026-08-26T00:00:00.000Z', values: { visits: 9 } },
-      { dimensions: { country: 'US' }, time: '2026-08-31T00:00:00.000Z', values: { visits: 12 } },
-    ],
-    values: { visits: 12 },
-  },
+  aggregate: { visits: 12 },
   meta: {
-    contributions: [],
     quality: { sampled: true, sampleRate: 0.5 },
     queriedAt: '2026-08-28T00:00:00.000Z',
     temporal: { grain: 'day' },
   },
+  rows: [
+    { dimensions: { country: 'JP' }, time: '2026-08-26T00:00:00.000Z', values: { visits: 9 } },
+    { dimensions: { country: 'US' }, time: '2026-08-31T00:00:00.000Z', values: { visits: 12 } },
+  ],
 } as const
 const Root = () => h('main', [
   h(InsightStat, { data }),

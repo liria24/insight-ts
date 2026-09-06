@@ -14,9 +14,9 @@ const props = withDefaults(defineProps<InsightSparklineProps>(), {
     width: 96,
 })
 
-const metric = computed(() => Object.keys(props.data.data.values)[0] ?? '')
+const metric = computed(() => Object.keys(props.data.aggregate)[0] ?? '')
 const values = computed(() =>
-    (props.data.data.points ?? []).flatMap(({ values: pointValues }) => {
+    (props.data.rows ?? []).flatMap(({ values: pointValues }) => {
         const value = pointValues[metric.value]
         return value === null || value === undefined ? [] : [value]
     }),
