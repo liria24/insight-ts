@@ -85,7 +85,7 @@
     },
     "scripts": {
         "bench": "vitest bench --run",
-        "bench:json": "vitest bench --run --outputJson benchmark-results.json",
+        "bench:json": "vitest bench --run --reporter=json --outputFile=benchmark-results.json",
         "build": "tsdown",
         "bundle:size": "bun run build && bun scripts/measure-bundles.ts",
         "prepack": "bun run build",

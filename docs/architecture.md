@@ -240,3 +240,6 @@ than source shape. Provider Protocol tests use deterministic native fixtures and
 translation and canonical response/Quality mapping. Complex optimized algorithms may use small,
 deterministic test-only reference models where they provide a clearer oracle. Coverage is diagnostic,
 not a substitute for these responsibilities or a global quality target.
+
+Performance cases use Vitest 5's test-context benchmarks and JSON reporter. CI validates the report
+and translates it to the pinned Bencher adapter's format, preserving benchmark names and units.

@@ -1,4 +1,6 @@
-import { beforeAll, bench, describe } from 'vitest'
+/* eslint-disable vitest/expect-expect -- benchmarks measure execution; semantic assertions belong in contract suites */
+
+import { beforeAll, describe, test } from 'vitest'
 
 import { createInsight, defineProvider } from '../src/core/index.ts'
 import {
@@ -28,15 +30,17 @@ const core = createInsight({
 })
 
 describe('Core query', () => {
-    bench('normalize, deduplicate, and execute a selection', async () => {
-        await core.query((q) => ({
-            first: q.metrics({ metrics: ['value'], time }),
-            second: q.metrics({ metrics: ['value'], time }),
-            third: q.metrics({
-                metrics: ['value'],
-                time: { ...time, to: '2026-01-09T00:00:00.000Z' },
-            }),
-        }))
+    test('normalize, deduplicate, and execute a selection', async ({ bench }) => {
+        await bench('execute', async () => {
+            await core.query((q) => ({
+                first: q.metrics({ metrics: ['value'], time }),
+                second: q.metrics({ metrics: ['value'], time }),
+                third: q.metrics({
+                    metrics: ['value'],
+                    time: { ...time, to: '2026-01-09T00:00:00.000Z' },
+                }),
+            }))
+        }).run()
     })
 })
 
@@ -53,15 +57,17 @@ const metrics = defineMetricAdapter({
 })
 
 describe('Metrics', () => {
-    bench('normalize typed filters and time ranges', () => {
-        metrics.normalize({
-            dimensions: ['country'],
-            metrics: ['requests', 'errors'],
-            time,
-            where: {
-                AND: [{ country: { in: ['US', 'JP', 'US'] } }, { status: { gte: 400 } }],
-            },
-        })
+    test('normalize typed filters and time ranges', async ({ bench }) => {
+        await bench('execute', () => {
+            metrics.normalize({
+                dimensions: ['country'],
+                metrics: ['requests', 'errors'],
+                time,
+                where: {
+                    AND: [{ country: { in: ['US', 'JP', 'US'] } }, { status: { gte: 400 } }],
+                },
+            })
+        }).run()
     })
 })
 
@@ -90,12 +96,14 @@ const materializationCases = [1, 5, 10].flatMap((metricCount) =>
 
 describe('Metric materialization', () => {
     for (const fixture of materializationCases) {
-        bench(`${fixture.metricCount} metrics x ${fixture.pointCount} points`, async () => {
-            await fixture.source.execute(fixture.query, {
-                adapter: 'benchmark.metrics',
-                provider: 'benchmark',
-                scope: 'default',
-            })
+        test(`${fixture.metricCount} metrics x ${fixture.pointCount} points`, async ({ bench }) => {
+            await bench('execute', async () => {
+                await fixture.source.execute(fixture.query, {
+                    adapter: 'benchmark.metrics',
+                    provider: 'benchmark',
+                    scope: 'default',
+                })
+            }).run()
         })
     }
 })
@@ -170,19 +178,23 @@ const coveredHistory = benchmarkHistory()
 describe('History', () => {
     beforeAll(() => coveredHistory.history.sync({ range: time }))
 
-    bench('cold materialization', async () => {
-        const history = benchmarkHistory()
-        await history.history.sync({ range: time })
+    test('cold materialization', async ({ bench }) => {
+        await bench('execute', async () => {
+            const history = benchmarkHistory()
+            await history.history.sync({ range: time })
+        }).run()
     })
 
-    bench('read an already-covered range', async () => {
-        await coveredHistory.query((q) => ({
-            report: q.metrics({
-                dimensions: ['service'],
-                metrics: ['errorRate', 'requests'],
-                time: { ...time, grain: 'day' },
-            }),
-        }))
+    test('read an already-covered range', async ({ bench }) => {
+        await bench('execute', async () => {
+            await coveredHistory.query((q) => ({
+                report: q.metrics({
+                    dimensions: ['service'],
+                    metrics: ['errorRate', 'requests'],
+                    time: { ...time, grain: 'day' },
+                }),
+            }))
+        }).run()
     })
 })
 
@@ -199,9 +211,11 @@ const uiResult = {
 }
 
 describe('UI Core', () => {
-    bench('build series and breakdown models', () => {
-        createSeriesModel(uiResult, { colors: ['red', 'green', 'blue'] })
-        createBreakdownModel(uiResult)
+    test('build series and breakdown models', async ({ bench }) => {
+        await bench('execute', () => {
+            createSeriesModel(uiResult, { colors: ['red', 'green', 'blue'] })
+            createBreakdownModel(uiResult)
+        }).run()
     })
 })
 
@@ -219,7 +233,7 @@ const cloudflare = createCloudflare({
                                     {
                                         avg: { sampleInterval: 1 },
                                         count: 10,
-                                        dimensions: { country: 'JP' },
+                                        dimensions: { country: 'JP', time: time.from },
                                         sum: { visits: 8 },
                                     },
                                 ],
@@ -256,23 +270,27 @@ const searchConsoleQuery = searchConsole.normalize({
     dimensions: ['date', 'query', 'page'],
     limit: 25_000,
     metrics: ['clicks', 'impressions', 'ctr', 'averagePosition'],
-    time,
+    time: { ...time, grain: 'day' },
 })
 
 describe('Provider normalization', () => {
-    bench('translate and normalize a Cloudflare response', async () => {
-        await cloudflare.execute(cloudflareQuery, {
-            adapter: 'cloudflare.webAnalytics',
-            provider: 'cloudflare',
-            scope: 'default',
-        })
+    test('translate and normalize a Cloudflare response', async ({ bench }) => {
+        await bench('execute', async () => {
+            await cloudflare.execute(cloudflareQuery, {
+                adapter: 'cloudflare.webAnalytics',
+                provider: 'cloudflare',
+                scope: 'default',
+            })
+        }).run()
     })
 
-    bench('normalize 25,000 Search Console multi-dimension rows', async () => {
-        await searchConsole.execute(searchConsoleQuery, {
-            adapter: 'google-search-console.searchAnalytics',
-            provider: 'google-search-console',
-            scope: 'default',
-        })
+    test('normalize 25,000 Search Console multi-dimension rows', async ({ bench }) => {
+        await bench('execute', async () => {
+            await searchConsole.execute(searchConsoleQuery, {
+                adapter: 'google-search-console.searchAnalytics',
+                provider: 'google-search-console',
+                scope: 'default',
+            })
+        }).run()
     })
 })

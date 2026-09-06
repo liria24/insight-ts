@@ -27,6 +27,24 @@ jobs:
                   bun-version: 1.4.2
             - run: bun ci
             - run: bun --filter insight-ts bench:json
+            - name: Adapt benchmark results for Bencher
+              # ponytail: Bencher 0.6.12 expects Vitest 4 JSON; remove when its adapter supports Vitest 5.
+              run: |
+                  jq -e --arg root "$GITHUB_WORKSPACE/packages/insight-ts/" '
+                    if .success and .numTotalTests > 0 and
+                      all(.testResults[].assertionResults[];
+                        .status == "passed" and (.benchmarks | length) > 0)
+                    then {
+                      files: [.testResults[] |
+                        (.name | ltrimstr($root)) as $file |
+                        {groups: [.assertionResults[] | . as $test |
+                          {fullName: ([$file] + .ancestorTitles | join(" > ")),
+                           benchmarks: [.benchmarks[].tasks[] |
+                             {name: $test.title, hz: (1000 / .period),
+                              mean: .latency.mean, median: .latency.p50,
+                              sd: .latency.sd, rme: .latency.rme}]}]}]
+                    } else error("Benchmarks failed or produced no measurements") end
+                  ' packages/insight-ts/benchmark-results.json > "$RUNNER_TEMP/bencher-results.json"
             - uses: bencherdev/bencher@8d75325c3bc59403a2186a056b472c4f49d42838 # v0.6.12
             - name: Report benchmark results
               env:
@@ -49,7 +67,7 @@ jobs:
                       --start-point-reset \
                       --testbed ubuntu-latest \
                       --adapter js_vitest \
-                      --file packages/insight-ts/benchmark-results.json \
+                      --file "$RUNNER_TEMP/bencher-results.json" \
                       --github-actions "${{ github.token }}" \
                       --ci-id insight-ts
                   else
@@ -59,7 +77,7 @@ jobs:
                       --branch "$GITHUB_REF_NAME" \
                       --testbed ubuntu-latest \
                       --adapter js_vitest \
-                      --file packages/insight-ts/benchmark-results.json \
+                      --file "$RUNNER_TEMP/bencher-results.json" \
                       --github-actions "${{ github.token }}" \
                       --ci-id insight-ts
                   fi
