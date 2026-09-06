@@ -122,7 +122,6 @@ describe('Nitro and Nuxt integration', () => {
         const segment = {
             adapter: 'app.metrics',
             capability: 'metrics',
-            fidelity: { preservation: 'full' as const, transformations: [] },
             id: 'app.usage:one',
             observedAt: '2026-08-28T00:00:00.000Z',
             range: { from: '2026-08-01T00:00:00.000Z', to: '2026-09-01T00:00:00.000Z' },
@@ -130,7 +129,7 @@ describe('Nitro and Nuxt integration', () => {
                 aggregate: { requests: 0 },
                 rows: [],
             },
-            schemaVersion: 2 as const,
+            schemaVersion: 3 as const,
             scope: 'default',
             sortKey: 'metrics',
         }
@@ -178,11 +177,10 @@ describe('Nitro and Nuxt integration', () => {
                 {
                     ...target,
                     data: { id: `log-${index}` },
-                    fidelity: { preservation: 'full', transformations: [] },
                     id: `segment-${index}`,
                     observedAt: range.to,
                     range,
-                    schemaVersion: 2,
+                    schemaVersion: 3,
                     sortKey: range.from,
                 },
             ])

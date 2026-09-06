@@ -45,7 +45,7 @@ describe('Google Search Console adapter', () => {
                     throw new TypeError('Expected a JSON request body')
                 const body = JSON.parse(init.body)
                 expect(body).toMatchObject({
-                    dataState: 'final',
+                    dataState: 'all',
                     dimensionFilterGroups: [
                         {
                             filters: expect.arrayContaining([
@@ -102,6 +102,7 @@ describe('Google Search Console adapter', () => {
                     dimensions: ['date', 'query'],
                 })
                 return Response.json({
+                    metadata: { first_incomplete_date: '2026-08-01' },
                     rows: [
                         {
                             clicks: 4,
@@ -116,6 +117,7 @@ describe('Google Search Console adapter', () => {
         )
         const provider = googleSearchConsole({
             auth: { getAccessToken },
+            dataState: 'all',
             fetch: fetcher,
             property: 'sc-domain:example.com',
         })
@@ -145,6 +147,7 @@ describe('Google Search Console adapter', () => {
             values: { averagePosition: 3, clicks: 4, ctr: 0.5, impressions: 8 },
         })
         expect(result.meta).toMatchObject({
+            freshness: { provisionalFrom: '2026-08-01T07:00:00.000Z' },
             quality: { partial: true },
             temporal: { sourceTimezone: 'America/Los_Angeles' },
         })

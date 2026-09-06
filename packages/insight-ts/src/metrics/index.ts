@@ -6,15 +6,12 @@ import type {
     CapabilityContract,
     CapabilityContribution,
     CapabilitySchema,
-    HistoryFidelityBand,
     HistoryMaterializer,
     QueryQuality,
 } from '../core/types.ts'
 
 export { normalizeTimeRange }
 export type { TimeRange }
-export type { HistoryFidelity, HistoryFidelityBand, HistoryTransformation } from '../core/types.ts'
-
 export type Grain = 'minute' | 'hour' | 'day' | 'week' | 'month' | 'year'
 export type MetricProjection = 'aggregate' | 'both' | 'rows'
 export type DimensionValue = boolean | number | string | null
@@ -187,10 +184,8 @@ interface MetricExecutionData {
 }
 
 export interface MetricMeta {
-    fidelity?: readonly HistoryFidelityBand[]
     freshness?: {
-        completeThrough?: string
-        incompleteFrom?: string
+        provisionalFrom?: string
     }
     temporal?: {
         bucketTimezone?: string
@@ -203,6 +198,7 @@ interface MetricCaptureOptions {
     dimensions?: readonly string[]
     grain: Grain
     metrics?: readonly string[]
+    timezone?: string
 }
 
 interface CanonicalMetricQueryInput {
@@ -800,6 +796,8 @@ const metricHistoryMaterializer = (
 ): HistoryMaterializer<NormalizedMetricQuery, MetricExecutionData, MetricMeta> => {
     const metrics = capture.metrics ?? Object.keys(definitions)
     const selectedDimensions = capture.dimensions ?? []
+    const timezone = capture.timezone ?? 'UTC'
+    historyTimezone(timezone)
     for (const metric of metrics) {
         if (!Object.hasOwn(definitions, metric)) {
             throw new TypeError(`Unknown History metric "${metric}"`)
@@ -817,22 +815,24 @@ const metricHistoryMaterializer = (
             metrics,
             projection: 'both',
             time: normalizeTimeRange(range),
-            timezone: 'UTC',
+            timezone,
         }),
         itemId: () => 'metrics',
         items: (data) => [requireMetricData(data, 'both')],
-        materialize: (query, items) => ({
+        isCompatible: (_query, segments) =>
+            segments.length > 0 &&
+            compatibleSourceTimezones(segments) &&
+            segments.every(({ meta, range }) =>
+                compatibleMetricSegment(meta, range, capture.grain, timezone),
+            ),
+        materialize: (query, items, segments) => ({
             data: materializeMetricData(
                 mergeStoredMetricData(items.map((item) => requireMetricData(item, 'both'))),
                 definitions,
                 query,
+                capture.grain,
             ),
-            meta: {
-                temporal: {
-                    ...(query.grain === 'auto' ? {} : { grain: query.grain }),
-                    ...(query.timezone ? { bucketTimezone: query.timezone } : {}),
-                },
-            },
+            meta: metricHistoryMeta(query, segments),
         }),
         range: (query) =>
             query.where === undefined &&
@@ -848,6 +848,98 @@ const metricHistoryMaterializer = (
 
 const grainOrder: readonly Grain[] = ['minute', 'hour', 'day', 'week', 'month', 'year']
 
+const historyFormatters = new Map<string, Intl.DateTimeFormat>()
+
+const historyTimezone = (timezone: string): Intl.DateTimeFormat => {
+    const existing = historyFormatters.get(timezone)
+    if (existing) return existing
+    let formatter: Intl.DateTimeFormat
+    try {
+        formatter = new Intl.DateTimeFormat('en-GB-u-ca-iso8601', {
+            day: '2-digit',
+            hour: '2-digit',
+            hourCycle: 'h23',
+            minute: '2-digit',
+            month: '2-digit',
+            second: '2-digit',
+            timeZone: timezone,
+            weekday: 'short',
+            year: 'numeric',
+        })
+        formatter.format(0)
+    } catch {
+        throw new TypeError(`Invalid History timezone "${timezone}"`)
+    }
+    historyFormatters.set(timezone, formatter)
+    return formatter
+}
+
+const isBucketBoundary = (value: string, grain: Grain, timezone: string): boolean => {
+    const date = new Date(value)
+    if (!Number.isFinite(date.valueOf()) || date.getUTCMilliseconds() !== 0) return false
+    const parts = historyTimezone(timezone).formatToParts(date)
+    const number = (type: Intl.DateTimeFormatPartTypes) =>
+        Number(parts.find((part) => part.type === type)?.value ?? Number.NaN)
+    if (number('second') !== 0) return false
+    if (grain === 'minute') return true
+    if (number('minute') !== 0) return false
+    if (grain === 'hour') return true
+    if (number('hour') !== 0) return false
+    if (grain === 'day') return true
+    if (grain === 'week') {
+        return parts.some((part) => part.type === 'weekday' && part.value === 'Mon')
+    }
+    if (number('day') !== 1) return false
+    return grain === 'month' || number('month') === 1
+}
+
+const compatibleMetricSegment = (
+    meta: MetricMeta | undefined,
+    range: TimeRange,
+    grain: Grain,
+    timezone: string,
+): boolean => {
+    const temporal = meta?.temporal
+    const provisionalFrom = meta?.freshness?.provisionalFrom
+    return (
+        isBucketBoundary(range.from, grain, timezone) &&
+        isBucketBoundary(range.to, grain, timezone) &&
+        (temporal?.grain === undefined || temporal.grain === grain) &&
+        (temporal?.bucketTimezone === undefined || temporal.bucketTimezone === timezone) &&
+        (provisionalFrom === undefined || Number.isFinite(new Date(provisionalFrom).valueOf()))
+    )
+}
+
+const compatibleSourceTimezones = (segments: readonly { meta?: MetricMeta }[]): boolean =>
+    new Set(
+        segments.flatMap(({ meta }) =>
+            meta?.temporal?.sourceTimezone ? [meta.temporal.sourceTimezone] : [],
+        ),
+    ).size <= 1
+
+const metricHistoryMeta = (
+    query: NormalizedMetricQuery,
+    segments: readonly { meta?: MetricMeta }[],
+): MetricMeta => {
+    const provisionalFrom = segments
+        .flatMap(({ meta }) =>
+            meta?.freshness?.provisionalFrom
+                ? [new Date(meta.freshness.provisionalFrom).toISOString()]
+                : [],
+        )
+        .toSorted()[0]
+    const sourceTimezone = segments.find(({ meta }) => meta?.temporal?.sourceTimezone)?.meta
+        ?.temporal?.sourceTimezone
+    return {
+        ...(provisionalFrom ? { freshness: { provisionalFrom } } : {}),
+        temporal: {
+            bucketTimezone: query.timezone,
+            ...(query.grain === 'auto' ? {} : { grain: query.grain }),
+            ...(sourceTimezone ? { sourceTimezone } : {}),
+        },
+    }
+}
+
 const canMaterializeMetricQuery = (
     query: NormalizedMetricQuery,
     capture: MetricCaptureOptions,
@@ -855,6 +947,14 @@ const canMaterializeMetricQuery = (
     definitions: MetricDefinitions,
     capturedMetrics: readonly string[],
 ): boolean => {
+    const timezone = capture.timezone ?? 'UTC'
+    if (
+        query.timezone !== timezone ||
+        !isBucketBoundary(query.time.from, capture.grain, timezone) ||
+        !isBucketBoundary(query.time.to, capture.grain, timezone)
+    ) {
+        return false
+    }
     const safeMetrics = query.metrics.every((metric) =>
         canRollupMetric(metric, definitions, capturedMetrics, new Set()),
     )
@@ -867,6 +967,7 @@ const canMaterializeMetricQuery = (
         return false
     }
     const preservesGrain = query.grain === capture.grain
+    if (!preservesGrain && timezone !== 'UTC') return false
     const preservesDimensions =
         query.dimensions.length === capturedDimensions.length &&
         query.dimensions.every((dimension) => capturedDimensions.includes(dimension))
@@ -882,7 +983,7 @@ const canRollupMetric = (
     if (!capturedMetrics.includes(metric) || seen.has(metric)) return false
     const definition = definitions[metric]
     if (!definition) return false
-    if (definition.rollup === 'additive' || definition.aggregation?.kind === 'last') return true
+    if (definition.rollup === 'additive') return true
     if (definition.aggregation?.kind !== 'ratio') return false
     const next = new Set(seen).add(metric)
     return (
@@ -892,14 +993,14 @@ const canRollupMetric = (
 }
 
 interface StoredMetricData {
-    aggregate: MetricValues
+    aggregates: readonly MetricValues[]
     rows: readonly MetricPoint[]
 }
 
 const mergeStoredMetricData = (values: readonly MetricExecutionData[]): StoredMetricData => {
     const rows = values.flatMap((value) => value.rows ?? [])
     return {
-        aggregate: Object.assign({}, ...values.map((value) => value.aggregate)),
+        aggregates: values.flatMap((value) => (value.aggregate ? [value.aggregate] : [])),
         rows,
     }
 }
@@ -908,6 +1009,7 @@ const materializeMetricData = (
     data: StoredMetricData,
     definitions: MetricDefinitions,
     query: NormalizedMetricQuery,
+    capturedGrain: Grain,
 ): MetricExecutionData => {
     const resolve = (metric: string, points: readonly MetricPoint[]): number | null => {
         const definition = definitions[metric]
@@ -945,7 +1047,12 @@ const materializeMetricData = (
                     : {}),
                 ...(query.grain === 'auto' || !point.time
                     ? {}
-                    : { time: metricBucketStart(point.time, query.grain) }),
+                    : {
+                          time:
+                              query.grain === capturedGrain
+                                  ? point.time
+                                  : metricBucketStart(point.time, query.grain),
+                      }),
                 values: point.values,
             }
             const key = metricPointKey(normalized, query.dimensions)
@@ -976,7 +1083,11 @@ const materializeMetricData = (
                   scalar(definition.aggregation.numerator),
                   scalar(definition.aggregation.denominator),
               )
-            : (data.aggregate[metric] ?? null)
+            : aggregateStoredMetric(
+                  data.aggregates.map((aggregate) => aggregate[metric] ?? null),
+                  definition,
+                  metric,
+              )
     }
     return {
         ...(includesAggregate(query.projection)

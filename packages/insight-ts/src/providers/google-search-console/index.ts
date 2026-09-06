@@ -203,6 +203,7 @@ function googleSearchConsoleAdapter(options: GoogleSearchConsoleOptions) {
         history: {
             grain: 'day',
             metrics: ['clicks', 'impressions', 'ctr'],
+            timezone: SEARCH_CONSOLE_TIMEZONE,
         },
         metrics: {
             averagePosition: {
@@ -417,10 +418,7 @@ function googleReport(
     grouped: SearchAnalyticsResult | undefined,
 ): MetricAdapterOutput {
     const exactRange = canRepresentRangeExactly(query)
-    const incompleteFrom = [aggregate?.metadata, grouped?.metadata]
-        .flatMap((metadata) => [metadata?.first_incomplete_date, metadata?.first_incomplete_hour])
-        .filter((value): value is string => typeof value === 'string')
-        .toSorted()[0]
+    const provisionalFrom = googleProvisionalFrom([aggregate?.metadata, grouped?.metadata])
     const warnings = [
         ...(grouped
             ? [
@@ -431,12 +429,12 @@ function googleReport(
                   },
               ]
             : []),
-        ...(incompleteFrom === undefined
+        ...(provisionalFrom === undefined
             ? []
             : [
                   {
                       code: 'google-search-console-incomplete-data',
-                      message: `Search Console data is incomplete from ${incompleteFrom}`,
+                      message: `Search Console data is incomplete from ${provisionalFrom}`,
                   },
               ]),
         ...(query.timezone === SEARCH_CONSOLE_TIMEZONE
@@ -469,7 +467,7 @@ function googleReport(
     ]
     const meta: Pick<MetricAdapterOutput, 'meta' | 'quality'> = {
         meta: {
-            ...(incompleteFrom === undefined ? {} : { freshness: { incompleteFrom } }),
+            ...(provisionalFrom === undefined ? {} : { freshness: { provisionalFrom } }),
             temporal: {
                 bucketTimezone: SEARCH_CONSOLE_TIMEZONE,
                 ...(query.grain === 'auto' ? {} : { grain: query.grain }),
@@ -478,7 +476,7 @@ function googleReport(
         },
         quality: {
             ...(exactRange ? {} : { approximate: true }),
-            ...(grouped || incompleteFrom ? { partial: true } : {}),
+            ...(grouped || provisionalFrom ? { partial: true } : {}),
             ...(warnings.length > 0 ? { warnings } : {}),
         },
     }
@@ -527,6 +525,43 @@ function googleAggregateValues(
             return [metric, row?.position ?? null]
         }),
     )
+}
+
+function googleProvisionalFrom(
+    values: readonly (SearchAnalyticsMetadata | undefined)[],
+): string | undefined {
+    const boundaries: string[] = []
+    for (const metadata of values) {
+        if (metadata?.first_incomplete_date !== undefined) {
+            const boundary =
+                typeof metadata.first_incomplete_date === 'string'
+                    ? searchConsoleDayStart(metadata.first_incomplete_date)
+                    : undefined
+            if (!boundary) {
+                throw new GoogleSearchConsoleApiError(
+                    'Google Search Console returned invalid incomplete-date metadata',
+                    502,
+                )
+            }
+            boundaries.push(boundary.toISOString())
+        }
+        if (metadata?.first_incomplete_hour !== undefined) {
+            const value = metadata.first_incomplete_hour
+            const boundary = typeof value === 'string' ? new Date(value) : new Date(Number.NaN)
+            if (
+                typeof value !== 'string' ||
+                !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:Z|[+-]\d{2}:\d{2})$/.test(value) ||
+                !Number.isFinite(boundary.valueOf())
+            ) {
+                throw new GoogleSearchConsoleApiError(
+                    'Google Search Console returned invalid incomplete-hour metadata',
+                    502,
+                )
+            }
+            boundaries.push(boundary.toISOString())
+        }
+    }
+    return boundaries.toSorted()[0]
 }
 
 function canRepresentRangeExactly(query: ResolvedMetricQuery): boolean {

@@ -6,11 +6,11 @@ import type {
 } from '../../history/index.ts'
 
 const mount = 'insight'
-const historyPrefix = 'history:v3'
+const historyPrefix = 'history:v4'
 
 interface HistoryPartitionIndex {
     partitions: HistoryCoverage['range'][]
-    schemaVersion: 3
+    schemaVersion: 4
 }
 
 interface HistoryCursor {
@@ -119,7 +119,7 @@ export const createNitroHistoryRepository = (storage: NitroStorage): HistoryRepo
             const nextCoverageKey = coverage ? coverageKey(target, coverage.range) : undefined
             if (coverage && nextCoverageKey) await storage.setItem(nextCoverageKey, coverage)
             await writeIndex(storage, target, {
-                schemaVersion: 3,
+                schemaVersion: 4,
                 partitions: [
                     ...new Map(
                         [
@@ -214,7 +214,7 @@ const readIndex = async (
     target: HistoryTarget,
 ): Promise<HistoryPartitionIndex> => {
     const value = await storage.getItem(indexKey(target))
-    if (value === null) return { partitions: [], schemaVersion: 3 }
+    if (value === null) return { partitions: [], schemaVersion: 4 }
     if (!isPartitionIndex(value)) {
         throw new TypeError('Insight History storage contains an invalid partition index')
     }
@@ -285,7 +285,7 @@ const isHistoryCoverage = (value: unknown): value is HistoryCoverage =>
 
 const isPartitionIndex = (value: unknown): value is HistoryPartitionIndex =>
     isRecord(value) &&
-    value.schemaVersion === 3 &&
+    value.schemaVersion === 4 &&
     Array.isArray(value.partitions) &&
     value.partitions.every(
         (partition) =>
@@ -296,7 +296,7 @@ const isPartitionIndex = (value: unknown): value is HistoryPartitionIndex =>
     )
 
 const isHistorySegment = (value: unknown): value is HistorySegment => {
-    if (!isRecord(value) || !isRecord(value.range) || !isRecord(value.fidelity)) return false
+    if (!isRecord(value) || !isRecord(value.range)) return false
     return (
         typeof value.id === 'string' &&
         typeof value.adapter === 'string' &&
@@ -304,11 +304,9 @@ const isHistorySegment = (value: unknown): value is HistorySegment => {
         typeof value.scope === 'string' &&
         typeof value.observedAt === 'string' &&
         typeof value.sortKey === 'string' &&
-        value.schemaVersion === 2 &&
+        value.schemaVersion === 3 &&
         typeof value.range.from === 'string' &&
         typeof value.range.to === 'string' &&
-        (value.empty === true || value.data !== undefined) &&
-        ['full', 'reduced', 'not-preserved'].includes(String(value.fidelity.preservation)) &&
-        Array.isArray(value.fidelity.transformations)
+        (value.empty === true || value.data !== undefined)
     )
 }

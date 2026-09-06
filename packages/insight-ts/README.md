@@ -92,8 +92,9 @@ const insight = createInsight({
 await insight.history.sync({ range: { from, to } })
 ```
 
-History exposes range-scoped Fidelity, bounded event synchronization and pagination, compaction,
-and expiration. It is not a persistent query-result cache.
+History exposes bounded event synchronization and pagination, exact Metric reconstruction,
+stable/provisional refreshability, and explicit expiration. It is not a persistent query-result
+cache.
 
 ## Vue UI
 

@@ -238,18 +238,6 @@
     font-size: 0.75rem;
 }
 
-.insight-chart__fidelity-band {
-    position: absolute;
-    inset-block: 0;
-    z-index: 1;
-    pointer-events: none;
-    background: repeating-linear-gradient(
-        -45deg,
-        color-mix(in srgb, var(--insight-text-muted) 8%, transparent) 0 4px,
-        transparent 4px 8px
-    );
-}
-
 .insight-sr-only {
     position: absolute !important;
     width: 1px !important;

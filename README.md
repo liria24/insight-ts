@@ -91,7 +91,8 @@ Custom adapters use the same scope-aware planning and result merging as built-in
 
 History preserves configured canonical capabilities with one Scope-aware workflow. Capability
 adapters retain their own identity, pagination, and safe rollup semantics while the engine owns
-coverage, bounded partition synchronization, Fidelity, storage, compaction, and expiration.
+coverage, stable and provisional refreshability, bounded partition synchronization, storage, and
+explicit expiration.
 
 ```ts
 import { createHistory } from 'insight-ts/history'

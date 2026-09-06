@@ -1,11 +1,5 @@
 import type { QueryQuality, QueryResult } from '../core/types.ts'
-import type {
-    DimensionValue,
-    HistoryFidelityBand,
-    MetricData,
-    MetricMeta,
-    MetricPoint,
-} from '../metrics/index.ts'
+import type { DimensionValue, MetricData, MetricMeta, MetricPoint } from '../metrics/index.ts'
 
 export type MetricQueryResult<
     TMetric extends string = string,
@@ -69,7 +63,6 @@ export interface DataNotice {
 }
 
 export interface SeriesModel {
-    fidelityBands: readonly (HistoryFidelityBand & { from: number; to: number })[]
     points: readonly MetricSeriesPoint[]
     series: readonly ChartSeries[]
     timeDomain: readonly [number, number]
@@ -176,11 +169,6 @@ export const createSeriesModel = (
         minimumTime === maximumTime ? [minimumTime, minimumTime + 1] : [minimumTime, maximumTime]
     const automatic = domain(values)
     return {
-        fidelityBands: (result.meta.fidelity ?? []).map((band) => ({
-            ...band,
-            from: new Date(band.range.from).valueOf(),
-            to: new Date(band.range.to).valueOf(),
-        })),
         points,
         series,
         timeDomain,

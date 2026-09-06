@@ -16,21 +16,6 @@ export interface QueryQuality {
     warnings?: readonly Warning[]
 }
 
-export type HistoryTransformation =
-    | { kind: 'sample'; rate: number }
-    | { id: string; kind: 'filter' }
-    | { kind: 'truncate'; limit: number }
-    | { id: string; kind: 'custom' }
-
-export interface HistoryFidelity {
-    preservation: 'full' | 'reduced' | 'not-preserved'
-    transformations: readonly HistoryTransformation[]
-}
-
-export interface HistoryFidelityBand extends HistoryFidelity {
-    range: TimeRange
-}
-
 declare const cursorBrand: unique symbol
 export type InsightCursor = string & { readonly [cursorBrand]?: never }
 
@@ -152,8 +137,13 @@ export interface HistoryMaterializer<
     cursor?(query: TQuery): string | undefined
     itemId(item: unknown, index: number): string
     items(data: TData): readonly unknown[]
+    isCompatible?(query: TQuery, segments: readonly { meta?: TMeta; range: TimeRange }[]): boolean
     limit?(query: TQuery): number | undefined
-    materialize(query: TQuery, items: readonly unknown[]): AdapterExecutionResult<TData, TMeta>
+    materialize(
+        query: TQuery,
+        items: readonly unknown[],
+        segments: readonly { meta?: TMeta; range: TimeRange }[],
+    ): AdapterExecutionResult<TData, TMeta>
     partitionMs?: number
     range(query: TQuery): TimeRange | undefined
     read: 'all' | 'bounded'

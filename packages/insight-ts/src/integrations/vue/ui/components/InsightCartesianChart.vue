@@ -217,14 +217,6 @@ function formatPointValue(point: MetricSeriesPoint, metric: string): string {
         ? 'No data'
         : (props.yAxis?.formatter?.(value) ?? formatMetricValue(value, props.locale))
 }
-
-function fidelityBandStyle(from: number, to: number): Record<string, string> {
-    const [minimum, maximum] = model.value.timeDomain
-    const span = maximum - minimum || 1
-    const left = Math.max(0, Math.min(100, ((from - minimum) / span) * 100))
-    const right = Math.max(left, Math.min(100, ((to - minimum) / span) * 100))
-    return { left: `${left}%`, width: `${right - left}%` }
-}
 </script>
 
 <template>
@@ -316,14 +308,6 @@ function fidelityBandStyle(from: number, to: number): Record<string, string> {
                     </template>
                 </template>
             </Chart>
-            <div
-                v-for="band in model.fidelityBands"
-                :key="`${band.range.from}:${band.range.to}`"
-                aria-hidden="true"
-                class="insight-chart__fidelity-band"
-                data-insight-fidelity="reduced"
-                :style="fidelityBandStyle(band.from, band.to)"
-            />
         </div>
 
         <table v-if="!empty" class="insight-chart__data insight-sr-only">

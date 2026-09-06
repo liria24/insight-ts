@@ -174,9 +174,6 @@ describe('generic History', () => {
             traces: traces.mock.calls.length,
         }).toEqual(calls)
         expect(repository.coverageReads).toHaveLength(coverageReads + 3)
-        expect(logResult.meta.fidelity).toEqual([
-            expect.objectContaining({ preservation: 'full', range }),
-        ])
         await expect(insight.history.sync({ range })).resolves.toEqual({ fetched: 0, skipped: 3 })
     })
 
@@ -336,59 +333,7 @@ describe('generic History', () => {
         expect(repository.replacements).toHaveLength(3)
     })
 
-    it('distinguishes reduced, empty, and not-preserved ranges', async () => {
-        const reduced = createInsight({
-            history: createHistory({
-                capabilities: ['logs'],
-                policies: [
-                    {
-                        capability: 'logs',
-                        transformations: [{ kind: 'truncate', limit: 0 }],
-                    },
-                ],
-                repository: new MemoryRepository(),
-            }),
-            providers: [
-                defineProvider({
-                    adapters: {
-                        logs: defineLogAdapter({
-                            execute: () => ({ logs: [{ id: 'removed', timestamp: range.from }] }),
-                        }),
-                    },
-                    id: 'otel',
-                }),
-            ],
-        })
-        await reduced.history.sync({ range })
-        const empty = await reduced.logs({ time: range })
-        expect(empty.logs).toEqual([])
-        expect(empty.meta.fidelity).toEqual([
-            expect.objectContaining({ preservation: 'reduced', range }),
-        ])
-
-        const partial = createInsight({
-            history: createHistory({ capabilities: ['logs'], repository: new MemoryRepository() }),
-            providers: [
-                defineProvider({
-                    adapters: {
-                        logs: defineLogAdapter({
-                            execute: () => ({ logs: [], quality: { partial: true } }),
-                        }),
-                    },
-                    id: 'otel',
-                }),
-            ],
-        })
-        const missing = await partial.logs({ time: range })
-        expect(missing.meta.quality).toEqual({ partial: true })
-        expect(missing.meta.fidelity).toContainEqual({
-            preservation: 'not-preserved',
-            range,
-            transformations: [],
-        })
-    })
-
-    it('replaces idempotently and exposes compact and retention lifecycle operations', async () => {
+    it('replaces idempotently and expires explicit ranges', async () => {
         const repository = new MemoryRepository()
         const insight = createInsight({
             history: createHistory({ capabilities: ['logs'], repository }),
@@ -407,8 +352,6 @@ describe('generic History', () => {
         await insight.history.sync({ range })
         const ids = repository.segments.map(({ id }) => id)
         await insight.history.sync({ range })
-        expect(repository.segments.map(({ id }) => id)).toEqual(ids)
-        await expect(insight.history.compact({ range })).resolves.toEqual({ compacted: 1 })
         expect(repository.segments.map(({ id }) => id)).toEqual(ids)
         await expect(
             insight.history.expire({ before: '2026-08-04T00:00:00.000Z' }),
@@ -454,16 +397,9 @@ describe('generic History', () => {
             expect.any(Object),
         )
         expect(result.aggregate.requests).toBe(2)
-        expect(result.meta.fidelity).toEqual([
-            expect.objectContaining({ preservation: 'full', range: firstDay }),
-            expect.objectContaining({
-                preservation: 'full',
-                range: { from: firstDay.to, to: range.to },
-            }),
-        ])
     })
 
-    it('retries failed and provisional captures without committing stale coverage', async () => {
+    it('does not recapture stable partial results after a failed attempt', async () => {
         const repository = new MemoryRepository()
         let attempt = 0
         const execute = vi.fn(() => {
@@ -471,7 +407,7 @@ describe('generic History', () => {
             if (attempt === 1) throw new Error('temporary failure')
             return {
                 logs: [{ id: `log-${attempt}`, timestamp: range.from }],
-                ...(attempt === 2 ? { quality: { partial: true } } : {}),
+                quality: { partial: true },
             }
         })
         const insight = createInsight({
@@ -487,10 +423,65 @@ describe('generic History', () => {
         await expect(insight.history.sync({ range })).rejects.toThrow('temporary failure')
         expect(repository.segments).toEqual([])
         await expect(insight.history.sync({ range })).resolves.toEqual({ fetched: 1, skipped: 0 })
-        expect(repository.segments.every(({ provisional }) => provisional)).toBe(true)
-        await expect(insight.history.sync({ range })).resolves.toEqual({ fetched: 1, skipped: 0 })
         expect(repository.segments.every(({ provisional }) => !provisional)).toBe(true)
-        expect(repository.segments.map(({ id }) => id).join()).toContain('log-3')
+        await expect(insight.history.sync({ range })).resolves.toEqual({ fetched: 0, skipped: 1 })
+        expect(execute).toHaveBeenCalledTimes(2)
+    })
+
+    it('preserves a stable prefix while refreshing only its provisional suffix', async () => {
+        const repository = new MemoryRepository()
+        const boundary = '2026-08-02T00:00:00.000Z'
+        let provisional = true
+        const execute = vi.fn((query: { time: TimeRange }) => ({
+            meta: {
+                ...(provisional && query.time.to > boundary
+                    ? { freshness: { provisionalFrom: boundary } }
+                    : {}),
+                temporal: { bucketTimezone: 'UTC', grain: 'day' as const },
+            },
+            points: [{ time: query.time.from, values: { requests: 1 } }],
+            quality: { partial: true },
+            values: { requests: 1 },
+        }))
+        const insight = createInsight({
+            history: createHistory({ capabilities: ['metrics'], repository }),
+            providers: [
+                defineProvider({
+                    adapters: {
+                        metrics: defineMetricAdapter({
+                            execute,
+                            history: { grain: 'day', metrics: ['requests'] },
+                            metrics: {
+                                requests: { aggregation: { kind: 'sum' }, rollup: 'additive' },
+                            },
+                        }),
+                    },
+                    id: 'app',
+                }),
+            ],
+        })
+
+        await insight.history.sync({ range })
+        expect(
+            repository.segments.map(({ provisional: value, range: stored }) => ({
+                provisional: Boolean(value),
+                range: stored,
+            })),
+        ).toEqual([
+            { provisional: false, range: { from: range.from, to: boundary } },
+            { provisional: true, range: { from: boundary, to: range.to } },
+        ])
+
+        provisional = false
+        execute.mockClear()
+        await insight.history.sync({ range })
+        expect(execute).toHaveBeenCalledOnce()
+        expect(execute).toHaveBeenCalledWith(
+            expect.objectContaining({ time: { from: boundary, to: range.to } }),
+            expect.any(Object),
+        )
+        expect(repository.segments.every((segment) => !segment.provisional)).toBe(true)
+        expect(repository.segments.every((segment) => segment.quality?.partial)).toBe(true)
     })
 
     it('rejects repository cursor loops and corrupt segments', async () => {
@@ -526,11 +517,10 @@ describe('generic History', () => {
                         adapter: 'wrong.metrics',
                         capability: 'metrics',
                         data: { aggregate: { requests: 1 } },
-                        fidelity: { preservation: 'full', transformations: [] },
                         id: 'corrupt',
                         observedAt: range.to,
                         range,
-                        schemaVersion: 2,
+                        schemaVersion: 3,
                         scope: 'default',
                         sortKey: 'metrics',
                     },
@@ -586,6 +576,72 @@ describe('generic History', () => {
             where: { service: 'api' },
         })
         expect(execute).toHaveBeenCalledTimes(calls + 2)
+    })
+
+    it('matches stored Metric grain and bucket timezone before using History', async () => {
+        const repository = new MemoryRepository()
+        const pacificRange = {
+            from: '2026-08-03T07:00:00.000Z',
+            to: '2026-08-05T07:00:00.000Z',
+        }
+        const execute = vi.fn((query: { time: TimeRange }) => ({
+            meta: {
+                temporal: {
+                    bucketTimezone: 'America/Los_Angeles',
+                    grain: 'day' as const,
+                    sourceTimezone: 'America/Los_Angeles',
+                },
+            },
+            points: [{ time: query.time.from, values: { requests: 2 } }],
+            values: { requests: 2 },
+        }))
+        const insight = createInsight({
+            history: createHistory({ capabilities: ['metrics'], repository }),
+            providers: [
+                defineProvider({
+                    adapters: {
+                        metrics: defineMetricAdapter({
+                            execute,
+                            history: {
+                                grain: 'day',
+                                metrics: ['requests'],
+                                timezone: 'America/Los_Angeles',
+                            },
+                            metrics: {
+                                requests: { aggregation: { kind: 'sum' }, rollup: 'additive' },
+                            },
+                        }),
+                    },
+                    id: 'app',
+                }),
+            ],
+        })
+        await insight.history.sync({ range: pacificRange })
+        const calls = execute.mock.calls.length
+        const coverageReads = repository.coverageReads.length
+
+        const stored = await insight.metrics({
+            metrics: ['requests'],
+            projection: 'rows',
+            time: { ...pacificRange, grain: 'day' },
+            timezone: 'America/Los_Angeles',
+        })
+        expect(stored.rows[0]?.time).toBe(pacificRange.from)
+        expect(execute).toHaveBeenCalledTimes(calls)
+
+        await insight.metrics({
+            metrics: ['requests'],
+            time: pacificRange,
+            timezone: 'UTC',
+        })
+        await insight.metrics({
+            metrics: ['requests'],
+            projection: 'rows',
+            time: { ...pacificRange, grain: 'hour' },
+            timezone: 'America/Los_Angeles',
+        })
+        expect(execute).toHaveBeenCalledTimes(calls + 2)
+        expect(repository.coverageReads).toHaveLength(coverageReads + 1)
     })
 })
 

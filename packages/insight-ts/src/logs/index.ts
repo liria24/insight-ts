@@ -14,7 +14,6 @@ import type {
     CapabilityContract,
     CapabilityContribution,
     CapabilitySchema,
-    HistoryFidelityBand,
     HistoryMaterializer,
     InsightCursor,
     QueryQuality,
@@ -61,9 +60,7 @@ export interface LogData {
     logs: readonly LogRecord[]
 }
 
-export interface LogMeta {
-    fidelity?: readonly HistoryFidelityBand[]
-}
+export type LogMeta = Record<never, never>
 
 export interface LogQuery {
     cursor?: InsightCursor
@@ -178,11 +175,6 @@ const logContract: LogContract = {
                       ),
                   }),
             data: { logs: merged.records },
-            ...(single
-                ? single.result.meta
-                    ? { meta: single.result.meta }
-                    : {}
-                : mergeLogMeta(contributions)),
             ...(next ? { pagination: { next } } : {}),
         }
     },
@@ -300,23 +292,6 @@ const matchesLogWhere = (
         const includes = selected.some((item) => item === value)
         return filter.operator === 'in' ? includes : !includes
     })
-
-const mergeLogMeta = (contributions: readonly CapabilityContribution[]): { meta?: LogMeta } => {
-    const fidelity = contributions.flatMap(({ result }) => {
-        if (!isRecord(result.meta) || !Array.isArray(result.meta.fidelity)) return []
-        return result.meta.fidelity.filter(isHistoryFidelityBand)
-    })
-    return fidelity.length > 0 ? { meta: { fidelity } } : {}
-}
-
-const isHistoryFidelityBand = (value: unknown): value is HistoryFidelityBand =>
-    isRecord(value) &&
-    typeof value.preservation === 'string' &&
-    ['full', 'reduced', 'not-preserved'].includes(value.preservation) &&
-    Array.isArray(value.transformations) &&
-    isRecord(value.range) &&
-    typeof value.range.from === 'string' &&
-    typeof value.range.to === 'string'
 
 const normalizeLogQuery = (
     input: unknown,

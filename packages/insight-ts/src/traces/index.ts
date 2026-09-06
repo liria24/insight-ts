@@ -14,7 +14,6 @@ import type {
     CapabilityContract,
     CapabilityContribution,
     CapabilitySchema,
-    HistoryFidelityBand,
     HistoryMaterializer,
     InsightCursor,
     QueryQuality,
@@ -88,9 +87,7 @@ export interface TraceData {
     traces: readonly TraceRecord[]
 }
 
-export interface TraceMeta {
-    fidelity?: readonly HistoryFidelityBand[]
-}
+export type TraceMeta = Record<never, never>
 
 export interface TraceQuery {
     cursor?: InsightCursor
@@ -205,11 +202,6 @@ const traceContract: TraceContract = {
                       ),
                   }),
             data: { traces: merged.records },
-            ...(single
-                ? single.result.meta
-                    ? { meta: single.result.meta }
-                    : {}
-                : mergeTraceMeta(contributions)),
             ...(next ? { pagination: { next } } : {}),
         }
     },
@@ -335,23 +327,6 @@ const matchesTraceWhere = (
         if (filter.operator === 'lt') return value < filter.value
         return value <= filter.value
     })
-
-const mergeTraceMeta = (contributions: readonly CapabilityContribution[]): { meta?: TraceMeta } => {
-    const fidelity = contributions.flatMap(({ result }) => {
-        if (!isRecord(result.meta) || !Array.isArray(result.meta.fidelity)) return []
-        return result.meta.fidelity.filter(isHistoryFidelityBand)
-    })
-    return fidelity.length > 0 ? { meta: { fidelity } } : {}
-}
-
-const isHistoryFidelityBand = (value: unknown): value is HistoryFidelityBand =>
-    isRecord(value) &&
-    typeof value.preservation === 'string' &&
-    ['full', 'reduced', 'not-preserved'].includes(value.preservation) &&
-    Array.isArray(value.transformations) &&
-    isRecord(value.range) &&
-    typeof value.range.from === 'string' &&
-    typeof value.range.to === 'string'
 
 const normalizeTraceQuery = (
     input: unknown,

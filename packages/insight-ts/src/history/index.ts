@@ -5,11 +5,8 @@ import { normalizeTimeRange, type TimeRange } from '../core/time.ts'
 import type {
     AdapterExecutionResult,
     HistoryExtension,
-    HistoryFidelity,
-    HistoryFidelityBand,
     HistoryRuntime,
     HistoryRuntimeContext,
-    HistoryTransformation,
     InstrumentationSpan,
     QueryExecutionOptions,
     QueryQuality,
@@ -31,11 +28,10 @@ export interface HistoryCoverage {
 export interface HistorySegment extends HistoryCoverage, HistoryTarget {
     data?: unknown
     empty?: boolean
-    fidelity: HistoryFidelity
     meta?: object
     observedAt: string
     quality?: QueryQuality
-    schemaVersion: 2
+    schemaVersion: 3
     sortKey: string
 }
 
@@ -60,42 +56,13 @@ export interface HistoryRepository {
     ): Promise<void>
 }
 
-export interface HistoryReductionContext extends HistoryTarget {
-    range: TimeRange
-}
-
-export type HistoryReduction =
-    | { kind: 'sample'; rate: number }
-    | {
-          id: string
-          kind: 'filter'
-          test(item: unknown, context: HistoryReductionContext): boolean
-      }
-    | { kind: 'truncate'; limit: number }
-    | {
-          id: string
-          kind: 'custom'
-          transform(
-              items: readonly unknown[],
-              context: HistoryReductionContext,
-          ): Promise<readonly unknown[]> | readonly unknown[]
-      }
-
-export interface HistoryPolicy {
-    capability?: string
-    range?: TimeRange
-    scope?: string
-    transformations: readonly HistoryReduction[]
-}
-
 export interface HistorySelection {
     capabilities?: readonly string[]
     scopes?: readonly string[]
 }
 
 export interface HistoryController {
-    compact(options: { range: TimeRange } & HistorySelection): Promise<{ compacted: number }>
-    expire(options?: { before?: string } & HistorySelection): Promise<{ deleted: number }>
+    expire(options: { before: string } & HistorySelection): Promise<{ deleted: number }>
     sync(
         options: { range: TimeRange } & HistorySelection,
     ): Promise<{ fetched: number; skipped: number }>
@@ -103,10 +70,8 @@ export interface HistoryController {
 
 export interface HistoryOptions extends HistorySelection {
     maxPages?: number
-    policies?: readonly HistoryPolicy[]
     readSize?: number
     repository: HistoryRepository
-    retention?: { maxAgeMs: number }
 }
 
 export const createHistory = (options: HistoryOptions): HistoryExtension<HistoryController> => ({
@@ -129,9 +94,6 @@ class HistoryEngine implements HistoryRuntime<HistoryController> {
             (source) => source.definition.materialize && this.#enabled(source),
         )
         this.#validateSelections(options)
-        if (options.retention && !(options.retention.maxAgeMs > 0)) {
-            throw new TypeError('History retention maxAgeMs must be positive')
-        }
     }
 
     handles(source: RuntimeSource, query: unknown): boolean {
@@ -191,55 +153,34 @@ class HistoryEngine implements HistoryRuntime<HistoryController> {
                 ? { segments: await this.#readAll(target, normalized) }
                 : await this.#read(target, normalized, limit, cursor)
         const segments = validSegments(page.segments, target)
+        const stored = segments.map(({ meta, range: segmentRange }) => ({
+            ...(meta ? { meta } : {}),
+            range: segmentRange,
+        }))
+        if (materializer.isCompatible && !materializer.isCompatible(input, stored)) {
+            return live()
+        }
         const items = segments.flatMap((segment) =>
             segment.empty || segment.data === undefined ? [] : [segment.data],
         )
-        const materialized = materializer.materialize(input, items)
-        const fidelity = fidelityBands(segments, normalized)
+        const materialized = materializer.materialize(input, items, stored)
         const currentCoverage =
             gaps.length === 0 ? coverage : await this.#coverage(target, normalized)
-        const remaining = uncoveredRanges(normalized, currentCoverage).map((missing) => ({
-            preservation: 'not-preserved' as const,
-            range: missing,
-            transformations: [],
-        }))
+        const incomplete = uncoveredRanges(normalized, currentCoverage).length > 0
         const quality = mergeQuality([
             ...segments.map(({ quality: value }) => value),
             materialized.quality,
-            ...(remaining.length > 0 ? [{ partial: true }] : []),
+            ...(incomplete ? [{ partial: true }] : []),
         ])
         return {
             ...materialized,
-            meta: {
-                ...materialized.meta,
-                fidelity: [...fidelity, ...remaining],
-            },
             ...(page.next ? { nativeCursor: encodeCursor(page.next, target) } : {}),
             ...(quality ? { quality } : {}),
         }
     }
 
-    async compact(
-        options: { range: TimeRange } & HistorySelection,
-    ): Promise<{ compacted: number }> {
-        const range = normalizeTimeRange(options.range)
-        let compacted = 0
-        for (const source of this.#select(options)) {
-            const target = historyTarget(source)
-            const segments = await this.#readAll(target, range)
-            if (segments.length === 0) continue
-            await this.#replace(target, range, dedupeSegments(segments))
-            compacted += 1
-        }
-        return { compacted }
-    }
-
-    async expire(
-        options: { before?: string } & HistorySelection = {},
-    ): Promise<{ deleted: number }> {
-        const before = options.before
-            ? normalizeTimeRange({ from: epoch, to: options.before }).to
-            : this.#retentionBoundary()
+    async expire(options: { before: string } & HistorySelection): Promise<{ deleted: number }> {
+        const before = normalizeTimeRange({ from: epoch, to: options.before }).to
         const range = { from: epoch, to: before }
         let deleted = 0
         for (const source of this.#select(options)) {
@@ -273,6 +214,7 @@ class HistoryEngine implements HistoryRuntime<HistoryController> {
         const items = new Map<string, unknown>()
         let quality: QueryQuality | undefined
         let meta: object | undefined
+        let provisionalFrom: string | undefined
         let page = 0
         let previousCursor: string | undefined
         while (true) {
@@ -289,6 +231,10 @@ class HistoryEngine implements HistoryRuntime<HistoryController> {
             }
             quality = mergeQuality([quality, result.quality])
             meta = result.meta ?? meta
+            const boundary = provisionalBoundary(result.meta)
+            if (boundary && (!provisionalFrom || boundary < provisionalFrom)) {
+                provisionalFrom = boundary
+            }
             if (!result.nativeCursor) break
             if (!materializer.continue || result.nativeCursor === previousCursor) {
                 throw new InsightError(
@@ -302,27 +248,36 @@ class HistoryEngine implements HistoryRuntime<HistoryController> {
         const sorted = [...items.values()].toSorted((left, right) =>
             materializer.sortKey(right).localeCompare(materializer.sortKey(left)),
         )
-        const reduced = await applyReductions(
-            sorted,
-            this.#reductions(target, range),
-            { ...target, range },
-            (item, index) => materializer.itemId(item, index),
-        )
+        if (provisionalFrom && provisionalFrom > range.from && provisionalFrom < range.to) {
+            await this.#capturePartition(
+                source,
+                { from: range.from, to: provisionalFrom },
+                span,
+                execution,
+            )
+            await this.#capturePartition(
+                source,
+                { from: provisionalFrom, to: range.to },
+                span,
+                execution,
+            )
+            return
+        }
         const observedAt = this.#context.now().toISOString()
-        const provisional = isProvisional(quality, meta, range)
-        const segments = reduced.items.map((data, index) => {
+        const provisional = provisionalFrom !== undefined && provisionalFrom < range.to
+        const storedMeta = withProvisionalBoundary(meta, provisionalFrom)
+        const segments = sorted.map((data, index) => {
             const id = materializer.itemId(data, index)
             return {
                 ...target,
                 data,
-                fidelity: reduced.fidelity,
                 id: segmentId(target, range, id),
-                ...(meta ? { meta } : {}),
+                ...(storedMeta ? { meta: storedMeta } : {}),
                 observedAt,
                 ...(provisional ? { provisional: true } : {}),
                 ...(quality ? { quality } : {}),
                 range,
-                schemaVersion: 2 as const,
+                schemaVersion: 3 as const,
                 sortKey: materializer.sortKey(data),
             }
         })
@@ -334,7 +289,7 @@ class HistoryEngine implements HistoryRuntime<HistoryController> {
             range,
             segments.length > 0
                 ? segments
-                : [emptySegment(target, range, observedAt, reduced.fidelity, quality, provisional)],
+                : [emptySegment(target, range, observedAt, storedMeta, quality, provisional)],
         )
     }
 
@@ -395,27 +350,10 @@ class HistoryEngine implements HistoryRuntime<HistoryController> {
         throw new InsightError('HISTORY_CORRUPT', 'History repository exceeded the page limit')
     }
 
-    #reductions(target: HistoryTarget, range: TimeRange): readonly HistoryReduction[] {
-        return (this.#options.policies ?? []).flatMap((policy) =>
-            policyMatches(policy, target, range) ? policy.transformations : [],
-        )
-    }
-
     #replace(target: HistoryTarget, range: TimeRange, segments: readonly HistorySegment[]) {
         return this.#instrument('insight.history.write', historyAttributes(target), () =>
             this.#options.repository.replace({ ...target, range }, segments),
         )
-    }
-
-    #retentionBoundary(): string {
-        const maxAgeMs = this.#options.retention?.maxAgeMs
-        if (!maxAgeMs) {
-            throw new InsightError(
-                'INVALID_QUERY',
-                'History expire requires before or retention.maxAgeMs',
-            )
-        }
-        return new Date(this.#context.now().valueOf() - maxAgeMs).toISOString()
     }
 
     #select(selection: HistorySelection): RuntimeSource[] {
@@ -429,14 +367,7 @@ class HistoryEngine implements HistoryRuntime<HistoryController> {
     }
 
     #split(source: RuntimeSource, range: TimeRange): TimeRange[] {
-        const target = historyTarget(source)
-        const boundaries = (this.#options.policies ?? [])
-            .filter((policy) => policyMatches(policy, target, range) && policy.range)
-            .flatMap(({ range: policyRange }) => {
-                const normalized = normalizeTimeRange(policyRange!)
-                return [normalized.from, normalized.to]
-            })
-            .filter((value) => value > range.from && value < range.to)
+        const boundaries: string[] = []
         const partitionMs = source.definition.materialize?.partitionMs
         if (partitionMs !== undefined) {
             positiveInteger(partitionMs, 'History partitionMs')
@@ -480,47 +411,6 @@ const noopSpan: InstrumentationSpan = {
     setAttribute: () => undefined,
 }
 
-async function applyReductions(
-    input: readonly unknown[],
-    reductions: readonly HistoryReduction[],
-    context: HistoryReductionContext,
-    itemId: (item: unknown, index: number) => string,
-): Promise<{ fidelity: HistoryFidelity; items: readonly unknown[] }> {
-    let items = input
-    const transformations: HistoryTransformation[] = []
-    for (const reduction of reductions) {
-        if (reduction.kind === 'sample') {
-            if (!(reduction.rate > 0 && reduction.rate <= 1)) {
-                throw new InsightError('INVALID_QUERY', 'History sample rate must be in (0, 1]')
-            }
-            items = items.filter((item, index) => sampled(itemId(item, index), reduction.rate))
-            transformations.push({ kind: 'sample', rate: reduction.rate })
-        } else if (reduction.kind === 'filter') {
-            items = items.filter((item) => reduction.test(item, context))
-            transformations.push({ id: reduction.id, kind: 'filter' })
-        } else if (reduction.kind === 'truncate') {
-            if (!Number.isInteger(reduction.limit) || reduction.limit < 0) {
-                throw new InsightError(
-                    'INVALID_QUERY',
-                    'History truncate limit must be non-negative',
-                )
-            }
-            items = items.slice(0, reduction.limit)
-            transformations.push({ kind: 'truncate', limit: reduction.limit })
-        } else {
-            items = await reduction.transform(items, context)
-            transformations.push({ id: reduction.id, kind: 'custom' })
-        }
-    }
-    return {
-        fidelity: {
-            preservation: transformations.length === 0 ? 'full' : 'reduced',
-            transformations,
-        },
-        items,
-    }
-}
-
 function uncoveredRanges(requested: TimeRange, coverage: readonly HistoryCoverage[]): TimeRange[] {
     const complete = coverage
         .filter(({ provisional }) => !provisional)
@@ -544,12 +434,11 @@ const validSegments = (
 ): HistorySegment[] =>
     segments.map((segment) => {
         if (
-            segment.schemaVersion !== 2 ||
+            segment.schemaVersion !== 3 ||
             segment.scope !== target.scope ||
             segment.capability !== target.capability ||
             segment.adapter !== target.adapter ||
-            (!segment.empty && segment.data === undefined) ||
-            !validFidelity(segment.fidelity)
+            (!segment.empty && segment.data === undefined)
         ) {
             throw new InsightError(
                 'HISTORY_CORRUPT',
@@ -559,45 +448,25 @@ const validSegments = (
         return segment
     })
 
-const fidelityBands = (
-    segments: readonly HistorySegment[],
-    range: TimeRange,
-): HistoryFidelityBand[] => {
-    const bands = new Map<string, HistoryFidelityBand>()
-    for (const segment of segments) {
-        const overlap = intersection(range, segment.range)
-        if (!overlap) continue
-        const band = { ...segment.fidelity, range: overlap }
-        bands.set(JSON.stringify(band), band)
-    }
-    return [...bands.values()].toSorted((left, right) =>
-        left.range.from.localeCompare(right.range.from),
-    )
-}
-
 const emptySegment = (
     target: HistoryTarget,
     range: TimeRange,
     observedAt: string,
-    fidelity: HistoryFidelity,
+    meta: object | undefined,
     quality: QueryQuality | undefined,
     provisional: boolean,
 ): HistorySegment => ({
     ...target,
     empty: true,
-    fidelity,
     id: segmentId(target, range, 'empty'),
+    ...(meta ? { meta } : {}),
     observedAt,
     ...(provisional ? { provisional: true } : {}),
     ...(quality ? { quality } : {}),
     range,
-    schemaVersion: 2,
+    schemaVersion: 3,
     sortKey: '',
 })
-
-const dedupeSegments = (segments: readonly HistorySegment[]): HistorySegment[] => [
-    ...new Map(segments.map((segment) => [segment.id, segment])).values(),
-]
 
 const historyTarget = (source: RuntimeSource): HistoryTarget => ({
     adapter: source.id,
@@ -611,24 +480,27 @@ const historyAttributes = (target: HistoryTarget) => ({
     'insight.scope': target.scope,
 })
 
-const policyMatches = (policy: HistoryPolicy, target: HistoryTarget, range: TimeRange): boolean =>
-    (!policy.scope || policy.scope === target.scope) &&
-    (!policy.capability || policy.capability === target.capability) &&
-    (!policy.range || intersection(normalizeTimeRange(policy.range), range) !== undefined)
-
-const isProvisional = (
-    quality: QueryQuality | undefined,
-    meta: object | undefined,
-    range: TimeRange,
-): boolean => {
+const provisionalBoundary = (meta: object | undefined): string | undefined => {
     const freshness = isRecord(meta) && isRecord(meta.freshness) ? meta.freshness : undefined
-    return Boolean(
-        quality?.partial ||
-        (freshness &&
-            typeof freshness.incompleteFrom === 'string' &&
-            freshness.incompleteFrom < range.to &&
-            freshness.completeThrough !== range.to),
-    )
+    if (!freshness || freshness.provisionalFrom === undefined) return undefined
+    if (typeof freshness.provisionalFrom !== 'string') {
+        throw new InsightError('HISTORY_CORRUPT', 'History adapter returned invalid freshness')
+    }
+    const boundary = new Date(freshness.provisionalFrom)
+    if (!Number.isFinite(boundary.valueOf())) {
+        throw new InsightError('HISTORY_CORRUPT', 'History adapter returned invalid freshness')
+    }
+    return boundary.toISOString()
+}
+
+const withProvisionalBoundary = (
+    meta: object | undefined,
+    provisionalFrom: string | undefined,
+): object | undefined => {
+    if (!provisionalFrom) return meta
+    const record = isRecord(meta) ? meta : {}
+    const freshness = isRecord(record.freshness) ? record.freshness : {}
+    return { ...record, freshness: { ...freshness, provisionalFrom } }
 }
 
 const mergeQuality = (values: readonly (QueryQuality | undefined)[]): QueryQuality | undefined => {
@@ -694,23 +566,10 @@ const sameTarget = (value: unknown, target: HistoryTarget): boolean =>
 const segmentId = (target: HistoryTarget, range: TimeRange, item: string): string =>
     `${target.scope}:${target.adapter}:${range.from}:${range.to}:${item}`
 
-const sampled = (value: string, rate: number): boolean => {
-    let hash = 2_166_136_261
-    for (let index = 0; index < value.length; index += 1) {
-        hash = Math.imul(hash ^ value.charCodeAt(index), 16_777_619)
-    }
-    return (hash >>> 0) / 0x1_0000_0000 < rate
-}
-
 const positiveInteger = (value: number, name: string): number => {
     if (!Number.isInteger(value) || value <= 0) throw new TypeError(`${name} must be positive`)
     return value
 }
-
-const validFidelity = (value: unknown): value is HistoryFidelity =>
-    isRecord(value) &&
-    ['full', 'reduced', 'not-preserved'].includes(String(value.preservation)) &&
-    Array.isArray(value.transformations)
 
 const intersection = (left: TimeRange, right: TimeRange): TimeRange | undefined => {
     const from = left.from > right.from ? left.from : right.from
@@ -724,5 +583,3 @@ const isRecord = (value: unknown): value is Record<string, unknown> =>
 const invalidCursor = () => new InsightError('INVALID_QUERY', 'Invalid History cursor')
 const cursorPrefix = 'history:v2:'
 const epoch = new Date(0).toISOString()
-
-export type { HistoryFidelity, HistoryFidelityBand, HistoryTransformation }

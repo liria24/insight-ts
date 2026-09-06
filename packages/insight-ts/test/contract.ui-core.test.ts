@@ -12,16 +12,6 @@ import {
 const data: MetricQueryResult<'pageViews' | 'visits', 'country'> = {
     aggregate: { pageViews: 25, visits: 17 },
     meta: {
-        fidelity: [
-            {
-                preservation: 'reduced',
-                range: {
-                    from: '2026-08-01T00:00:00.000Z',
-                    to: '2026-08-02T00:00:00.000Z',
-                },
-                transformations: [{ kind: 'sample', rate: 0.5 }],
-            },
-        ],
         quality: { partial: true, sampled: true, sampleRate: 0.5 },
         queriedAt: '2026-08-03T00:00:00.000Z',
     },
@@ -40,7 +30,7 @@ const data: MetricQueryResult<'pageViews' | 'visits', 'country'> = {
 }
 
 describe('UI Core contract', () => {
-    it('builds renderer-independent models while preserving Metric order and Fidelity', () => {
+    it('builds renderer-independent models while preserving Metric order', () => {
         const series = createSeriesModel(data, {
             colors: ['red', 'blue'],
             yAxis: { domain: { min: 0 } },
@@ -51,10 +41,6 @@ describe('UI Core contract', () => {
         expect(createStatModel(data)).toEqual({ metric: 'pageViews', value: 25 })
         expect(series.series.map(({ metric }) => metric)).toEqual(['pageViews', 'visits'])
         expect(series.points.map(({ dimensions }) => dimensions?.country)).toEqual(['JP', 'US'])
-        expect(series.fidelityBands[0]).toMatchObject({
-            from: Date.parse('2026-08-01T00:00:00.000Z'),
-            preservation: 'reduced',
-        })
         expect(breakdown).toMatchObject({
             dimensions: ['country'],
             metrics: ['pageViews', 'visits'],

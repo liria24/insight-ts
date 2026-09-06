@@ -108,10 +108,9 @@ const segment = (
 ): HistorySegment => ({
     ...selected,
     data: { id },
-    fidelity: { preservation: 'full', transformations: [] },
     id,
     observedAt: range.to,
     range,
-    schemaVersion: 2,
+    schemaVersion: 3,
     sortKey,
 })

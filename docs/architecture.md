@@ -134,8 +134,10 @@ aggregation describe semantics, not presentation.
 
 History serves a Metric query only when it can reconstruct every requested projection. It adds
 additive values and recomputes ratios from supporting Metrics; exact captured rows may retain
-non-additive values. A query that would require an unsafe rollup executes wholly against the live
-Provider.
+non-additive values. Stored data must match the capture grain and bucket timezone, and a coarser
+capture never answers a finer query. Non-UTC row captures currently serve only their exact grain;
+safe UTC rollups may use a coarser grain. A query that would require an unsafe or temporally
+incompatible reconstruction executes wholly against the live Provider.
 
 ### Logs and Traces
 
@@ -190,17 +192,18 @@ materializers define capture queries, continuation, stable item identity, range 
 read behavior, reconstruction, and optional partition-size hints.
 
 The Engine owns coverage gaps, partition planning, complete page draining, deterministic segment
-identity, live/History composition, reduction, range-scoped Fidelity, bounded orchestration,
-retention, and idempotent lifecycle operations. Coverage is committed only after a partition's pages
-drain. Complete empty, provisional, missing, and reduced ranges remain distinct. Provider Quality
-and History Fidelity are separate metadata.
+identity, live/History composition, bounded orchestration, explicit expiration, and idempotent
+lifecycle operations. Coverage is committed only after a partition's pages drain. Complete empty,
+provisional, and missing ranges remain distinct. A Provider-independent `provisionalFrom` boundary
+splits stable coverage from a refreshable suffix; Provider Quality remains independent, so stable
+partial results are not recaptured.
 
 A `HistoryRepository` implements bounded `coverage`, `read`, `replace`, and `delete` operations.
 Repositories isolate Scope, capability, and adapter targets and store opaque canonical items without
 interpreting or silently reducing them. The generic contract does not prescribe storage keys or an
 indexing strategy.
 
-Nitro mounts History at `storage.insight` or `devStorage.insight`. Its private schema-v3 layout uses
+Nitro mounts History at `storage.insight` or `devStorage.insight`. Its private schema-v4 layout uses
 a per-target partition index so range operations enumerate only overlapping partitions. Stored
 layout is private and has no alpha migration guarantee. Nitro Tasks may invoke only
 `insight.history.sync()` and are registered only when both History tasks and Nitro experimental task
