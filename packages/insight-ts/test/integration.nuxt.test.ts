@@ -33,6 +33,7 @@ describe('Nitro and Nuxt integration', () => {
         expect(source).toContain('runtimeConfig.cloudflare')
         expect(source).not.toContain('runtimeConfig.insight')
         expect(source).toContain('cloudflare({')
+        expect(source).toContain('requires a single-Scope server config')
         expect(source).not.toContain('CLOUDFLARE_API_TOKEN')
 
         const types = createServerRuntimeTypeTemplate({
@@ -40,7 +41,9 @@ describe('Nitro and Nuxt integration', () => {
             history: false,
         })
         expect(types).toContain('ReturnType<typeof cloudflare<')
+        expect(types).toContain('ServerConfig extends { readonly providers: infer Providers')
         expect(types).toContain('InsightClient<RuntimeConfig>')
+        expect(types).not.toContain("ServerConfig['providers']")
         expect(types).not.toContain('any')
     })
 
@@ -62,6 +65,19 @@ describe('Nitro and Nuxt integration', () => {
         expect(useInsight()).toBe(first)
         expect(useRuntimeConfig).toHaveBeenCalledOnce()
         expect(cloudflare).toHaveBeenCalledOnce()
+        expect(createInsight).toHaveBeenCalledOnce()
+
+        await expect(
+            evaluateRuntime(
+                createServerRuntimeTemplate({ cloudflareWebAnalytics: true, history: false }),
+                {
+                    cloudflare,
+                    config: { scopes: { production: [] } },
+                    createInsight,
+                    useRuntimeConfig,
+                },
+            ),
+        ).rejects.toThrow('requires a single-Scope server config')
         expect(createInsight).toHaveBeenCalledOnce()
 
         const scopedCreateInsight = vi.fn<(options: unknown) => unknown>((options) => options)

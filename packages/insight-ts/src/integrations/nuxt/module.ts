@@ -100,13 +100,16 @@ export const createServerRuntimeTemplate = ({
     const historySetup = history
         ? `, history: createHistory({ repository: createNitroHistoryRepository(useStorage('insight'))${history.capabilities ? `, capabilities: ${JSON.stringify(history.capabilities)}` : ''}${history.scopes ? `, scopes: ${JSON.stringify(history.scopes)}` : ''} })`
         : ''
+    const configValidation = cloudflareWebAnalytics
+        ? `if (!Array.isArray(config.providers)) throw new TypeError('Nuxt Cloudflare Web Analytics auto-configuration requires a single-Scope server config; configure Cloudflare in server/insight.config.ts when using scopes')\n\n`
+        : ''
     const providerSetup = cloudflareWebAnalytics
         ? `const runtimeConfig = useRuntimeConfig()\n  const cloudflareConfig = runtimeConfig.cloudflare ?? {}\n  const providers = [...config.providers, cloudflare({\n    accountId: cloudflareConfig.accountId ?? '',\n    apiToken: cloudflareConfig.apiToken ?? '',\n    webAnalytics: {\n      host: cloudflareConfig.host,\n      siteTag: cloudflareConfig.siteTag ?? '',\n    },\n  })]`
         : 'const providers = config.providers'
     return `import { createInsight } from 'insight-ts'
 ${historyImports}${cloudflareImports}import config from '#insight/server-config'
 
-let instance
+${configValidation}let instance
 export const useInsight = () => {
   if (instance) return instance
   ${providerSetup}
@@ -129,14 +132,17 @@ export const createServerRuntimeTypeTemplate = ({
     const cloudflareProvider = cloudflareWebAnalytics
         ? `type CloudflareProvider = ReturnType<typeof cloudflare<{ readonly webAnalytics: { readonly siteTag: string } }>>`
         : ''
-    const providers = cloudflareWebAnalytics
-        ? "readonly [...ServerConfig['providers'], CloudflareProvider]"
-        : "ServerConfig['providers']"
+    const coreTypes = cloudflareWebAnalytics
+        ? 'HistoryExtension, InsightClient, ProviderDefinition'
+        : 'HistoryExtension, InsightClient'
+    const runtimeConfig = cloudflareWebAnalytics
+        ? "ServerConfig extends { readonly providers: infer Providers extends readonly ProviderDefinition[] } ? Omit<ServerConfig, 'providers'> & { readonly providers: readonly [...Providers, CloudflareProvider] } : never"
+        : 'ServerConfig'
     return `${serverConfig}
-${cloudflareImport}import type { HistoryExtension, InsightClient } from 'insight-ts'
+${cloudflareImport}import type { ${coreTypes} } from 'insight-ts'
 
 ${cloudflareProvider}
-type RuntimeConfig = Omit<ServerConfig, 'providers'> & { readonly providers: ${providers} }${history ? ' & { history: HistoryExtension }' : ''}
+type RuntimeConfig = (${runtimeConfig})${history ? ' & { history: HistoryExtension }' : ''}
 export declare const useInsight: () => InsightClient<RuntimeConfig>
 `
 }

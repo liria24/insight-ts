@@ -194,10 +194,12 @@ support are explicitly enabled.
 
 ## Integrations and UI
 
-Nuxt uses Nuxt Kit and documented Nuxt/Nitro hooks. Built-in Provider enablement and History
-selection belong in `nuxt.config.ts`; credentials and custom Provider construction remain in private
-runtime configuration. Built-in credentials use top-level `runtimeConfig.<provider>` keys. Nuxt
-does not scan UI source, inject UI CSS, import Vue UI, control Vapor, or serialize secrets.
+Nuxt uses Nuxt Kit and documented Nuxt/Nitro hooks. Built-in Provider shortcuts and History
+selection belong in `nuxt.config.ts`; Provider shortcuts append only to a single-Scope
+`providers` configuration. Named Scopes construct Providers in `server/insight.config.ts`.
+Credentials remain in private runtime configuration under top-level `runtimeConfig.<provider>`
+keys. Nuxt does not scan UI source, inject UI CSS, import Vue UI, control Vapor, or serialize
+secrets.
 
 UI Core contains Metric result selection, transformations, formatting, domains, Quality notices,
 and table models without framework, DOM, or renderer APIs. Public UI accepts already queried data

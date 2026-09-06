@@ -635,7 +635,7 @@ function compileTelemetryFilter(
     }
     const type = typeof values[0]
     if (
-        !['boolean', 'number', 'string'].includes(type) ||
+        (type !== 'boolean' && type !== 'number' && type !== 'string') ||
         values.some((value) => typeof value !== type)
     ) {
         throw new InsightError(
@@ -651,19 +651,25 @@ function compileTelemetryFilter(
               : filter.operator === 'in'
                 ? 'in'
                 : filter.operator
-    return telemetryFilter(key, operation, values.length === 1 ? values[0]! : values.join(','))
+    return telemetryFilter(
+        key,
+        operation,
+        values.length === 1 ? values[0]! : values.join(','),
+        type,
+    )
 }
 
 function telemetryFilter(
     key: string,
     operation: string,
     value: boolean | number | string,
+    type?: TelemetryFilter['type'],
 ): TelemetryFilter {
-    const type = typeof value
-    if (type !== 'boolean' && type !== 'number' && type !== 'string') {
+    const inferred = typeof value
+    if (inferred !== 'boolean' && inferred !== 'number' && inferred !== 'string') {
         throw new TypeError('Cloudflare telemetry filters require scalar values')
     }
-    return { key, kind: 'filter', operation, type, value }
+    return { key, kind: 'filter', operation, type: type ?? inferred, value }
 }
 
 function logRecord(value: unknown): LogRecord {

@@ -57,7 +57,17 @@ describe('Cloudflare adapters', () => {
                     throw new TypeError('Expected a JSON request body')
                 const body = JSON.parse(init.body)
                 expect(body.variables.filter).toMatchObject({
-                    AND: [expect.objectContaining({ siteTag: 'site' }), { countryName: 'JP' }],
+                    AND: [
+                        expect.objectContaining({ siteTag: 'site' }),
+                        {
+                            AND: [
+                                { countryName: 'JP' },
+                                { countryName_in: ['JP', 'US'] },
+                                { countryName_neq: 'CA' },
+                                { countryName_notin: ['GB'] },
+                            ],
+                        },
+                    ],
                 })
                 expect(body.query).toContain('time: datetimeHour')
                 expect(body.query).toContain('path: requestPath')
@@ -98,7 +108,14 @@ describe('Cloudflare adapters', () => {
                 dimensions: ['path'],
                 metrics: ['pageViews', 'visits'],
                 time,
-                where: { country: 'JP' },
+                where: {
+                    country: {
+                        eq: 'JP',
+                        in: ['JP', 'US'],
+                        ne: 'CA',
+                        notIn: ['GB'],
+                    },
+                },
             }),
         }))
 
@@ -117,6 +134,15 @@ describe('Cloudflare adapters', () => {
             sampled: true,
             sampleRate: 0.25,
         })
+        expect(() =>
+            provider.adapters.webAnalytics.normalize({
+                metrics: ['visits'],
+                time,
+                // @ts-expect-error Web Analytics does not advertise contains
+                where: { country: { contains: 'JP' } },
+            }),
+        ).toThrow('does not support operator "contains"')
+        expect(fetcher).toHaveBeenCalledOnce()
     })
 
     it('forwards AbortSignal and does not expose activeUsers', async () => {
@@ -201,39 +227,61 @@ describe('Cloudflare adapters', () => {
                 })
             },
         )
-        const insight = createInsight({
-            providers: [
-                cloudflare({
-                    accountId: 'account',
-                    apiToken: 'token',
-                    workersObservability: { fetch: fetcher },
-                }),
-            ],
+        const provider = cloudflare({
+            accountId: 'account',
+            apiToken: 'token',
+            workersObservability: { fetch: fetcher },
         })
+        const insight = createInsight({ providers: [provider] })
+        const where = {
+            attributes: {
+                boolEq: true,
+                boolIn: { in: [true, false] },
+                boolNe: { ne: false },
+                boolNotIn: { notIn: [false, true] },
+                numberEq: 1,
+                numberIn: { in: [1, 2] },
+                numberNe: { ne: 2 },
+                numberNotIn: { notIn: [3, 4] },
+                textEq: 'one',
+                textIn: { in: ['one', 'two'] },
+                textNe: { ne: 'two' },
+                textNotIn: { notIn: ['three', 'four'] },
+            },
+            service: 'api',
+            severity: 'error',
+        } as const
         const first = await insight.query((q) => ({
-            logs: q.logs({
-                limit: 2,
-                time,
-                where: { service: 'api', severity: 'error' },
-            }),
+            logs: q.logs({ limit: 2, time, where }),
         }))
         const second = await insight.query((q) => ({
             logs: q.logs({
                 cursor: first.logs.meta.pagination!.next!,
                 limit: 2,
                 time,
-                where: { service: 'api', severity: 'error' },
+                where,
             }),
         }))
 
-        expect(recordBody(bodies[0]).parameters).toMatchObject({
-            filterCombination: 'and',
-            filters: [
-                { key: '$metadata.type', operation: 'eq', value: 'cf-worker-log' },
-                { key: '$metadata.service', operation: 'eq', value: 'api' },
-                { key: '$metadata.level', operation: 'eq', value: 'error' },
-            ],
-        })
+        const parameters = recordBody(recordBody(bodies[0]).parameters)
+        expect(parameters.filterCombination).toBe('and')
+        expectTelemetryFilters(parameters.filters, [
+            ['$metadata.type', 'eq', 'string', 'cf-worker-log'],
+            ['$metadata.service', 'eq', 'string', 'api'],
+            ['$metadata.level', 'eq', 'string', 'error'],
+            ['$metadata.boolEq', 'eq', 'boolean', true],
+            ['$metadata.boolIn', 'in', 'boolean', 'true,false'],
+            ['$metadata.boolNe', 'neq', 'boolean', false],
+            ['$metadata.boolNotIn', 'not_in', 'boolean', 'false,true'],
+            ['$metadata.numberEq', 'eq', 'number', 1],
+            ['$metadata.numberIn', 'in', 'number', '1,2'],
+            ['$metadata.numberNe', 'neq', 'number', 2],
+            ['$metadata.numberNotIn', 'not_in', 'number', '3,4'],
+            ['$metadata.textEq', 'eq', 'string', 'one'],
+            ['$metadata.textIn', 'in', 'string', 'one,two'],
+            ['$metadata.textNe', 'neq', 'string', 'two'],
+            ['$metadata.textNotIn', 'not_in', 'string', 'three,four'],
+        ])
         expect(bodies[1]).toMatchObject({ offset: 'event-2', offsetDirection: 'next' })
         expect(first.logs.data.logs[0]).toMatchObject({
             body: { message: 'failed' },
@@ -251,19 +299,48 @@ describe('Cloudflare adapters', () => {
         })
         expect(second.logs.data.logs.map(({ id }) => id)).toEqual(['event-3'])
         expect(second.logs.meta.pagination).toBeUndefined()
+
+        const source = provider.adapters.workersLogs
+        await expect(
+            source.execute(
+                source.normalize({
+                    time,
+                    where: { attributes: { mixed: { in: [1, 'two'] } } },
+                }),
+                {
+                    adapter: 'cloudflare.workersLogs',
+                    provider: provider.id,
+                    scope: 'default',
+                },
+            ),
+        ).rejects.toThrow('requires one scalar type')
+        expect(fetcher).toHaveBeenCalledTimes(2)
     })
 
     it('maps Workers trace summaries and canonical filters', async () => {
         const fetcher = vi.fn<(input: RequestInfo | URL, init?: RequestInit) => Promise<Response>>(
             async (_input, init) => {
                 const body = requestBody(init?.body)
-                expect(recordBody(body).parameters).toMatchObject({
-                    filters: [
-                        { key: '$metadata.traceDuration', operation: 'gte', value: 50 },
-                        { key: '$metadata.service', operation: 'eq', value: 'api' },
-                        { key: '$metadata.error', operation: 'exists' },
-                    ],
-                })
+                const parameters = recordBody(recordBody(body).parameters)
+                expectTelemetryFilters(parameters.filters, [
+                    ['$metadata.boolEq', 'eq', 'boolean', true],
+                    ['$metadata.boolIn', 'in', 'boolean', 'true,false'],
+                    ['$metadata.boolNe', 'neq', 'boolean', false],
+                    ['$metadata.boolNotIn', 'not_in', 'boolean', 'false,true'],
+                    ['$metadata.traceDuration', 'eq', 'number', 10],
+                    ['$metadata.traceDuration', 'gt', 'number', 30],
+                    ['$metadata.traceDuration', 'gte', 'number', 40],
+                    ['$metadata.traceDuration', 'in', 'number', '70,80'],
+                    ['$metadata.traceDuration', 'lt', 'number', 50],
+                    ['$metadata.traceDuration', 'lte', 'number', 60],
+                    ['$metadata.traceDuration', 'neq', 'number', 20],
+                    ['$metadata.traceDuration', 'not_in', 'number', '90,100'],
+                    ['$metadata.service', 'eq', 'string', 'api'],
+                    ['$metadata.service', 'in', 'string', 'api,jobs'],
+                    ['$metadata.service', 'neq', 'string', 'web'],
+                    ['$metadata.service', 'not_in', 'string', 'web'],
+                    ['$metadata.error', 'exists', 'string'],
+                ])
                 return Response.json({
                     result: {
                         run: { status: 'COMPLETED' },
@@ -284,20 +361,41 @@ describe('Cloudflare adapters', () => {
                 })
             },
         )
-        const insight = createInsight({
-            providers: [
-                cloudflare({
-                    accountId: 'account',
-                    apiToken: 'token',
-                    workersObservability: { fetch: fetcher },
-                }),
-            ],
+        const provider = cloudflare({
+            accountId: 'account',
+            apiToken: 'token',
+            workersObservability: { fetch: fetcher },
         })
+        const insight = createInsight({ providers: [provider] })
 
         const result = await insight.query((q) => ({
             traces: q.traces({
                 time,
-                where: { durationMs: { gte: 50 }, service: 'api', status: 'error' },
+                where: {
+                    attributes: {
+                        boolEq: true,
+                        boolIn: { in: [true, false] },
+                        boolNe: { ne: false },
+                        boolNotIn: { notIn: [false, true] },
+                    },
+                    durationMs: {
+                        eq: 10,
+                        gt: 30,
+                        gte: 40,
+                        in: [70, 80],
+                        lt: 50,
+                        lte: 60,
+                        ne: 20,
+                        notIn: [90, 100],
+                    },
+                    service: {
+                        eq: 'api',
+                        in: ['api', 'jobs'],
+                        ne: 'web',
+                        notIn: ['web'],
+                    },
+                    status: 'error',
+                },
             }),
         }))
 
@@ -311,6 +409,16 @@ describe('Cloudflare adapters', () => {
                 traceId: 'trace-1',
             }),
         ])
+
+        const source = provider.adapters.workersTraces
+        await expect(
+            source.execute(source.normalize({ time, where: { status: { in: ['ok', 'error'] } } }), {
+                adapter: 'cloudflare.workersTraces',
+                provider: provider.id,
+                scope: 'default',
+            }),
+        ).rejects.toThrow('supports only eq/ne ok/error')
+        expect(fetcher).toHaveBeenCalledOnce()
     })
 
     it('maps Workers telemetry calculations to canonical Metrics with Quality', async () => {
@@ -389,6 +497,50 @@ describe('Cloudflare adapters', () => {
         })
     })
 
+    it('translates the Analytics Engine name equality filter before SQL execution', async () => {
+        const fetcher = vi.fn<(input: RequestInfo | URL, init?: RequestInit) => Promise<Response>>(
+            async (_input, init) => {
+                expect(init?.body).toContain("blob1 = 'deploy\\'s'")
+                return Response.json({
+                    data: [
+                        {
+                            events: 2,
+                            sampleInterval: 1,
+                            time: '2026-08-01T00:00:00.000Z',
+                        },
+                    ],
+                })
+            },
+        )
+        const provider = cloudflare({
+            accountId: 'account',
+            apiToken: 'token',
+            analyticsEngine: { dataset: 'events', fetch: fetcher },
+        })
+        const source = provider.adapters.analyticsEngine
+
+        expect(() =>
+            source.normalize({
+                metrics: ['events'],
+                time,
+                // @ts-expect-error Analytics Engine advertises equality only
+                where: { name: { ne: 'deploy' } },
+            }),
+        ).toThrow('does not support operator "ne"')
+        expect(fetcher).not.toHaveBeenCalled()
+
+        const result = await source.execute(
+            source.normalize({ metrics: ['events'], time, where: { name: "deploy's" } }),
+            {
+                adapter: 'cloudflare.analyticsEngine',
+                provider: provider.id,
+                scope: 'default',
+            },
+        )
+        expect(result.data.values).toEqual({ events: 2 })
+        expect(fetcher).toHaveBeenCalledOnce()
+    })
+
     it('keeps Analytics Engine event and query capabilities independent', () => {
         const writeDataPoint =
             vi.fn<(point: { blobs?: string[]; doubles?: number[]; indexes?: string[] }) => void>()
@@ -409,4 +561,31 @@ const recordBody = (value: unknown): Record<string, unknown> => {
 const requestBody = (value: BodyInit | null | undefined): Record<string, unknown> => {
     if (typeof value !== 'string') throw new TypeError('Expected a JSON request body')
     return recordBody(JSON.parse(value))
+}
+
+type TelemetryFilterFixture = readonly [
+    key: string,
+    operation: string,
+    type: string,
+    value?: unknown,
+]
+
+const expectTelemetryFilters = (
+    actual: unknown,
+    fixtures: readonly TelemetryFilterFixture[],
+): void => {
+    expect(actual).toEqual(
+        expect.arrayContaining(
+            fixtures.map((fixture) => {
+                const [key, operation, type, value] = fixture
+                return expect.objectContaining({
+                    key,
+                    kind: 'filter',
+                    operation,
+                    type,
+                    ...(fixture.length === 4 ? { value } : {}),
+                })
+            }),
+        ),
+    )
 }

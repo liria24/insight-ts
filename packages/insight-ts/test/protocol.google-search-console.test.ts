@@ -47,9 +47,38 @@ describe('Google Search Console adapter', () => {
                     dataState: 'final',
                     dimensionFilterGroups: [
                         {
-                            filters: [
-                                { dimension: 'page', expression: '/docs', operator: 'contains' },
-                            ],
+                            filters: expect.arrayContaining([
+                                {
+                                    dimension: 'country',
+                                    expression: 'jpn',
+                                    operator: 'equals',
+                                },
+                                {
+                                    dimension: 'device',
+                                    expression: 'MOBILE',
+                                    operator: 'equals',
+                                },
+                                {
+                                    dimension: 'page',
+                                    expression: '/docs',
+                                    operator: 'contains',
+                                },
+                                {
+                                    dimension: 'page',
+                                    expression: '/docs/start',
+                                    operator: 'equals',
+                                },
+                                {
+                                    dimension: 'page',
+                                    expression: '/private',
+                                    operator: 'notEquals',
+                                },
+                                {
+                                    dimension: 'searchAppearance',
+                                    expression: 'AMP_BLUE_LINK',
+                                    operator: 'equals',
+                                },
+                            ]),
                             groupType: 'and',
                         },
                     ],
@@ -81,7 +110,12 @@ describe('Google Search Console adapter', () => {
                 dimensions: ['query'],
                 metrics: ['clicks', 'impressions', 'ctr', 'averagePosition'],
                 time,
-                where: { page: { contains: '/docs' } },
+                where: {
+                    country: 'jpn',
+                    device: 'MOBILE',
+                    page: { contains: '/docs', eq: '/docs/start', ne: '/private' },
+                    searchAppearance: 'AMP_BLUE_LINK',
+                },
             }),
         }))
 
@@ -123,14 +157,15 @@ describe('Google Search Console adapter', () => {
             scope: 'default',
             signal: controller.signal,
         })
-        const rejectsContains = () =>
+        expect(() =>
             source.normalize({
                 metrics: ['clicks'],
                 time,
                 // @ts-expect-error country only exposes equality
                 where: { country: { contains: 'jpn' } },
-            })
-        void rejectsContains
+            }),
+        ).toThrow('does not support operator "contains"')
+        expect(fetcher).toHaveBeenCalledOnce()
     })
 
     it('keeps execution limits advanced and separate from canonical query limits', async () => {
