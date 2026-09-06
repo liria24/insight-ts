@@ -71,11 +71,20 @@ describe('Cloudflare adapters', () => {
                 })
                 expect(body.query).toContain('time: datetimeHour')
                 expect(body.query).toContain('path: requestPath')
+                expect(body.query).toContain('aggregate: rumPageloadEventsAdaptiveGroups')
+                expect(body.query).toContain('rows: rumPageloadEventsAdaptiveGroups')
                 return Response.json({
                     data: {
                         viewer: {
                             accounts: [
                                 {
+                                    aggregate: [
+                                        {
+                                            avg: { sampleInterval: 2 },
+                                            count: 120,
+                                            sum: { visits: 80 },
+                                        },
+                                    ],
                                     rows: [
                                         {
                                             avg: { sampleInterval: 4 },
@@ -118,7 +127,7 @@ describe('Cloudflare adapters', () => {
         })
 
         expect(traffic).toMatchObject({
-            aggregate: { pageViews: 12, visits: 8 },
+            aggregate: { pageViews: 120, visits: 80 },
             rows: [
                 {
                     dimensions: { path: '/docs' },
@@ -147,7 +156,10 @@ describe('Cloudflare adapters', () => {
         const fetcher = vi.fn<(input: RequestInfo | URL, init?: RequestInit) => Promise<Response>>(
             async (_input, init) => {
                 expect(init?.signal).toBe(controller.signal)
-                return Response.json({ data: { viewer: { accounts: [{ rows: [] }] } } })
+                const body = requestBody(init?.body)
+                expect(body.query).toContain('aggregate: rumPageloadEventsAdaptiveGroups')
+                expect(body.query).not.toContain('rows: rumPageloadEventsAdaptiveGroups')
+                return Response.json({ data: { viewer: { accounts: [{ aggregate: [] }] } } })
             },
         )
         const source = cloudflare({
@@ -156,7 +168,7 @@ describe('Cloudflare adapters', () => {
             webAnalytics: { fetch: fetcher, siteTag: 'site' },
         }).adapters.webAnalytics
         const controller = new AbortController()
-        const query = source.normalize({ metrics: ['visits'], time })
+        const query = source.normalize({ metrics: ['visits'], projection: 'aggregate', time })
         await source.execute(query, {
             adapter: 'cloudflare.webAnalytics',
             provider: 'cloudflare',
@@ -170,6 +182,62 @@ describe('Cloudflare adapters', () => {
                 time,
             })
         void rejectsActiveUsers
+    })
+
+    it('requests only grouped Web Analytics rows for a rows projection', async () => {
+        const fetcher = vi.fn<(input: RequestInfo | URL, init?: RequestInit) => Promise<Response>>(
+            async (_input, init) => {
+                const body = requestBody(init?.body)
+                expect(body.query).not.toContain('aggregate: rumPageloadEventsAdaptiveGroups')
+                expect(body.query).toContain('rows: rumPageloadEventsAdaptiveGroups')
+                return Response.json({
+                    data: {
+                        viewer: {
+                            accounts: [
+                                {
+                                    rows: [
+                                        {
+                                            avg: { sampleInterval: 1 },
+                                            count: 4,
+                                            dimensions: {
+                                                path: '/docs',
+                                                time: '2026-08-01T10:00:00Z',
+                                            },
+                                        },
+                                    ],
+                                },
+                            ],
+                        },
+                    },
+                })
+            },
+        )
+        const insight = createInsight({
+            providers: [
+                cloudflare({
+                    accountId: 'account',
+                    apiToken: 'token',
+                    webAnalytics: { fetch: fetcher, siteTag: 'site' },
+                }),
+            ],
+        })
+
+        const result = await insight.metrics({
+            dimensions: ['path'],
+            metrics: ['pageViews'],
+            projection: 'rows',
+            time,
+        })
+
+        expect(result.rows).toEqual([
+            {
+                dimensions: { path: '/docs' },
+                time: '2026-08-01T10:00:00.000Z',
+                values: { pageViews: 4 },
+            },
+        ])
+        expect(result).not.toHaveProperty('aggregate')
+        expect(fetcher).toHaveBeenCalledOnce()
     })
 
     it('maps Workers Logs filters, sampling, and native offsets behind opaque cursors', async () => {
@@ -419,6 +487,7 @@ describe('Cloudflare adapters', () => {
                 const body = requestBody(init?.body)
                 expect(body).toMatchObject({
                     chart: true,
+                    chartType: 'timeseries_and_aggregate',
                     granularity: 24,
                     parameters: {
                         calculations: [
@@ -487,6 +556,130 @@ describe('Cloudflare adapters', () => {
         })
     })
 
+    it('maps canonical grains to Workers telemetry bucket counts for rows-only queries', async () => {
+        const bodies: Record<string, unknown>[] = []
+        const fetcher = vi.fn<(input: RequestInfo | URL, init?: RequestInit) => Promise<Response>>(
+            async (_input, init) => {
+                const body = requestBody(init?.body)
+                bodies.push(body)
+                return Response.json({
+                    result: {
+                        calculations: [{ alias: 'workerInvocations', series: [] }],
+                        run: { status: 'COMPLETED' },
+                    },
+                })
+            },
+        )
+        const source = cloudflare({
+            accountId: 'account',
+            apiToken: 'token',
+            workersObservability: { fetch: fetcher },
+        }).adapters.workersMetrics
+        const cases = [
+            ['minute', '2026-08-02T00:00:00.000Z', 1440],
+            ['hour', '2026-08-02T00:00:00.000Z', 24],
+            ['day', '2026-08-02T00:00:00.000Z', 1],
+            ['week', '2026-08-15T00:00:00.000Z', 2],
+        ] as const
+
+        await Promise.all(
+            cases.map(([grain, to]) =>
+                Promise.resolve(
+                    source.execute(
+                        source.normalize({
+                            metrics: ['workerInvocations'],
+                            projection: 'rows',
+                            time: { from: time.from, grain, to },
+                        }),
+                        {
+                            adapter: 'cloudflare.workersMetrics',
+                            provider: 'cloudflare',
+                            scope: 'default',
+                        },
+                    ),
+                ),
+            ),
+        )
+        await source.execute(
+            source.normalize({
+                metrics: ['workerInvocations'],
+                projection: 'aggregate',
+                time,
+            }),
+            {
+                adapter: 'cloudflare.workersMetrics',
+                provider: 'cloudflare',
+                scope: 'default',
+            },
+        )
+
+        expect(
+            bodies.slice(0, cases.length).map((body) => ({
+                chart: body.chart,
+                chartType: body.chartType,
+                granularity: body.granularity,
+            })),
+        ).toEqual(
+            cases.map(([, , granularity]) => ({
+                chart: true,
+                chartType: 'timeseries',
+                granularity,
+            })),
+        )
+        expect(bodies.at(-1)).toMatchObject({
+            chart: false,
+            chartType: 'aggregate',
+            ignoreSeries: true,
+        })
+    })
+
+    it('keeps Analytics Engine aggregate independent from limited grouped rows', async () => {
+        const statements: string[] = []
+        const fetcher = vi.fn<(input: RequestInfo | URL, init?: RequestInit) => Promise<Response>>(
+            async (_input, init) => {
+                if (typeof init?.body !== 'string') throw new TypeError('Expected SQL request body')
+                statements.push(init.body)
+                return init.body.includes('GROUP BY time')
+                    ? Response.json({
+                          data: [
+                              {
+                                  events: 2,
+                                  sampleInterval: 1,
+                                  time: '2026-08-01T00:00:00.000Z',
+                              },
+                          ],
+                      })
+                    : Response.json({ data: [{ events: 10, sampleInterval: 1 }] })
+            },
+        )
+        const insight = createInsight({
+            providers: [
+                cloudflare({
+                    accountId: 'account',
+                    analyticsEngine: { dataset: 'events', fetch: fetcher },
+                    apiToken: 'token',
+                }),
+            ],
+        })
+
+        const result = await insight.metrics({
+            limit: 1,
+            metrics: ['events'],
+            projection: 'both',
+            time,
+        })
+
+        expect(result.aggregate).toEqual({ events: 10 })
+        expect(result.rows).toEqual([{ time: '2026-08-01T00:00:00.000Z', values: { events: 2 } }])
+        expect(statements).toEqual(
+            expect.arrayContaining([
+                expect.stringContaining('SELECT SUM(_sample_interval)'),
+                expect.stringContaining('GROUP BY time ORDER BY time ASC LIMIT 1'),
+            ]),
+        )
+        expect(fetcher).toHaveBeenCalledTimes(2)
+    })
+
     it('translates the Analytics Engine name equality filter before SQL execution', async () => {
         const fetcher = vi.fn<(input: RequestInfo | URL, init?: RequestInit) => Promise<Response>>(
             async (_input, init) => {
@@ -520,7 +713,12 @@ describe('Cloudflare adapters', () => {
         expect(fetcher).not.toHaveBeenCalled()
 
         const result = await source.execute(
-            source.normalize({ metrics: ['events'], time, where: { name: "deploy's" } }),
+            source.normalize({
+                metrics: ['events'],
+                projection: 'aggregate',
+                time,
+                where: { name: "deploy's" },
+            }),
             {
                 adapter: 'cloudflare.analyticsEngine',
                 provider: provider.id,

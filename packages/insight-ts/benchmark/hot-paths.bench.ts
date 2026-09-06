@@ -225,6 +225,13 @@ const cloudflare = createCloudflare({
                     viewer: {
                         accounts: [
                             {
+                                aggregate: [
+                                    {
+                                        avg: { sampleInterval: 1 },
+                                        count: 10,
+                                        sum: { visits: 8 },
+                                    },
+                                ],
                                 rows: [
                                     {
                                         avg: { sampleInterval: 1 },
@@ -258,8 +265,16 @@ const searchConsolePayload = JSON.stringify({
 })
 const searchConsole = googleSearchConsole({
     auth: { getAccessToken: async () => 'token' },
-    fetch: async () =>
-        new Response(searchConsolePayload, { headers: { 'content-type': 'application/json' } }),
+    fetch: async (_input, init) => {
+        const body = typeof init?.body === 'string' ? JSON.parse(init.body) : undefined
+        return body?.dimensions?.length === 0
+            ? Response.json({
+                  rows: [{ clicks: 25_000, ctr: 0.5, impressions: 50_000, position: 3 }],
+              })
+            : new Response(searchConsolePayload, {
+                  headers: { 'content-type': 'application/json' },
+              })
+    },
     property: 'sc-domain:example.com',
 }).adapters.searchAnalytics
 const searchConsoleQuery = searchConsole.normalize({

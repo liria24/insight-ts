@@ -501,7 +501,7 @@ describe('generic History', () => {
             adapters: {
                 metrics: defineMetricAdapter({
                     execute: () => ({ values: { requests: 1 } }),
-                    metrics: { requests: {} },
+                    metrics: { requests: { rollup: 'additive' } },
                 }),
             },
             id: 'app',
@@ -542,7 +542,7 @@ describe('generic History', () => {
         ).rejects.toMatchObject({ code: 'HISTORY_CORRUPT' })
     })
 
-    it('preserves safe Metric rollup rules and bypasses unrepresented filters', async () => {
+    it('uses History only when every requested Metric projection is safe', async () => {
         const execute = vi.fn<typeof metricAdapter.execute>((query, context) =>
             metricAdapter.execute(query, context),
         )
@@ -559,19 +559,29 @@ describe('generic History', () => {
             ],
         })
         await insight.history.sync({ range })
-        await expect(
-            insight.metrics({
-                metrics: ['latencyP95'],
-                time: { ...range, grain: 'week' },
-            }),
-        ).rejects.toMatchObject({ code: 'UNSAFE_ROLLUP' })
         const calls = execute.mock.calls.length
+        const storedRows = await insight.metrics({
+            dimensions: ['service'],
+            metrics: ['latencyP95'],
+            projection: 'rows',
+            time: { ...range, grain: 'day' },
+        })
+        expect(storedRows.rows).toHaveLength(2)
+        expect(execute).toHaveBeenCalledTimes(calls)
+
+        const live = await insight.metrics({
+            metrics: ['latencyP95'],
+            time: { ...range, grain: 'week' },
+        })
+        expect(live.aggregate.latencyP95).toBe(200)
+        expect(execute).toHaveBeenCalledTimes(calls + 1)
+
         await insight.metrics({
             metrics: ['requests'],
             time: range,
             where: { service: 'api' },
         })
-        expect(execute).toHaveBeenCalledTimes(calls + 1)
+        expect(execute).toHaveBeenCalledTimes(calls + 2)
     })
 })
 

@@ -369,6 +369,27 @@ type QueryForSchema<TSchema> = QueryBase<TSchema> & {
 }
 type SchemaFor<TAdapters, TName extends string> = SchemaOf<AdaptersFor<TAdapters, TName>>
 
+type MetricDataForProjection<TData, TProjection> = TData extends {
+    readonly aggregate: infer TAggregate
+    readonly rows?: infer TRows
+}
+    ? TProjection extends 'aggregate'
+        ? { readonly aggregate: TAggregate }
+        : TProjection extends 'rows'
+          ? { readonly rows: NonNullable<TRows> }
+          : TProjection extends 'both'
+            ? { readonly aggregate: TAggregate; readonly rows: NonNullable<TRows> }
+            : TData
+    : TData
+
+type DataForQuery<TSchema, TName extends string, TQuery> = TName extends 'metrics'
+    ? 'projection' extends keyof TQuery
+        ? TQuery extends { readonly projection?: infer TProjection }
+            ? MetricDataForProjection<DataForSchema<TSchema>, TProjection>
+            : DataForSchema<TSchema>
+        : DataForSchema<TSchema>
+    : DataForSchema<TSchema>
+
 type TrackArguments<
     TSchema extends InsightSchema,
     TName extends EventName<TSchema>,
@@ -383,7 +404,7 @@ type CapabilityMethod<TAdapters, TName extends string> = <
     options?: QueryExecutionOptions,
 ) => Promise<
     QueryResult<
-        DataForSchema<SchemaFor<TAdapters, TName>>,
+        DataForQuery<SchemaFor<TAdapters, TName>, TName, TQuery>,
         MetaForSchema<SchemaFor<TAdapters, TName>>
     >
 >

@@ -140,7 +140,8 @@ function cloudflareWebAnalytics(options: CloudflareWebAnalyticsOptions) {
         query: ResolvedMetricQuery,
         signal?: AbortSignal,
     ): Promise<MetricAdapterOutput> => {
-        if (!options.accountId || !options.apiToken) {
+        const { accountId, apiToken } = options
+        if (!accountId || !apiToken) {
             throw new InsightError(
                 'CONFIGURATION_MISSING',
                 'Cloudflare Web Analytics credentials are missing',
@@ -153,7 +154,10 @@ function cloudflareWebAnalytics(options: CloudflareWebAnalyticsOptions) {
             )
         }
         validateWebQuery(query)
-        const timeField = query.dimensions.includes('time') ? webTimeField(query.grain) : undefined
+        const includeAggregate = query.projection !== 'rows'
+        const includeRows = query.projection !== 'aggregate'
+        const timeField =
+            includeRows && query.dimensions.includes('time') ? webTimeField(query.grain) : undefined
         const nativeLimit =
             timeField === 'date' && !['auto', 'day'].includes(query.grain)
                 ? MAX_GRAPHQL_ROWS
@@ -173,7 +177,11 @@ function cloudflareWebAnalytics(options: CloudflareWebAnalyticsOptions) {
         const response = await fetchWithRetry(fetcher, GRAPHQL_ENDPOINT, {
             body: JSON.stringify({
                 query: webGraphqlQuery(query, timeField),
-                variables: { accountTag: options.accountId, filter, limit: nativeLimit },
+                variables: {
+                    accountTag: options.accountId,
+                    filter,
+                    ...(includeRows ? { limit: nativeLimit } : {}),
+                },
             }),
             headers: {
                 accept: 'application/json',
@@ -188,21 +196,30 @@ function cloudflareWebAnalytics(options: CloudflareWebAnalyticsOptions) {
             throw apiError(payload, response.status, 'Cloudflare GraphQL request failed')
         }
         const errors = graphqlErrors(payload)
-        const rows = webRows(payload)
-        if (rows === undefined) {
+        const aggregateRows = includeAggregate ? webRows(payload, 'aggregate') : undefined
+        const rows = includeRows ? webRows(payload, 'rows') : undefined
+        if (
+            (includeAggregate && aggregateRows === undefined) ||
+            (includeRows && rows === undefined)
+        ) {
             throw apiError(
                 payload,
                 response.status,
                 'Cloudflare GraphQL response contained no account data',
             )
         }
-        if (!rows.every((row) => isWebAnalyticsRow(row, query))) {
+        if (
+            (aggregateRows !== undefined &&
+                !aggregateRows.every((row) => isWebAnalyticsRow(row, query, []))) ||
+            (rows !== undefined &&
+                !rows.every((row) => isWebAnalyticsRow(row, query, query.dimensions)))
+        ) {
             throw new CloudflareApiError('Cloudflare Web Analytics returned malformed rows', 502)
         }
-        if (errors.length > 0 && rows.length === 0) {
+        if (errors.length > 0 && (aggregateRows?.length ?? 0) + (rows?.length ?? 0) === 0) {
             throw apiError(payload, response.status, 'Cloudflare GraphQL query failed')
         }
-        return webReport(query, rows, errors, nativeLimit)
+        return webReport(query, aggregateRows ?? [], rows ?? [], errors, nativeLimit)
     }
 
     return defineMetricAdapter({
@@ -435,7 +452,15 @@ async function workersMetrics(
                   operator: 'p95',
               },
     )
-    const granularity = telemetryGranularity(query)
+    const includeAggregate = query.projection !== 'rows'
+    const includeRows = query.projection !== 'aggregate'
+    const granularity = includeRows ? telemetryGranularity(query) : undefined
+    if (includeRows && granularity === undefined) {
+        throw new InsightError(
+            'UNSUPPORTED_OPERATION',
+            'Cloudflare Workers metric rows require an explicit time grain',
+        )
+    }
     const response = await telemetryQuery(
         options,
         {
@@ -445,9 +470,14 @@ async function workersMetrics(
                 [telemetryFilter('$metadata.type', 'eq', 'cf-worker-event')],
                 {},
             ),
-            chart: granularity !== undefined,
-            chartType: granularity === undefined ? 'aggregate' : 'timeseries_and_aggregate',
-            ...(granularity === undefined ? { ignoreSeries: true } : { granularity }),
+            chart: includeRows,
+            chartType:
+                query.projection === 'both'
+                    ? 'timeseries_and_aggregate'
+                    : query.projection === 'rows'
+                      ? 'timeseries'
+                      : 'aggregate',
+            ...(includeRows ? { granularity } : { ignoreSeries: true }),
             parameters: {
                 calculations,
                 datasets: options.datasets ?? [],
@@ -463,20 +493,22 @@ async function workersMetrics(
             502,
         )
     }
-    const values: Record<string, number | null> = Object.fromEntries(
-        query.metrics.map((metric) => [metric, null]),
-    )
+    const values: Record<string, number | null> | undefined = includeAggregate
+        ? Object.fromEntries(query.metrics.map((metric) => [metric, null]))
+        : undefined
     const points = new Map<string, MetricAdapterPoint>()
     let sampleInterval = 1
     for (const value of response.result.calculations) {
         const calculation = record(value)
         const metric = text(calculation?.alias) || text(calculation?.calculation)
         if (!query.metrics.includes(metric)) continue
-        const aggregates = Array.isArray(calculation?.aggregates) ? calculation.aggregates : []
-        const aggregate = record(aggregates[0])
-        values[metric] = number(aggregate?.value)
-        sampleInterval = Math.max(sampleInterval, number(aggregate?.sampleInterval) ?? 1)
-        const series = Array.isArray(calculation?.series) ? calculation.series : []
+        if (values) {
+            const aggregates = Array.isArray(calculation?.aggregates) ? calculation.aggregates : []
+            const aggregate = record(aggregates[0])
+            values[metric] = number(aggregate?.value)
+            sampleInterval = Math.max(sampleInterval, number(aggregate?.sampleInterval) ?? 1)
+        }
+        const series = includeRows && Array.isArray(calculation?.series) ? calculation.series : []
         for (const entry of series) {
             const item = record(entry)
             if (typeof item?.time !== 'string' || !Array.isArray(item.data)) continue
@@ -497,7 +529,7 @@ async function workersMetrics(
                 sourceTimezone: 'UTC',
             },
         },
-        ...(points.size > 0
+        ...(includeRows
             ? {
                   points: [...points.values()]
                       .toSorted((left, right) => left.time!.localeCompare(right.time!))
@@ -505,7 +537,7 @@ async function workersMetrics(
               }
             : {}),
         ...qualityOutput(response.payload, false, sampleInterval),
-        values,
+        ...(values ? { values } : {}),
     }
 }
 
@@ -905,35 +937,50 @@ function analyticsEngineAdapter(options: AnalyticsEngineReadOptions) {
         query: ResolvedMetricQuery,
         signal?: AbortSignal,
     ): Promise<MetricAdapterOutput> => {
-        if (!options.accountId || !options.apiToken) {
+        const { accountId, apiToken } = options
+        if (!accountId || !apiToken) {
             throw new InsightError(
                 'CONFIGURATION_MISSING',
                 'Cloudflare Analytics Engine credentials are missing',
             )
         }
         validate(query)
-        const response = await fetchWithRetry(
-            fetcher,
-            `${ANALYTICS_ENGINE_ENDPOINT}/${encodeURIComponent(options.accountId)}/analytics_engine/sql`,
-            {
-                body: analyticsEngineSql(options.dataset, query),
-                headers: { authorization: `Bearer ${options.apiToken}` },
-                method: 'POST',
-                ...(signal ? { signal } : {}),
-            },
-        )
-        const payload = await readJson(response, 'Cloudflare Analytics Engine')
-        if (!response.ok) {
-            throw apiError(payload, response.status, 'Cloudflare Analytics Engine query failed')
+        const request = async (projection: 'aggregate' | 'rows'): Promise<unknown[]> => {
+            const response = await fetchWithRetry(
+                fetcher,
+                `${ANALYTICS_ENGINE_ENDPOINT}/${encodeURIComponent(accountId)}/analytics_engine/sql`,
+                {
+                    body: analyticsEngineSql(options.dataset, query, projection),
+                    headers: { authorization: `Bearer ${apiToken}` },
+                    method: 'POST',
+                    ...(signal ? { signal } : {}),
+                },
+            )
+            const payload = await readJson(response, 'Cloudflare Analytics Engine')
+            if (!response.ok) {
+                throw apiError(payload, response.status, 'Cloudflare Analytics Engine query failed')
+            }
+            const data = record(payload)?.data
+            if (!Array.isArray(data)) {
+                throw new CloudflareApiError(
+                    'Cloudflare Analytics Engine returned malformed data',
+                    502,
+                )
+            }
+            const dimensions = projection === 'aggregate' ? [] : query.dimensions
+            if (!data.every((row) => isAnalyticsEngineRow(row, dimensions))) {
+                throw new CloudflareApiError(
+                    'Cloudflare Analytics Engine returned malformed rows',
+                    502,
+                )
+            }
+            return data
         }
-        const data = record(payload)?.data
-        if (!Array.isArray(data)) {
-            throw new CloudflareApiError('Cloudflare Analytics Engine returned malformed data', 502)
-        }
-        if (!data.every((row) => isAnalyticsEngineRow(row, query))) {
-            throw new CloudflareApiError('Cloudflare Analytics Engine returned malformed rows', 502)
-        }
-        return analyticsEngineReport(query, data)
+        const [aggregate, rows] = await Promise.all([
+            query.projection === 'rows' ? undefined : request('aggregate'),
+            query.projection === 'aggregate' ? undefined : request('rows'),
+        ])
+        return analyticsEngineReport(query, aggregate, rows)
     }
 
     return defineMetricAdapter({
@@ -954,7 +1001,11 @@ function analyticsEngineAdapter(options: AnalyticsEngineReadOptions) {
     })
 }
 
-function analyticsEngineSql(dataset: string, query: ResolvedMetricQuery): string {
+function analyticsEngineSql(
+    dataset: string,
+    query: ResolvedMetricQuery,
+    projection: 'aggregate' | 'rows',
+): string {
     const from = sqlDate(query.range.from)
     const to = sqlDate(query.range.to)
     const nameFilter = compileEngineNameFilter(query.where)
@@ -965,7 +1016,7 @@ function analyticsEngineSql(dataset: string, query: ResolvedMetricQuery): string
     ].join(' AND ')
     const limit = Math.max(1, query.limit ?? 10_000)
 
-    if (query.dimensions.length === 0) {
+    if (projection === 'aggregate') {
         return `SELECT SUM(_sample_interval) AS events, MAX(_sample_interval) AS sampleInterval FROM ${dataset} WHERE ${where} FORMAT JSON`
     }
     if (query.dimensions[0] === 'name') {
@@ -975,15 +1026,18 @@ function analyticsEngineSql(dataset: string, query: ResolvedMetricQuery): string
     return `SELECT toStartOfInterval(timestamp, INTERVAL '1' ${unit}) AS time, SUM(_sample_interval) AS events, MAX(_sample_interval) AS sampleInterval FROM ${dataset} WHERE ${where} GROUP BY time ORDER BY time ASC LIMIT ${limit} FORMAT JSON`
 }
 
-function analyticsEngineReport(query: ResolvedMetricQuery, data: unknown[]): MetricAdapterOutput {
-    const rows = data.map((item) => record(item) ?? {})
+function analyticsEngineReport(
+    query: ResolvedMetricQuery,
+    aggregateData: unknown[] | undefined,
+    rowData: unknown[] | undefined,
+): MetricAdapterOutput {
+    const aggregateRows = (aggregateData ?? []).map((item) => record(item) ?? {})
+    const rows = (rowData ?? []).map((item) => record(item) ?? {})
     let maxInterval = 1
-    let total = 0
     const points: MetricAdapterPoint[] = []
     const dimension = query.dimensions[0]
     for (const row of rows) {
         maxInterval = Math.max(maxInterval, number(row.sampleInterval) ?? 1)
-        total += number(row.events) ?? 0
         if (dimension === 'time') {
             points.push({ time: text(row.time), values: { events: number(row.events) } })
         } else if (dimension === 'name') {
@@ -993,14 +1047,18 @@ function analyticsEngineReport(query: ResolvedMetricQuery, data: unknown[]): Met
             })
         }
     }
+    for (const row of aggregateRows) {
+        maxInterval = Math.max(maxInterval, number(row.sampleInterval) ?? 1)
+    }
     const meta = reportMeta(
         query,
         maxInterval > 1 ? { approximate: true, sampled: true, sampleRate: 1 / maxInterval } : {},
     )
-    if (query.dimensions.length === 0) {
-        return { ...meta, values: { events: number(rows[0]?.events) } }
+    return {
+        ...meta,
+        ...(aggregateData ? { values: { events: number(aggregateRows[0]?.events) } } : {}),
+        ...(rowData ? { points } : {}),
     }
-    return { ...meta, points, values: { events: total } }
 }
 
 function validateWebQuery(query: ResolvedMetricQuery): void {
@@ -1044,14 +1102,26 @@ function webGraphqlQuery(query: ResolvedMetricQuery, timeField: string | undefin
                 ? 'sum_visits_DESC'
                 : 'count_DESC'
             : `${timeField}_ASC`
-    return `query WebAnalytics($accountTag: String!, $filter: AccountRumPageloadEventsAdaptiveGroupsFilter_InputObject!, $limit: Int!) {
+    const fields = `${metrics}
+        avg { sampleInterval }`
+    const aggregate =
+        query.projection === 'rows'
+            ? ''
+            : `aggregate: rumPageloadEventsAdaptiveGroups(filter: $filter, limit: 1) {
+        ${fields}
+      }`
+    const rows =
+        query.projection === 'aggregate'
+            ? ''
+            : `rows: rumPageloadEventsAdaptiveGroups(filter: $filter, limit: $limit, orderBy: [${orderBy}]) {
+        ${fields}
+        ${dimensions.length === 0 ? '' : `dimensions { ${dimensions} }`}
+      }`
+    return `query WebAnalytics($accountTag: String!, $filter: AccountRumPageloadEventsAdaptiveGroupsFilter_InputObject!${query.projection === 'aggregate' ? '' : ', $limit: Int!'}) {
   viewer {
     accounts(filter: { accountTag: $accountTag }) {
-      rows: rumPageloadEventsAdaptiveGroups(filter: $filter, limit: $limit, orderBy: [${orderBy}]) {
-        ${metrics}
-        avg { sampleInterval }
-        ${dimensions.length === 0 ? '' : `dimensions { ${dimensions} }`}
-      }
+      ${aggregate}
+      ${rows}
     }
   }
 }`
@@ -1117,6 +1187,7 @@ function compileEngineNameFilter(filter: CanonicalWhere | undefined): string | u
 
 function webReport(
     query: ResolvedMetricQuery,
+    aggregateRows: WebAnalyticsRow[],
     input: WebAnalyticsRow[],
     errors: GraphQLErrorShape[],
     nativeLimit: number,
@@ -1124,7 +1195,7 @@ function webReport(
     const rows = rollupWebRows(query, input)
     const limited = query.limit === undefined ? rows : rows.slice(0, query.limit)
     let maxInterval = 1
-    for (const row of input) {
+    for (const row of [...aggregateRows, ...input]) {
         maxInterval = Math.max(maxInterval, number(row.avg?.sampleInterval) ?? 1)
     }
     const partial = errors.length > 0 || input.length === nativeLimit
@@ -1150,28 +1221,31 @@ function webReport(
         ...(warnings.length === 0 ? {} : { warnings }),
     })
 
-    if (query.dimensions.length === 0) {
-        return { ...meta, values: sumWebMetrics(query.metrics, limited) }
-    }
     const hasTimeDimension = query.dimensions.includes('time')
     const dimensions = query.dimensions.filter((dimension) => dimension !== 'time')
     return {
         ...meta,
-        points: limited.map((row) => ({
-            ...(hasTimeDimension ? { time: text(row.dimensions?.time) } : {}),
-            ...(dimensions.length === 0
-                ? {}
-                : {
-                      dimensions: Object.fromEntries(
-                          dimensions.map((dimension) => [
-                              dimension,
-                              dimensionValue(row.dimensions?.[dimension]),
-                          ]),
-                      ),
-                  }),
-            values: webMetricValues(query.metrics, row),
-        })),
-        values: sumWebMetrics(query.metrics, limited),
+        ...(query.projection === 'rows'
+            ? {}
+            : { values: sumWebMetrics(query.metrics, aggregateRows) }),
+        ...(query.projection === 'aggregate'
+            ? {}
+            : {
+                  points: limited.map((row) => ({
+                      ...(hasTimeDimension ? { time: text(row.dimensions?.time) } : {}),
+                      ...(dimensions.length === 0
+                          ? {}
+                          : {
+                                dimensions: Object.fromEntries(
+                                    dimensions.map((dimension) => [
+                                        dimension,
+                                        dimensionValue(row.dimensions?.[dimension]),
+                                    ]),
+                                ),
+                            }),
+                      values: webMetricValues(query.metrics, row),
+                  })),
+              }),
     }
 }
 
@@ -1292,12 +1366,12 @@ function graphqlErrors(payload: unknown): GraphQLErrorShape[] {
     })
 }
 
-function webRows(payload: unknown): WebAnalyticsRow[] | undefined {
+function webRows(payload: unknown, field: 'aggregate' | 'rows'): WebAnalyticsRow[] | undefined {
     const data = record(payload)?.data
     const viewer = record(record(data)?.viewer)
     const accounts = viewer?.accounts
     if (!Array.isArray(accounts) || accounts.length === 0) return undefined
-    const rows = record(accounts[0])?.rows
+    const rows = record(accounts[0])?.[field]
     return Array.isArray(rows) ? rows : undefined
 }
 
@@ -1309,7 +1383,11 @@ function isRecord(value: unknown): value is Record<string, unknown> {
     return typeof value === 'object' && value !== null && !Array.isArray(value)
 }
 
-function isWebAnalyticsRow(value: unknown, query: ResolvedMetricQuery): value is WebAnalyticsRow {
+function isWebAnalyticsRow(
+    value: unknown,
+    query: ResolvedMetricQuery,
+    expectedDimensions: readonly string[],
+): value is WebAnalyticsRow {
     if (!isRecord(value)) return false
     const average = record(value.avg)
     if (number(average?.sampleInterval) === null) return false
@@ -1317,18 +1395,18 @@ function isWebAnalyticsRow(value: unknown, query: ResolvedMetricQuery): value is
     if (query.metrics.includes('visits') && number(record(value.sum)?.visits) === null) {
         return false
     }
-    if (query.dimensions.length === 0) return true
+    if (expectedDimensions.length === 0) return true
     const dimensions = record(value.dimensions)
     return (
         dimensions !== undefined &&
-        query.dimensions.every(
+        expectedDimensions.every(
             (dimension) =>
                 typeof dimensions[dimension] === 'string' && dimensions[dimension].length > 0,
         )
     )
 }
 
-function isAnalyticsEngineRow(value: unknown, query: ResolvedMetricQuery): boolean {
+function isAnalyticsEngineRow(value: unknown, dimensions: readonly string[]): boolean {
     if (
         !isRecord(value) ||
         number(value.events) === null ||
@@ -1336,8 +1414,8 @@ function isAnalyticsEngineRow(value: unknown, query: ResolvedMetricQuery): boole
     ) {
         return false
     }
-    if (query.dimensions[0] === 'name') return typeof value.name === 'string'
-    if (query.dimensions[0] === 'time') {
+    if (dimensions[0] === 'name') return typeof value.name === 'string'
+    if (dimensions[0] === 'time') {
         return typeof value.time === 'string' && Number.isFinite(new Date(value.time).valueOf())
     }
     return true

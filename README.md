@@ -56,6 +56,8 @@ console.log(traffic.aggregate.pageViews)
 ```
 
 Configured canonical Metrics and dimensions are inferred across Provider adapters without `as const` or explicit generics.
+Metric queries can request `aggregate`, `rows`, or `both`; ungrouped scalar queries default to
+`aggregate`, while grouped and time-series queries default to `both`.
 
 ## Why Insight.ts?
 

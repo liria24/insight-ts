@@ -1,5 +1,5 @@
 import { createInsight, defineProvider } from '../src/core/index.ts'
-import { defineMetricAdapter } from '../src/metrics/index.ts'
+import { defineMetricAdapter, type MetricQuery } from '../src/metrics/index.ts'
 import {
     googleSearchConsole,
     type GoogleSearchConsoleOptions,
@@ -28,6 +28,43 @@ async function verifyPublicTypes() {
     })
     const requests: number | null | undefined = result.aggregate.requests
     void requests
+
+    const aggregate = await insight.metrics({
+        metrics: ['requests'],
+        projection: 'aggregate',
+        time,
+    })
+    const rows = await insight.metrics({
+        dimensions: ['country'],
+        metrics: ['requests'],
+        projection: 'rows',
+        time,
+    })
+    const both = await insight.metrics({
+        dimensions: ['country'],
+        metrics: ['requests'],
+        projection: 'both',
+        time,
+    })
+    void aggregate.aggregate.requests
+    void rows.rows[0]?.values.requests
+    void both.aggregate.requests
+    void both.rows
+    // @ts-expect-error aggregate-only results do not expose rows
+    void aggregate.rows
+    // @ts-expect-error rows-only results do not expose aggregate
+    void rows.aggregate
+
+    const dynamicQuery: MetricQuery<{ requests: Record<never, never> }, { country: 'string' }> = {
+        metrics: ['requests'],
+        projection: Math.random() > 0.5 ? 'aggregate' : 'rows',
+        time,
+    }
+    const dynamic = await insight.metrics(dynamicQuery)
+    // @ts-expect-error a dynamic projection does not guarantee either field
+    void dynamic.aggregate
+    // @ts-expect-error a dynamic projection does not guarantee either field
+    void dynamic.rows
 
     await scoped.scope('production').metrics({ metrics: ['requests'], time })
     // @ts-expect-error Scope names are inferred as literals

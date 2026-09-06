@@ -24,11 +24,11 @@ const consumers: readonly Consumer[] = [
 import { cloudflare } from 'insight-ts/cloudflare'
 import { googleSearchConsole } from 'insight-ts/google-search-console'
 import { defineLogAdapter } from 'insight-ts/logs'
-import { defineMetricAdapter } from 'insight-ts/metrics'
+import { defineMetricAdapter, type MetricProjection } from 'insight-ts/metrics'
 import { defineTraceAdapter } from 'insight-ts/traces'
 
 const value = defineMetricAdapter({
-  execute: () => ({ values: { value: 42 } }),
+  execute: () => ({ points: [{ values: { value: 42 } }], values: { value: 42 } }),
   metrics: { value: {} },
 })
 const logs = defineLogAdapter({ execute: () => ({ logs: [{ id: 'log-1', timestamp: '2026-08-01' }] }) })
@@ -40,6 +40,14 @@ const [logResult, traceResult, valueResult] = await Promise.all([
   insight.metrics({ metrics: ['value'], time: { from: '2026-08-01', to: '2026-08-02' } }),
 ])
 if (valueResult.aggregate.value !== 42 || logResult.logs[0]?.id !== 'log-1' || traceResult.traces[0]?.traceId !== 'trace-1') throw new Error('Packed Core runtime failed')
+const rowsProjection: MetricProjection = 'rows'
+const rowResult = await insight.metrics({
+  metrics: ['value'], projection: rowsProjection,
+  time: { from: '2026-08-01', to: '2026-08-02' },
+})
+if (rowResult.rows[0]?.values.value !== 42 || 'aggregate' in rowResult) throw new Error('Packed Metric projection failed')
+// @ts-expect-error rows-only results do not expose aggregate
+void rowResult.aggregate
 const nextLogCursor = logResult.meta.pagination?.next
 if (nextLogCursor) {
   await insight.logs({ cursor: nextLogCursor, time: { from: '2026-08-01', to: '2026-08-02' } })

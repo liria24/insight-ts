@@ -121,11 +121,18 @@ A canonical Metric name has exactly one owner in a Scope. A query may combine Me
 adapters, but selected dimensions and filters must be supported by every contributor. Incompatible
 queries and duplicate ownership fail before I/O.
 
-`MetricData` exposes a query-wide `aggregate` and optional grouped `rows`. Each row has one optional
-time, one optional dimensions object, and selected Metric values under `row.values`. `aggregate` is
-not inferred by reducing `rows`. Values are `number | null`. Units and structured aggregation
-describe semantics, not presentation. Cross-partition rollup adds additive values, recomputes ratios
-from supporting Metrics, and rejects unsafe percentile or other non-additive rollups.
+Metric queries select an `aggregate`, `rows`, or `both` projection, and results contain only the
+selected fields. Queries without a grain or dimensions default to `aggregate`; grouped or time-series
+queries default to `both`. Each row has one optional time, one optional dimensions object, and
+selected Metric values under `row.values`. Adapters plan each projection natively, so a query-wide
+`aggregate` is never inferred by reducing grouped or limited `rows`. One conservative Quality field
+covers every native response used by the query. Values are `number | null`. Units and structured
+aggregation describe semantics, not presentation.
+
+History serves a Metric query only when it can reconstruct every requested projection. It adds
+additive values and recomputes ratios from supporting Metrics; exact captured rows may retain
+non-additive values. A query that would require an unsafe rollup executes wholly against the live
+Provider.
 
 ### Logs and Traces
 

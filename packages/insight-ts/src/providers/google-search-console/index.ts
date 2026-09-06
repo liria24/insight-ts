@@ -102,6 +102,12 @@ interface SearchAnalyticsMetadata {
     first_incomplete_hour?: unknown
 }
 
+interface SearchAnalyticsResult {
+    executionLimited: boolean
+    metadata?: SearchAnalyticsMetadata
+    rows: NormalizedSearchAnalyticsRow[]
+}
+
 export function googleSearchConsole(options: GoogleSearchConsoleOptions) {
     return {
         id: 'google-search-console',
@@ -163,116 +169,25 @@ function googleSearchConsoleAdapter(options: GoogleSearchConsoleOptions) {
         if (accessToken.length === 0) {
             throw new TypeError('Google Search Console access token cannot be empty')
         }
-
-        const rows: NormalizedSearchAnalyticsRow[] = []
-        const timeIndex = query.dimensions.findIndex((dimension) =>
-            ['date', 'hour'].includes(dimension),
-        )
-        const timeDimension = query.dimensions[timeIndex]
-        const timeCache = new Map<string, { iso: string; millis: number }>()
-        const from = new Date(query.range.from).getTime()
-        const to = new Date(query.range.to).getTime()
-        let metadata: SearchAnalyticsMetadata | undefined
-        let startRow = 0
-        let fetchedRows = 0
-        let truncatedByMaxRows = false
-        while (true) {
-            const requestedRows = Math.min(query.limit ?? maxRows, maxRows)
-            const remaining = requestedRows - fetchedRows
-            if (remaining <= 0) break
-            const rowLimit = Math.min(PAGE_SIZE, remaining)
-            const body = {
+        const request = (dimensions: readonly string[], requestedRows: number) =>
+            searchAnalyticsRows({
+                accessToken,
                 dataState,
-                dimensions: query.dimensions,
-                endDate: inclusiveCalendarEnd(query.range.to),
-                rowLimit,
-                startDate: calendarDate(query.range.from),
-                startRow,
-                ...compileGoogleFilters(query.where),
-            }
-            // Pagination is sequential because the next offset depends on this page's row count.
-            // eslint-disable-next-line no-await-in-loop
-            const response = await fetchWithRetry(
+                dimensions,
                 fetcher,
-                `${SEARCH_ANALYTICS_ENDPOINT}/${encodeURIComponent(options.property)}/searchAnalytics/query`,
-                {
-                    body: JSON.stringify(body),
-                    headers: {
-                        accept: 'application/json',
-                        authorization: `Bearer ${accessToken}`,
-                        'content-type': 'application/json',
-                    },
-                    method: 'POST',
-                    ...(signal ? { signal } : {}),
-                },
-            )
-            // eslint-disable-next-line no-await-in-loop
-            const payload = await readJson(response)
-            if (!response.ok) {
-                throw googleApiError(payload, response.status)
-            }
-            const responseRows = record(payload)?.rows
-            if (responseRows !== undefined && !Array.isArray(responseRows)) {
-                throw new GoogleSearchConsoleApiError(
-                    'Google Search Console returned malformed rows',
-                    502,
-                )
-            }
-            if (
-                Array.isArray(responseRows) &&
-                !responseRows.every((row) => isSearchAnalyticsRow(row, query.dimensions.length))
-            ) {
-                throw new GoogleSearchConsoleApiError(
-                    'Google Search Console returned malformed rows',
-                    502,
-                )
-            }
-            const page = Array.isArray(responseRows) ? responseRows : []
-            fetchedRows += page.length
-            for (const row of page) {
-                const keys = row.keys ?? []
-                let time: { iso: string; millis: number } | undefined
-                if (timeIndex !== -1) {
-                    const key = keys[timeIndex] ?? ''
-                    time = timeCache.get(key)
-                    if (time === undefined) {
-                        const date =
-                            timeDimension === 'date'
-                                ? searchConsoleDayStart(key)
-                                : Number.isFinite(new Date(key).getTime())
-                                  ? new Date(key)
-                                  : undefined
-                        if (date === undefined) {
-                            throw new GoogleSearchConsoleApiError(
-                                'Google Search Console returned an invalid date dimension',
-                                502,
-                            )
-                        }
-                        time = { iso: date.toISOString(), millis: date.getTime() }
-                        timeCache.set(key, time)
-                    }
-                    if (time.millis < from || time.millis >= to) continue
-                }
-                rows.push({
-                    clicks: row.clicks,
-                    ctr: row.ctr,
-                    impressions: row.impressions,
-                    keys,
-                    position: row.position,
-                    ...(time === undefined ? {} : { time: time.iso }),
-                })
-            }
-            const responseMetadata = record(record(payload)?.metadata)
-            if (responseMetadata !== undefined) metadata = responseMetadata
-            if (page.length < rowLimit) break
-            if (fetchedRows === maxRows && (query.limit === undefined || query.limit > maxRows)) {
-                truncatedByMaxRows = true
-                break
-            }
-            startRow += page.length
-        }
-
-        return googleReport(query, rows, metadata, truncatedByMaxRows)
+                maxRows,
+                property: options.property,
+                query,
+                requestedRows,
+                ...(signal ? { signal } : {}),
+            })
+        const [aggregate, rows] = await Promise.all([
+            query.projection === 'rows' ? undefined : request([], 1),
+            query.projection === 'aggregate'
+                ? undefined
+                : request(query.dimensions, query.limit ?? Number.POSITIVE_INFINITY),
+        ])
+        return googleReport(query, aggregate, rows)
     }
 
     return defineMetricAdapter({
@@ -321,6 +236,121 @@ function googleSearchConsoleAdapter(options: GoogleSearchConsoleOptions) {
                 signal,
             ),
     })
+}
+
+async function searchAnalyticsRows(options: {
+    accessToken: string
+    dataState: DataState
+    dimensions: readonly string[]
+    fetcher: Fetch
+    maxRows: number
+    property: string
+    query: ResolvedMetricQuery
+    requestedRows: number
+    signal?: AbortSignal
+}): Promise<SearchAnalyticsResult> {
+    const { dimensions, query } = options
+    const rows: NormalizedSearchAnalyticsRow[] = []
+    const timeIndex = dimensions.findIndex((dimension) => ['date', 'hour'].includes(dimension))
+    const timeDimension = dimensions[timeIndex]
+    const timeCache = new Map<string, { iso: string; millis: number }>()
+    const from = new Date(query.range.from).getTime()
+    const to = new Date(query.range.to).getTime()
+    const rowCount = Math.min(options.requestedRows, options.maxRows)
+    let metadata: SearchAnalyticsMetadata | undefined
+    let fetchedRows = 0
+    let startRow = 0
+    while (fetchedRows < rowCount) {
+        const rowLimit = Math.min(PAGE_SIZE, rowCount - fetchedRows)
+        // Pagination is sequential because each offset depends on the preceding page size.
+        // eslint-disable-next-line no-await-in-loop
+        const response = await fetchWithRetry(
+            options.fetcher,
+            `${SEARCH_ANALYTICS_ENDPOINT}/${encodeURIComponent(options.property)}/searchAnalytics/query`,
+            {
+                body: JSON.stringify({
+                    dataState: options.dataState,
+                    dimensions,
+                    endDate: inclusiveCalendarEnd(query.range.to),
+                    rowLimit,
+                    startDate: calendarDate(query.range.from),
+                    startRow,
+                    ...compileGoogleFilters(query.where),
+                }),
+                headers: {
+                    accept: 'application/json',
+                    authorization: `Bearer ${options.accessToken}`,
+                    'content-type': 'application/json',
+                },
+                method: 'POST',
+                ...(options.signal ? { signal: options.signal } : {}),
+            },
+        )
+        // eslint-disable-next-line no-await-in-loop
+        const payload = await readJson(response)
+        if (!response.ok) throw googleApiError(payload, response.status)
+        const responseRows = record(payload)?.rows
+        if (responseRows !== undefined && !Array.isArray(responseRows)) {
+            throw new GoogleSearchConsoleApiError(
+                'Google Search Console returned malformed rows',
+                502,
+            )
+        }
+        if (
+            Array.isArray(responseRows) &&
+            !responseRows.every((row) => isSearchAnalyticsRow(row, dimensions.length))
+        ) {
+            throw new GoogleSearchConsoleApiError(
+                'Google Search Console returned malformed rows',
+                502,
+            )
+        }
+        const page = Array.isArray(responseRows) ? responseRows : []
+        fetchedRows += page.length
+        for (const row of page) {
+            const keys = row.keys ?? []
+            let time: { iso: string; millis: number } | undefined
+            if (timeIndex !== -1) {
+                const key = keys[timeIndex] ?? ''
+                time = timeCache.get(key)
+                if (time === undefined) {
+                    const date =
+                        timeDimension === 'date'
+                            ? searchConsoleDayStart(key)
+                            : Number.isFinite(new Date(key).getTime())
+                              ? new Date(key)
+                              : undefined
+                    if (date === undefined) {
+                        throw new GoogleSearchConsoleApiError(
+                            'Google Search Console returned an invalid date dimension',
+                            502,
+                        )
+                    }
+                    time = { iso: date.toISOString(), millis: date.getTime() }
+                    timeCache.set(key, time)
+                }
+                if (time.millis < from || time.millis >= to) continue
+            }
+            rows.push({
+                clicks: row.clicks,
+                ctr: row.ctr,
+                impressions: row.impressions,
+                keys,
+                position: row.position,
+                ...(time === undefined ? {} : { time: time.iso }),
+            })
+        }
+        const responseMetadata = record(record(payload)?.metadata)
+        if (responseMetadata !== undefined) metadata = responseMetadata
+        if (page.length < rowLimit) break
+        startRow += page.length
+    }
+    return {
+        executionLimited:
+            fetchedRows === options.maxRows && options.requestedRows > options.maxRows,
+        ...(metadata ? { metadata } : {}),
+        rows,
+    }
 }
 
 function compileGoogleFilters(filter: CanonicalWhere | undefined): {
@@ -383,22 +413,24 @@ function flattenAndFilter(filter: CanonicalWhere): Extract<CanonicalWhere, { fie
 
 function googleReport(
     query: ResolvedMetricQuery,
-    rows: NormalizedSearchAnalyticsRow[],
-    metadata: SearchAnalyticsMetadata | undefined,
-    executionLimited: boolean,
+    aggregate: SearchAnalyticsResult | undefined,
+    grouped: SearchAnalyticsResult | undefined,
 ): MetricAdapterOutput {
     const exactRange = canRepresentRangeExactly(query)
-    const incompleteFrom =
-        typeof metadata?.first_incomplete_date === 'string'
-            ? metadata.first_incomplete_date
-            : typeof metadata?.first_incomplete_hour === 'string'
-              ? metadata.first_incomplete_hour
-              : undefined
+    const incompleteFrom = [aggregate?.metadata, grouped?.metadata]
+        .flatMap((metadata) => [metadata?.first_incomplete_date, metadata?.first_incomplete_hour])
+        .filter((value): value is string => typeof value === 'string')
+        .toSorted()[0]
     const warnings = [
-        {
-            code: 'google-search-console-top-rows',
-            message: 'Search Analytics returns top rows and does not guarantee every matching row',
-        },
+        ...(grouped
+            ? [
+                  {
+                      code: 'google-search-console-top-rows',
+                      message:
+                          'Search Analytics returns top rows and does not guarantee every matching row',
+                  },
+              ]
+            : []),
         ...(incompleteFrom === undefined
             ? []
             : [
@@ -425,7 +457,7 @@ function googleReport(
                           'Search Console exposes whole Pacific calendar days; the requested instant range was expanded to overlapping source days',
                   },
               ]),
-        ...(executionLimited
+        ...(grouped?.executionLimited
             ? [
                   {
                       code: 'execution-limit',
@@ -444,7 +476,11 @@ function googleReport(
                 sourceTimezone: SEARCH_CONSOLE_TIMEZONE,
             },
         },
-        quality: { ...(exactRange ? {} : { approximate: true }), partial: true, warnings },
+        quality: {
+            ...(exactRange ? {} : { approximate: true }),
+            ...(grouped || incompleteFrom ? { partial: true } : {}),
+            ...(warnings.length > 0 ? { warnings } : {}),
+        },
     }
 
     const timeIndex = query.dimensions.findIndex((dimension) =>
@@ -454,43 +490,43 @@ function googleReport(
         index === timeIndex ? [] : [[dimension, index] as const],
     )
     const points: MetricAdapterPoint[] = []
-    let clicks = 0
-    let impressions = 0
-    let weightedPosition = 0
-    for (const row of rows) {
-        clicks += row.clicks
-        impressions += row.impressions
-        weightedPosition += row.position * row.impressions
-        if (query.dimensions.length !== 0) {
-            points.push({
-                ...(row.time === undefined ? {} : { time: row.time }),
-                ...(dimensions.length === 0
-                    ? {}
-                    : {
-                          dimensions: Object.fromEntries(
-                              dimensions.map(([dimension, index]) => [
-                                  dimension,
-                                  row.keys[index] ?? null,
-                              ]),
-                          ),
-                      }),
-                values: googleMetricValues(query.metrics, row),
-            })
-        }
+    for (const row of grouped?.rows ?? []) {
+        points.push({
+            ...(row.time === undefined ? {} : { time: row.time }),
+            ...(dimensions.length === 0
+                ? {}
+                : {
+                      dimensions: Object.fromEntries(
+                          dimensions.map(([dimension, index]) => [
+                              dimension,
+                              row.keys[index] ?? null,
+                          ]),
+                      ),
+                  }),
+            values: googleMetricValues(query.metrics, row),
+        })
     }
-    const values = Object.fromEntries(
-        query.metrics.map((metric) => {
+    return {
+        ...meta,
+        ...(aggregate ? { values: googleAggregateValues(query.metrics, aggregate.rows[0]) } : {}),
+        ...(grouped ? { points } : {}),
+    }
+}
+
+function googleAggregateValues(
+    metrics: readonly string[],
+    row: NormalizedSearchAnalyticsRow | undefined,
+): MetricValues {
+    const clicks = row?.clicks ?? 0
+    const impressions = row?.impressions ?? 0
+    return Object.fromEntries(
+        metrics.map((metric) => {
             if (metric === 'clicks') return [metric, clicks]
             if (metric === 'impressions') return [metric, impressions]
             if (metric === 'ctr') return [metric, impressions === 0 ? null : clicks / impressions]
-            return [metric, impressions === 0 ? null : weightedPosition / impressions]
+            return [metric, row?.position ?? null]
         }),
     )
-    return {
-        ...meta,
-        ...(query.dimensions.length === 0 ? {} : { points }),
-        values,
-    }
 }
 
 function canRepresentRangeExactly(query: ResolvedMetricQuery): boolean {
