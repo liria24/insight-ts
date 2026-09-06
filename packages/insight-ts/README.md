@@ -57,6 +57,8 @@ Configured canonical Metrics and dimensions are inferred across Provider adapter
 Metric queries can request `aggregate`, `rows`, or `both`; ungrouped scalar queries default to
 `aggregate`, while grouped and time-series queries default to `both`.
 Paginated Logs and Traces continue with `await insight.next(result)` without repeating the query.
+Concurrent capability calls keep independent errors and cancellation while exact or Provider-compatible
+native work may be shared internally.
 
 ## What you get
 

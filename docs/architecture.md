@@ -88,11 +88,16 @@ camel-case identifiers. Configuration is validated once and generated capability
 prototype-safe. Core reserves names required by the client, including `scope`, `track`, `next`, and
 `history`, and rejects collisions before I/O.
 
-Capability normalization is deterministic and I/O-free. Equivalent normalized plans execute once,
-and Provider implementations may coalesce compatible requests inside their own transports. Providers
-have no generic batch-execution hook. External I/O may scale with compatible
-Provider request groups, never with result rows, metrics, or dimension values. `AbortSignal` is an
-execution option and reaches Provider execution.
+Capability normalization is deterministic and I/O-free. Concurrent direct calls enter one
+client-local scheduler: equivalent adapter plans share queued or in-flight execution, and all native
+adapter work uses one concurrency bound. Each logical caller keeps its own `AbortSignal`; shared
+native work is cancelled only after no caller still needs it. Provider implementations may coalesce
+compatible requests inside their own transports, but Providers have no generic batch-execution hook.
+External I/O may scale with compatible Provider request groups, never with result rows, metrics, or
+dimension values.
+
+Shared Provider HTTP retries cover only transient fetch `TypeError`s and statuses 429, 500, 502, 503,
+and 504. Backoff and `Retry-After` delays are bounded to 30 seconds and remain abortable.
 
 Shared query shape is validated by the canonical contract. Provider implementations validate
 native metrics, dimensions, filters, grain, ranges, pagination, limits, and credentials before
@@ -155,9 +160,9 @@ The implemented Providers deliberately exercise different native shapes:
 
 | Provider                         | Native model                                         | Quality and History constraints                                                                                                                        |
 | -------------------------------- | ---------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| Cloudflare Web Analytics         | GraphQL aggregate groups                             | Dynamic sampling remains visible; daily additive totals are History-safe.                                                                              |
+| Cloudflare Web Analytics         | GraphQL aggregate groups and aliased request groups  | Dynamic sampling remains visible; daily additive totals are History-safe.                                                                              |
 | Cloudflare Analytics Engine      | SQL over a named dynamic dataset                     | Native sampling remains visible; the current adapter intentionally exposes only event count, time, and name.                                           |
-| Cloudflare Workers Observability | Telemetry query and calculation APIs                 | Logs, Traces, and Metrics retain sampling and partiality; finite pages may be materialized.                                                            |
+| Cloudflare Workers Observability | Telemetry query and coalesced calculation APIs       | Logs, Traces, and Metrics retain sampling and partiality; finite pages may be materialized.                                                            |
 | Google Search Console            | Search Analytics requests with sequential pagination | Top-row behavior, incomplete data, Pacific calendar boundaries, and execution limits remain visible; only additive and derived Metrics roll up safely. |
 
 Future GA4, Matomo, Plausible, Umami, PostHog, Amplitude, Mixpanel, and similar Providers may have
@@ -186,8 +191,8 @@ native byte limits; property-level querying is outside the current contract.
 ## History
 
 History is historical materialization, not a persistent query-result cache. Applications use
-runtime-native caches such as Nitro Cache for request caching; only execution-local deduplication is
-part of Core.
+runtime-native caches such as Nitro Cache for request caching; Core shares only concurrent exact
+work while it is queued or in flight.
 
 History uses the same absolute half-open `{ from, to }` ranges as Query. Users select Scopes and
 capability names, never internal adapter IDs or capability-specific strategy types. Capability-owned

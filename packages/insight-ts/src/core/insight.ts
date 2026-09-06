@@ -52,6 +52,22 @@ interface PreparedAdapterRequest extends AdapterRequest {
     dedupeKey: string
 }
 
+type NativeResult = AdapterExecutionResult<unknown, object>
+
+interface ScheduledCaller {
+    aborted: () => void
+    reject: (reason?: unknown) => void
+    resolve: (value: NativeResult) => void
+    signal?: AbortSignal
+}
+
+interface ScheduledExecution {
+    callers: Set<ScheduledCaller>
+    controller: AbortController
+    request: PreparedAdapterRequest
+    requestCount: number
+}
+
 export const createInsight = <const TOptions extends CreateInsightOptions>(
     options: TOptions,
 ): InsightClient<TOptions> => {
@@ -68,6 +84,131 @@ export const createInsight = <const TOptions extends CreateInsightOptions>(
             ? Promise.resolve(options.instrumentation.run(name, attributes, operation))
             : operation(noopSpan)
 
+    const scheduled = new Map<string, ScheduledExecution>()
+    const pending: ScheduledExecution[] = []
+    let active = 0
+    let flushQueued = false
+
+    const finishScheduled = (
+        execution: ScheduledExecution,
+        result: { reason: unknown } | { value: NativeResult },
+    ) => {
+        if (scheduled.get(execution.request.dedupeKey) === execution) {
+            scheduled.delete(execution.request.dedupeKey)
+        }
+        const callers = Array.from(execution.callers)
+        const values =
+            'value' in result
+                ? callers.map((_, index) =>
+                      index === 0 ? result.value : structuredClone(result.value),
+                  )
+                : []
+        for (const [index, caller] of callers.entries()) {
+            execution.callers.delete(caller)
+            caller.signal?.removeEventListener('abort', caller.aborted)
+            if ('value' in result) caller.resolve(values[index]!)
+            else caller.reject(result.reason)
+        }
+    }
+
+    const runScheduled = async (execution: ScheduledExecution, flushSize: number) => {
+        const { query, source } = execution.request
+        try {
+            const value = await instrument(
+                'insight.provider.execute',
+                {
+                    'insight.provider': source.provider.id,
+                    'insight.request.count': execution.requestCount,
+                    'insight.scheduler.deduplicated.count': execution.requestCount - 1,
+                    'insight.scheduler.flush.size': flushSize,
+                },
+                async (span) => {
+                    try {
+                        return validateExecutionResult(
+                            await source.definition.execute(query, {
+                                adapter: source.id,
+                                provider: source.provider.id,
+                                scope: source.scope,
+                                signal: execution.controller.signal,
+                            }),
+                        )
+                    } finally {
+                        span.setAttribute('insight.request.count', execution.requestCount)
+                        span.setAttribute(
+                            'insight.scheduler.deduplicated.count',
+                            execution.requestCount - 1,
+                        )
+                    }
+                },
+            )
+            finishScheduled(execution, { value })
+        } catch (reason) {
+            finishScheduled(execution, { reason })
+        } finally {
+            active -= 1
+            flushScheduled()
+        }
+    }
+
+    const flushScheduled = () => {
+        flushQueued = false
+        const ready: ScheduledExecution[] = []
+        while (ready.length < concurrency - active) {
+            const execution = pending.shift()
+            if (!execution) break
+            if (execution.callers.size === 0) continue
+            ready.push(execution)
+        }
+        active += ready.length
+        for (const execution of ready) void runScheduled(execution, ready.length)
+    }
+
+    const scheduleNative = (
+        request: PreparedAdapterRequest,
+        signal?: AbortSignal,
+    ): Promise<NativeResult> => {
+        signal?.throwIfAborted()
+        let execution = scheduled.get(request.dedupeKey)
+        if (!execution) {
+            execution = {
+                callers: new Set(),
+                controller: new AbortController(),
+                request,
+                requestCount: 0,
+            }
+            scheduled.set(request.dedupeKey, execution)
+            pending.push(execution)
+            if (!flushQueued) {
+                flushQueued = true
+                queueMicrotask(flushScheduled)
+            }
+        }
+        execution.requestCount += 1
+        const shared = execution
+        return new Promise((resolve, reject) => {
+            let caller!: ScheduledCaller
+            const aborted = () => {
+                if (!shared.callers.delete(caller)) return
+                signal?.removeEventListener('abort', aborted)
+                reject(signal?.reason)
+                if (shared.callers.size === 0) {
+                    if (scheduled.get(request.dedupeKey) === shared) {
+                        scheduled.delete(request.dedupeKey)
+                    }
+                    shared.controller.abort(signal?.reason)
+                }
+            }
+            caller = {
+                aborted,
+                reject,
+                resolve,
+                ...(signal ? { signal } : {}),
+            }
+            shared.callers.add(caller)
+            signal?.addEventListener('abort', aborted, { once: true })
+        })
+    }
+
     const prepareAdapters = (requests: readonly AdapterRequest[]) => {
         const keys: string[] = []
         const unique = new Map<string, PreparedAdapterRequest>()
@@ -82,29 +223,12 @@ export const createInsight = <const TOptions extends CreateInsightOptions>(
         return { keys, unique: [...unique.values()] }
     }
 
-    const executeNative = async (
+    const executeNative = (
         requests: readonly PreparedAdapterRequest[],
         execution: QueryExecutionOptions = {},
-    ): Promise<readonly AdapterExecutionResult<unknown, object>[]> => {
+    ): Promise<readonly NativeResult[]> => {
         execution.signal?.throwIfAborted()
-        return mapConcurrent(requests, concurrency, async ({ query, source }) =>
-            instrument(
-                'insight.provider.execute',
-                {
-                    'insight.provider': source.provider.id,
-                    'insight.request.count': 1,
-                },
-                async () =>
-                    validateExecutionResult(
-                        await source.definition.execute(query, {
-                            adapter: source.id,
-                            provider: source.provider.id,
-                            scope: source.scope,
-                            ...(execution.signal ? { signal: execution.signal } : {}),
-                        }),
-                    ),
-            ),
-        )
+        return Promise.all(requests.map((request) => scheduleNative(request, execution.signal)))
     }
 
     const executeAdapterRaw = async (
@@ -554,27 +678,6 @@ function mergeQuality(values: readonly (QueryQuality | undefined)[]): QueryQuali
         ...(quality.some(({ thresholded }) => thresholded) ? { thresholded: true } : {}),
         ...(warnings.size > 0 ? { warnings: [...warnings.values()] } : {}),
     }
-}
-
-async function mapConcurrent<TInput, TOutput>(
-    values: readonly TInput[],
-    limit: number,
-    mapper: (value: TInput) => Promise<TOutput>,
-): Promise<TOutput[]> {
-    const results: TOutput[] = []
-    let cursor = 0
-    await Promise.all(
-        Array.from({ length: Math.min(limit, values.length) }, async () => {
-            while (cursor < values.length) {
-                const index = cursor
-                cursor += 1
-                // Bounded workers deliberately claim one item at a time.
-                // eslint-disable-next-line no-await-in-loop
-                results[index] = await mapper(values[index]!)
-            }
-        }),
-    )
-    return results
 }
 
 type EventValidator = (properties: unknown) => Readonly<Record<string, unknown>>

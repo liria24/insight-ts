@@ -36,7 +36,7 @@ describe('Core query', () => {
         }).run()
     })
 
-    test('normalize and execute concurrent capability calls', async ({ bench }) => {
+    test('schedule and deduplicate concurrent capability calls', async ({ bench }) => {
         await bench('execute', async () => {
             await Promise.all([
                 core.metrics({ metrics: ['value'], time }),
@@ -221,6 +221,21 @@ describe('UI Core', () => {
     })
 })
 
+const cloudflareAggregate = [
+    {
+        avg: { sampleInterval: 1 },
+        count: 10,
+        sum: { visits: 8 },
+    },
+]
+const cloudflareRows = [
+    {
+        avg: { sampleInterval: 1 },
+        count: 10,
+        dimensions: { country: 'JP', time: time.from },
+        sum: { visits: 8 },
+    },
+]
 const cloudflare = createCloudflare({
     accountId: 'account',
     apiToken: 'token',
@@ -231,21 +246,12 @@ const cloudflare = createCloudflare({
                     viewer: {
                         accounts: [
                             {
-                                aggregate: [
-                                    {
-                                        avg: { sampleInterval: 1 },
-                                        count: 10,
-                                        sum: { visits: 8 },
-                                    },
-                                ],
-                                rows: [
-                                    {
-                                        avg: { sampleInterval: 1 },
-                                        count: 10,
-                                        dimensions: { country: 'JP', time: time.from },
-                                        sum: { visits: 8 },
-                                    },
-                                ],
+                                aggregate: cloudflareAggregate,
+                                q0Aggregate: cloudflareAggregate,
+                                q0Rows: cloudflareRows,
+                                q1Aggregate: cloudflareAggregate,
+                                q1Rows: cloudflareRows,
+                                rows: cloudflareRows,
                             },
                         ],
                     },
@@ -298,6 +304,23 @@ describe('Provider normalization', () => {
                 provider: 'cloudflare',
                 scope: 'default',
             })
+        }).run()
+    })
+
+    test('coalesce concurrent Cloudflare responses', async ({ bench }) => {
+        await bench('execute', async () => {
+            await Promise.all([
+                cloudflare.execute(cloudflareQuery, {
+                    adapter: 'cloudflare.webAnalytics',
+                    provider: 'cloudflare',
+                    scope: 'default',
+                }),
+                cloudflare.execute(cloudflareQuery, {
+                    adapter: 'cloudflare.webAnalytics',
+                    provider: 'cloudflare',
+                    scope: 'default',
+                }),
+            ])
         }).run()
     })
 

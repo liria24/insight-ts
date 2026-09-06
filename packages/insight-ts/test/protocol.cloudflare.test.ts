@@ -240,6 +240,201 @@ describe('Cloudflare adapters', () => {
         expect(fetcher).toHaveBeenCalledOnce()
     })
 
+    it('coalesces concurrent Web Analytics calls and demultiplexes their quality', async () => {
+        const fetcher = vi.fn<(input: RequestInfo | URL, init?: RequestInit) => Promise<Response>>(
+            async (_input, init) => {
+                const body = requestBody(init?.body)
+                expect(body.query).toContain('q0Aggregate: rumPageloadEventsAdaptiveGroups')
+                expect(body.query).toContain('q1Rows: rumPageloadEventsAdaptiveGroups')
+                expect(body.variables).toMatchObject({
+                    accountTag: 'account',
+                    q0Filter: expect.any(Object),
+                    q1Filter: expect.any(Object),
+                    q1Limit: 10_000,
+                })
+                return Response.json({
+                    data: {
+                        viewer: {
+                            accounts: [
+                                {
+                                    q0Aggregate: [
+                                        { avg: { sampleInterval: 2 }, sum: { visits: 40 } },
+                                    ],
+                                    q1Rows: [
+                                        {
+                                            avg: { sampleInterval: 4 },
+                                            count: 7,
+                                            dimensions: {
+                                                country: 'JP',
+                                                time: '2026-08-01T00:00:00Z',
+                                            },
+                                        },
+                                    ],
+                                },
+                            ],
+                        },
+                    },
+                })
+            },
+        )
+        const insight = createInsight({
+            providers: [
+                cloudflare({
+                    accountId: 'account',
+                    apiToken: 'token',
+                    webAnalytics: { fetch: fetcher, siteTag: 'site' },
+                }),
+            ],
+        })
+
+        const [overview, countries] = await Promise.all([
+            insight.metrics({ metrics: ['visits'], projection: 'aggregate', time }),
+            insight.metrics({
+                dimensions: ['country'],
+                metrics: ['pageViews'],
+                projection: 'rows',
+                time,
+            }),
+        ])
+
+        expect(fetcher).toHaveBeenCalledOnce()
+        expect(overview.aggregate).toEqual({ visits: 40 })
+        expect(overview.meta.quality?.sampleRate).toBe(0.5)
+        expect(countries.rows).toEqual([
+            {
+                dimensions: { country: 'JP' },
+                time: '2026-08-01T00:00:00.000Z',
+                values: { pageViews: 7 },
+            },
+        ])
+        expect(countries.meta.quality?.sampleRate).toBe(0.25)
+    })
+
+    it('attributes a Web Analytics alias failure to only its logical call', async () => {
+        const fetcher = vi.fn<(input: RequestInfo | URL, init?: RequestInit) => Promise<Response>>(
+            async () =>
+                Response.json({
+                    data: {
+                        viewer: {
+                            accounts: [
+                                {
+                                    q1Aggregate: [
+                                        { avg: { sampleInterval: 1 }, sum: { visits: 12 } },
+                                    ],
+                                },
+                            ],
+                        },
+                    },
+                    errors: [
+                        {
+                            message: 'JP query failed',
+                            path: ['viewer', 'accounts', 0, 'q0Aggregate'],
+                        },
+                    ],
+                }),
+        )
+        const insight = createInsight({
+            providers: [
+                cloudflare({
+                    accountId: 'account',
+                    apiToken: 'token',
+                    webAnalytics: { fetch: fetcher, siteTag: 'site' },
+                }),
+            ],
+        })
+
+        const [japan, unitedStates] = await Promise.allSettled([
+            insight.metrics({
+                metrics: ['visits'],
+                projection: 'aggregate',
+                time,
+                where: { country: 'JP' },
+            }),
+            insight.metrics({
+                metrics: ['visits'],
+                projection: 'aggregate',
+                time,
+                where: { country: 'US' },
+            }),
+        ])
+
+        expect(fetcher).toHaveBeenCalledOnce()
+        expect(japan).toMatchObject({
+            reason: { message: 'JP query failed' },
+            status: 'rejected',
+        })
+        expect(unitedStates).toMatchObject({
+            status: 'fulfilled',
+            value: { aggregate: { visits: 12 } },
+        })
+    })
+
+    it('keeps a coalesced Web Analytics request alive for an active caller', async () => {
+        let complete!: (response: Response) => void
+        const response = new Promise<Response>((resolve) => {
+            complete = resolve
+        })
+        let transportSignal: AbortSignal | null | undefined
+        const fetcher = vi.fn<(input: RequestInfo | URL, init?: RequestInit) => Promise<Response>>(
+            async (_input, init) => {
+                transportSignal = init?.signal
+                return response
+            },
+        )
+        const insight = createInsight({
+            providers: [
+                cloudflare({
+                    accountId: 'account',
+                    apiToken: 'token',
+                    webAnalytics: { fetch: fetcher, siteTag: 'site' },
+                }),
+            ],
+        })
+        const firstController = new AbortController()
+        const secondController = new AbortController()
+        const reason = new Error('cancel first Web Analytics call')
+        const first = insight.metrics(
+            {
+                metrics: ['visits'],
+                projection: 'aggregate',
+                time,
+                where: { country: 'JP' },
+            },
+            { signal: firstController.signal },
+        )
+        const second = insight.metrics(
+            {
+                metrics: ['pageViews'],
+                projection: 'aggregate',
+                time,
+                where: { country: 'US' },
+            },
+            { signal: secondController.signal },
+        )
+        await vi.waitFor(() => expect(fetcher).toHaveBeenCalledOnce())
+
+        firstController.abort(reason)
+
+        await expect(first).rejects.toBe(reason)
+        expect(transportSignal?.aborted).toBe(false)
+        complete(
+            Response.json({
+                data: {
+                    viewer: {
+                        accounts: [
+                            {
+                                q0Aggregate: [{ avg: { sampleInterval: 1 }, sum: { visits: 3 } }],
+                                q1Aggregate: [{ avg: { sampleInterval: 1 }, count: 7 }],
+                            },
+                        ],
+                    },
+                },
+            }),
+        )
+        await expect(second).resolves.toMatchObject({ aggregate: { pageViews: 7 } })
+        expect(fetcher).toHaveBeenCalledOnce()
+    })
+
     it('maps Workers Logs filters, sampling, and native offsets behind opaque cursors', async () => {
         const bodies: Record<string, unknown>[] = []
         const fetcher = vi.fn<(input: RequestInfo | URL, init?: RequestInit) => Promise<Response>>(
@@ -549,6 +744,66 @@ describe('Cloudflare adapters', () => {
             sampled: true,
             sampleRate: 0.5,
         })
+    })
+
+    it('coalesces compatible Workers metric calculations and splits their results', async () => {
+        const fetcher = vi.fn<(input: RequestInfo | URL, init?: RequestInit) => Promise<Response>>(
+            async (_input, init) => {
+                const body = requestBody(init?.body)
+                expect(recordBody(body.parameters).calculations).toEqual([
+                    { alias: 'workerInvocations', operator: 'count' },
+                    {
+                        alias: 'workerDurationP95',
+                        key: '$metadata.duration',
+                        keyType: 'number',
+                        operator: 'p95',
+                    },
+                ])
+                return Response.json({
+                    result: {
+                        calculations: [
+                            {
+                                aggregates: [{ sampleInterval: 2, value: 50 }],
+                                alias: 'workerInvocations',
+                            },
+                            {
+                                aggregates: [{ sampleInterval: 4, value: 120 }],
+                                alias: 'workerDurationP95',
+                            },
+                        ],
+                        run: { status: 'COMPLETED' },
+                    },
+                })
+            },
+        )
+        const insight = createInsight({
+            providers: [
+                cloudflare({
+                    accountId: 'account',
+                    apiToken: 'token',
+                    workersObservability: { fetch: fetcher },
+                }),
+            ],
+        })
+
+        const [invocations, duration] = await Promise.all([
+            insight.metrics({
+                metrics: ['workerInvocations'],
+                projection: 'aggregate',
+                time,
+            }),
+            insight.metrics({
+                metrics: ['workerDurationP95'],
+                projection: 'aggregate',
+                time,
+            }),
+        ])
+
+        expect(fetcher).toHaveBeenCalledOnce()
+        expect(invocations.aggregate).toEqual({ workerInvocations: 50 })
+        expect(invocations.meta.quality?.sampleRate).toBe(0.5)
+        expect(duration.aggregate).toEqual({ workerDurationP95: 120 })
+        expect(duration.meta.quality?.sampleRate).toBe(0.25)
     })
 
     it('maps canonical grains to Workers telemetry bucket counts for rows-only queries', async () => {

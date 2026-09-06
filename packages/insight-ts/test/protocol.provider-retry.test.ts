@@ -37,6 +37,63 @@ describe('provider read retries', () => {
         expect(sleep).toHaveBeenCalledWith(2000)
     })
 
+    it('bounds excessive Retry-After delays', async () => {
+        const fetcher = vi
+            .fn<TestFetch>()
+            .mockResolvedValueOnce(
+                new Response(null, { headers: { 'retry-after': '3600' }, status: 429 }),
+            )
+            .mockResolvedValueOnce(Response.json({ ok: true }))
+        const sleep = vi.fn<(milliseconds: number) => Promise<void>>(async () => {})
+
+        await fetchWithRetry(fetcher, 'https://provider.test/read', undefined, { sleep })
+
+        expect(sleep).toHaveBeenCalledWith(30_000)
+    })
+
+    it('aborts during backoff without another attempt', async () => {
+        const controller = new AbortController()
+        const reason = new Error('cancel retry')
+        const fetcher = vi.fn<TestFetch>(async () => new Response(null, { status: 503 }))
+
+        const response = fetchWithRetry(
+            fetcher,
+            'https://provider.test/read',
+            { signal: controller.signal },
+            { random: () => 0 },
+        )
+        await new Promise((resolve) => setTimeout(resolve, 0))
+        controller.abort(reason)
+
+        await expect(response).rejects.toBe(reason)
+        expect(fetcher).toHaveBeenCalledOnce()
+    })
+
+    it('retries fetch network failures but not application exceptions', async () => {
+        const fetcher = vi
+            .fn<TestFetch>()
+            .mockRejectedValueOnce(new TypeError('network unavailable'))
+            .mockResolvedValueOnce(Response.json({ ok: true }))
+        const sleep = vi.fn<(milliseconds: number) => Promise<void>>(async () => {})
+
+        const response = await fetchWithRetry(fetcher, 'https://provider.test/read', undefined, {
+            random: () => 0,
+            sleep,
+        })
+        const applicationError = new Error('application failure')
+        const applicationFetcher = vi.fn<TestFetch>(async () => {
+            throw applicationError
+        })
+
+        expect(await response.json()).toEqual({ ok: true })
+        expect(fetcher).toHaveBeenCalledTimes(2)
+        expect(sleep).toHaveBeenCalledWith(125)
+        await expect(
+            fetchWithRetry(applicationFetcher, 'https://provider.test/read', undefined, { sleep }),
+        ).rejects.toBe(applicationError)
+        expect(applicationFetcher).toHaveBeenCalledOnce()
+    })
+
     it('stops after two retries for continuous 503 responses', async () => {
         const fetcher = vi.fn<TestFetch>(async () => new Response(null, { status: 503 }))
         const sleep = vi.fn<(milliseconds: number) => Promise<void>>(async () => {})

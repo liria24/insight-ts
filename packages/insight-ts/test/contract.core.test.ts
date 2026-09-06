@@ -164,7 +164,7 @@ describe('canonical query planning', () => {
         expect(execute).not.toHaveBeenCalled()
     })
 
-    it('uses ordinary Promise concurrency for independent queries', async () => {
+    it('deduplicates exact concurrent direct queries', async () => {
         const execute = vi.fn(({ metrics }: { metrics: readonly string[] }) => ({
             values: Object.fromEntries(metrics.map((key) => [key, 1])),
         }))
@@ -181,8 +181,138 @@ describe('canonical query planning', () => {
             insight.metrics({ metrics: ['requests'], time }),
         ])
 
-        expect(execute).toHaveBeenCalledTimes(2)
+        expect(execute).toHaveBeenCalledOnce()
         expect(first.aggregate).toEqual(second.aggregate)
+    })
+
+    it('cancels queued work before the scheduler flushes', async () => {
+        const execute = vi.fn(usageAdapter.execute)
+        const insight = createInsight({
+            providers: [
+                defineProvider({ adapters: { usage: { ...usageAdapter, execute } }, id: 'app' }),
+            ],
+        })
+        const controller = new AbortController()
+        const reason = new Error('cancel queued query')
+
+        const result = insight.usage({ account: 'acme' }, { signal: controller.signal })
+        controller.abort(reason)
+
+        await expect(result).rejects.toBe(reason)
+        expect(execute).not.toHaveBeenCalled()
+
+        const alreadyAborted = new AbortController()
+        alreadyAborted.abort(reason)
+        await expect(
+            insight.usage({ account: 'already-aborted' }, { signal: alreadyAborted.signal }),
+        ).rejects.toBe(reason)
+        expect(execute).not.toHaveBeenCalled()
+    })
+
+    it('keeps shared in-flight work alive until its last caller aborts', async () => {
+        const resolutions: ((value: { data: { spent: number } }) => void)[] = []
+        const nativeSignals: AbortSignal[] = []
+        const execute = vi.fn(
+            (_query: { account: string }, { signal }: { signal?: AbortSignal }) =>
+                new Promise<{ data: { spent: number } }>((resolve, reject) => {
+                    nativeSignals.push(signal!)
+                    resolutions.push(resolve)
+                    signal?.addEventListener('abort', () => reject(signal.reason), { once: true })
+                }),
+        )
+        const insight = createInsight({
+            providers: [
+                defineProvider({ adapters: { usage: { ...usageAdapter, execute } }, id: 'app' }),
+            ],
+        })
+        const firstController = new AbortController()
+        const secondController = new AbortController()
+        const firstReason = new Error('cancel first caller')
+        const first = insight.usage({ account: 'shared' }, { signal: firstController.signal })
+        await vi.waitFor(() => expect(execute).toHaveBeenCalledOnce())
+        const second = insight.usage({ account: 'shared' }, { signal: secondController.signal })
+
+        firstController.abort(firstReason)
+
+        await expect(first).rejects.toBe(firstReason)
+        expect(nativeSignals[0]?.aborted).toBe(false)
+        resolutions[0]!({ data: { spent: 6 } })
+        await expect(second).resolves.toMatchObject({ spent: 6 })
+
+        const thirdController = new AbortController()
+        const fourthController = new AbortController()
+        const thirdReason = new Error('cancel third caller')
+        const fourthReason = new Error('cancel fourth caller')
+        const third = insight.usage({ account: 'abandoned' }, { signal: thirdController.signal })
+        const fourth = insight.usage({ account: 'abandoned' }, { signal: fourthController.signal })
+        await vi.waitFor(() => expect(execute).toHaveBeenCalledTimes(2))
+
+        thirdController.abort(thirdReason)
+        fourthController.abort(fourthReason)
+
+        await expect(third).rejects.toBe(thirdReason)
+        await expect(fourth).rejects.toBe(fourthReason)
+        expect(nativeSignals[1]?.aborted).toBe(true)
+    })
+
+    it('applies one concurrency limit across direct calls', async () => {
+        let active = 0
+        let maximum = 0
+        let release!: () => void
+        const gate = new Promise<void>((resolve) => {
+            release = resolve
+        })
+        const execute = vi.fn(async ({ account }: { account: string }) => {
+            active += 1
+            maximum = Math.max(maximum, active)
+            await gate
+            active -= 1
+            return { data: { spent: account.length } }
+        })
+        const insight = createInsight({
+            providers: [
+                defineProvider({ adapters: { usage: { ...usageAdapter, execute } }, id: 'app' }),
+            ],
+        })
+
+        const results = Array.from({ length: 12 }, (_, index) =>
+            insight.usage({ account: `account-${index}` }),
+        )
+        await vi.waitFor(() => expect(execute).toHaveBeenCalledTimes(8))
+
+        expect(maximum).toBe(8)
+        release()
+        await Promise.all(results)
+        expect(execute).toHaveBeenCalledTimes(12)
+        expect(maximum).toBe(8)
+    })
+
+    it('keeps failures from different scheduled queries independent', async () => {
+        const failure = new Error('account unavailable')
+        const insight = createInsight({
+            providers: [
+                defineProvider({
+                    adapters: {
+                        usage: {
+                            ...usageAdapter,
+                            execute: ({ account }: { account: string }) => {
+                                if (account === 'broken') throw failure
+                                return { data: { spent: account.length } }
+                            },
+                        },
+                    },
+                    id: 'app',
+                }),
+            ],
+        })
+
+        const [broken, working] = await Promise.allSettled([
+            insight.usage({ account: 'broken' }),
+            insight.usage({ account: 'working' }),
+        ])
+
+        expect(broken).toEqual({ reason: failure, status: 'rejected' })
+        expect(working).toMatchObject({ status: 'fulfilled', value: { spent: 7 } })
     })
 
     it('exposes custom capabilities directly and reserves client method names', async () => {
@@ -313,11 +443,11 @@ describe('canonical query planning', () => {
         void invalidScope
     })
 
-    it('rejects duplicate Metric ownership and forwards abort signals', async () => {
+    it('rejects duplicate Metric ownership and supplies a native abort signal', async () => {
         const adapter = (metric: 'requests') =>
             defineMetricAdapter({
                 execute: (_query, context) => {
-                    expect(context.signal).toBe(controller.signal)
+                    expect(context.signal?.aborted).toBe(false)
                     return { values: { [metric]: 1 } }
                 },
                 metrics: { [metric]: {} },
