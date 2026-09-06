@@ -196,7 +196,7 @@ async function verifyConsumer(consumer: Consumer, tarball: string): Promise<void
             process.execPath,
             'add',
             tarball,
-            '@types/bun@1.4.0',
+            '@types/bun@1.4.1',
             'typescript@6.0.3',
             ...(consumer.dependencies ?? []),
             '--backend=copyfile',
