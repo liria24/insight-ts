@@ -58,7 +58,8 @@ Adding a capability does not require changing Core's public query model.
 - Integrations depend only on the layers they connect. There is no mandatory Integration interface.
 - Nitro is not H3. Nuxt composes Nitro instead of duplicating Nitro-owned behavior.
 - `@opentelemetry/api` is an optional peer reachable only from `insight-ts/opentelemetry`.
-- Vue renderer code, TanStack Charts, and UI CSS are reachable only from `insight-ts/vue/ui`.
+- Vue renderer code, TanStack Charts, d3-shape, and UI CSS are reachable only from
+  `insight-ts/vue/ui`; the chart libraries are optional package peers.
 
 The public package surface mirrors those boundaries:
 
@@ -72,7 +73,8 @@ The public package surface mirrors those boundaries:
 - `insight-ts/vue`: browser-client integration only.
 - `insight-ts/vue/ui`: optional Metric UI, renderer, and CSS.
 
-The package uses tsdown to emit ESM, declarations, source maps, and explicit subpath entries.
+The package uses tsdown to emit ESM, declarations, source maps, and explicit subpath entries. The
+Vue UI entry and its public style subpath resolve to one minified stylesheet.
 Publint, Are the Types Wrong, bundle checks, and packed-consumer tests protect the published surface.
 Runtime dependencies remain external so optional entries stay isolated.
 

@@ -1,4 +1,6 @@
 <script setup lang="ts">
+// oxlint-disable-next-line import/no-unassigned-import -- verifies explicit and automatic style imports share one asset
+import 'insight-ts/vue/ui/style.css'
 import {
     InsightAreaChart,
     InsightBarChart,

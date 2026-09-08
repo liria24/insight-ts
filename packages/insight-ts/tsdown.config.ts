@@ -8,8 +8,7 @@ export default defineConfig({
         profile: 'esm-only',
     },
     clean: true,
-    copy: [{ from: 'src/integrations/vue/ui/style.css', to: 'dist/vue/ui' }],
-    css: { inject: true },
+    css: { inject: true, minify: true },
     deps: {
         onlyImport: [
             '@tanstack/charts',

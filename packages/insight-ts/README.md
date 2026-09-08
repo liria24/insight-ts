@@ -104,6 +104,10 @@ cache.
 
 Optional Metric components render data you have already queried.
 
+```sh
+npm install insight-ts vue @tanstack/charts d3-shape
+```
+
 ```vue
 <script setup lang="ts">
 import { InsightAreaChart, InsightStat } from 'insight-ts/vue/ui'

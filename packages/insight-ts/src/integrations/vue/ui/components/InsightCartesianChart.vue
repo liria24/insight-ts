@@ -1,9 +1,12 @@
 <script setup lang="ts">
-import { areaY, defineChart, lineY, type ChartPoint } from '@tanstack/charts'
+import { areaY } from '@tanstack/charts/area'
 import { d3Curve } from '@tanstack/charts/d3/shape'
+import { lineY } from '@tanstack/charts/line'
 import { decorative } from '@tanstack/charts/mark/decorative'
 import { scaleLinear } from '@tanstack/charts/scales/linear'
+import { defineChart } from '@tanstack/charts/scene'
 import { tooltip } from '@tanstack/charts/tooltip'
+import type { ChartPoint } from '@tanstack/charts/types'
 import { Chart } from '@tanstack/charts/vue'
 import { curveMonotoneX } from 'd3-shape'
 import { computed } from 'vue'

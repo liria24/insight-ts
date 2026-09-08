@@ -6,8 +6,10 @@ import { basename, join } from 'node:path'
 
 interface Consumer {
     dependencies?: readonly string[]
+    forbiddenDependencies?: readonly string[]
     name: string
     nuxt?: boolean
+    runtimeError?: string
     source: string
 }
 
@@ -19,6 +21,7 @@ const root = await mkdtemp(join(tmpdir(), 'insight-ts-consumers-'))
 
 const consumers: readonly Consumer[] = [
     {
+        forbiddenDependencies: ['@tanstack/charts', 'd3-shape'],
         name: 'core',
         source: `import { createInsight, defineProvider } from 'insight-ts'
 import { cloudflare } from 'insight-ts/cloudflare'
@@ -107,6 +110,14 @@ await renderToString(createSSRApp(defineComponent(() => { provideBrowserInsight(
 if (injected !== insight) throw new Error('Packed Vue integration failed')
 `,
     },
+    {
+        dependencies: ['vue@3.5.42'],
+        name: 'vue-ui-missing-chart-peers',
+        runtimeError: '@tanstack/charts',
+        source: `export {}
+await import('insight-ts/vue/ui')
+`,
+    },
     vueUiConsumer('vue-ui-35', 'vue@3.5.42'),
     vueUiConsumer('vue-ui-36', 'vue@3.6.0-rc.6'),
 ]
@@ -126,9 +137,10 @@ try {
 
 function vueUiConsumer(name: string, vue: string): Consumer {
     return {
-        dependencies: [vue, 'happy-dom@20.12.0'],
+        dependencies: [vue, '@tanstack/charts@0.16.0', 'd3-shape@3.2.0', 'happy-dom@20.12.0'],
         name,
-        source: `import { Window } from 'happy-dom'
+        source: `import { fileURLToPath } from 'node:url'
+import { Window } from 'happy-dom'
 const browser = new Window({ url: 'https://example.test' })
 Object.assign(globalThis, {
   document: browser.document, window: browser, navigator: browser.navigator,
@@ -140,6 +152,8 @@ const {
   InsightAreaChart, InsightBarChart, InsightBreakdownTable, InsightLineChart,
   InsightQualityNotice, InsightSparkline, InsightStat,
 } = await import('insight-ts/vue/ui')
+const style = await Bun.file(fileURLToPath(import.meta.resolve('insight-ts/vue/ui/style.css'))).text()
+if (!style.includes('--insight-chart-6:') || style.includes(':where(\\n')) throw new Error('Packed Vue CSS export is missing or unminified')
 const data = {
   aggregate: { visits: 12 },
   meta: {
@@ -205,6 +219,11 @@ async function verifyConsumer(consumer: Consumer, tarball: string): Promise<void
         directory,
         env,
     )
+    for (const dependency of consumer.forbiddenDependencies ?? []) {
+        if (await exists(join(directory, 'node_modules', dependency))) {
+            throw new Error(`${consumer.name} unexpectedly installed ${dependency}`)
+        }
+    }
     await Bun.write(
         join(directory, 'tsconfig.json'),
         JSON.stringify({
@@ -223,7 +242,19 @@ async function verifyConsumer(consumer: Consumer, tarball: string): Promise<void
     )
     await Bun.write(join(directory, 'verify.ts'), consumer.source)
     await run([process.execPath, 'x', 'tsc', '--noEmit'], directory, env)
-    await run([process.execPath, 'run', 'verify.ts'], directory, env)
+    let runtimeFailure: string | undefined
+    try {
+        await run([process.execPath, 'run', 'verify.ts'], directory, env)
+    } catch (error) {
+        runtimeFailure = error instanceof Error ? error.message : JSON.stringify(error)
+    }
+    if (consumer.runtimeError) {
+        if (!runtimeFailure?.includes(consumer.runtimeError)) {
+            throw new Error(`Expected runtime error containing ${consumer.runtimeError}`)
+        }
+        return
+    }
+    if (runtimeFailure) throw new Error(runtimeFailure)
 
     if (consumer.nuxt) {
         await Bun.write(
