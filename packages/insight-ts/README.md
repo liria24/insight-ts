@@ -110,13 +110,18 @@ npm install insight-ts vue @tanstack/charts d3-shape
 
 ```vue
 <script setup lang="ts">
-import { InsightAreaChart, InsightStat } from 'insight-ts/vue/ui'
+import { InsightChart, InsightStat } from 'insight-ts/vue/ui'
 </script>
 
 <template>
     <InsightStat :data="dashboard.summary" />
 
-    <InsightAreaChart :data="dashboard.traffic" title="Traffic" :ui="{ title: 'font-semibold' }" />
+    <InsightChart
+        :data="dashboard.traffic"
+        title="Traffic"
+        type="area"
+        :ui="{ title: 'font-semibold' }"
+    />
 </template>
 ```
 

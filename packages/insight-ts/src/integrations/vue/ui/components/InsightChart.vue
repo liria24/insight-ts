@@ -1,81 +1,73 @@
 <script setup lang="ts">
 import { areaY } from '@tanstack/charts/area'
+import { barY } from '@tanstack/charts/bar'
 import { d3Curve } from '@tanstack/charts/d3/shape'
+import { group } from '@tanstack/charts/group'
 import { lineY } from '@tanstack/charts/line'
 import { decorative } from '@tanstack/charts/mark/decorative'
+import { scaleBand } from '@tanstack/charts/scales/band'
 import { scaleLinear } from '@tanstack/charts/scales/linear'
 import { defineChart } from '@tanstack/charts/scene'
 import { tooltip } from '@tanstack/charts/tooltip'
 import type { ChartPoint } from '@tanstack/charts/types'
 import { Chart } from '@tanstack/charts/vue'
 import { curveMonotoneX } from 'd3-shape'
-import { computed } from 'vue'
+import { computed, ref } from 'vue'
 
 import {
     createChartTooltipModel,
     createDataNotices,
     createSeriesModel,
     formatAxisTime,
-    formatSeriesPointTime,
+    formatDataNotice,
     formatMetricValue,
     formatNumber,
-    formatDataNotice,
+    formatSeriesPointTime,
     type ChartTooltipModel,
     type MetricSeriesPoint,
     type SeriesValue,
 } from '../../../../ui-core/index.ts'
 import {
     resolveInsightUIClass,
-    type InsightSeriesChartProps,
-    type InsightSeriesChartSlots,
-    type InsightSeriesChartUI,
+    type InsightChartProps,
+    type InsightChartSlots,
+    type InsightChartUI,
 } from '../types.ts'
 
 defineOptions({ inheritAttrs: false })
 
-interface InsightCartesianChartProps extends InsightSeriesChartProps {
-    variant: 'area' | 'line'
-}
-
-interface RendererDatum extends SeriesValue {
+interface BarDatum extends SeriesValue {
     color: string
     metric: string
-    name: string
 }
 
-type RendererPoint = ChartPoint<RendererDatum, number, number>
+type RendererPoint = ChartPoint<SeriesValue | BarDatum, number, number>
 
-const props = withDefaults(defineProps<InsightCartesianChartProps>(), {
+const props = withDefaults(defineProps<InsightChartProps>(), {
     height: 360,
     locale: 'en-US',
     smooth: false,
+    type: 'line',
 })
 
-defineSlots<InsightSeriesChartSlots>()
+defineSlots<InsightChartSlots>()
 
-const componentClass = computed(() => `insight-${props.variant}-chart`)
-const ui = computed<Required<InsightSeriesChartUI>>(() => ({
+const ui = computed<Required<InsightChartUI>>(() => ({
     empty: resolveInsightUIClass('insight-empty-state', props.ui?.empty),
-    header: resolveInsightUIClass(`${componentClass.value}__header`, props.ui?.header),
-    legend: resolveInsightUIClass(`${componentClass.value}__legend`, props.ui?.legend),
+    header: resolveInsightUIClass('insight-chart__header', props.ui?.header),
+    legend: resolveInsightUIClass('insight-chart__legend', props.ui?.legend),
     legendIndicator: resolveInsightUIClass(
-        `${componentClass.value}__legend-indicator`,
+        'insight-chart__legend-indicator',
         props.ui?.legendIndicator,
     ),
-    legendItem: resolveInsightUIClass(`${componentClass.value}__legend-item`, props.ui?.legendItem),
-    plot: resolveInsightUIClass(`${componentClass.value}__plot`, props.ui?.plot),
+    legendItem: resolveInsightUIClass('insight-chart__legend-item', props.ui?.legendItem),
     notices: resolveInsightUIClass('insight-notices', props.ui?.notices),
-    root: resolveInsightUIClass(componentClass.value, props.ui?.root),
-    title: resolveInsightUIClass(`${componentClass.value}__title`, props.ui?.title),
-    tooltip: resolveInsightUIClass(`${componentClass.value}__tooltip`, props.ui?.tooltip),
-    tooltipItem: resolveInsightUIClass(
-        `${componentClass.value}__tooltip-item`,
-        props.ui?.tooltipItem,
-    ),
-    tooltipLabel: resolveInsightUIClass(
-        `${componentClass.value}__tooltip-label`,
-        props.ui?.tooltipLabel,
-    ),
+    plot: resolveInsightUIClass('insight-chart__plot', props.ui?.plot),
+    root: resolveInsightUIClass('insight-chart', props.ui?.root),
+    title: resolveInsightUIClass('insight-chart__title', props.ui?.title),
+    tooltip: resolveInsightUIClass('insight-chart__tooltip', props.ui?.tooltip),
+    tooltipItem: resolveInsightUIClass('insight-chart__tooltip-item', props.ui?.tooltipItem),
+    tooltipLabel: resolveInsightUIClass('insight-chart__tooltip-label', props.ui?.tooltipLabel),
 }))
 const chartColors = [
     'var(--insight-chart-1)',
@@ -88,27 +80,36 @@ const chartColors = [
 const model = computed(() =>
     createSeriesModel(props.data, {
         colors: props.colors ?? chartColors,
-        locale: props.locale,
-        ...(props.timezone ? { timezone: props.timezone } : {}),
-        ...(props.xAxis ? { xAxis: props.xAxis } : {}),
+        includeZero: props.type === 'bar',
+        maxPoints: 500,
         ...(props.yAxis ? { yAxis: props.yAxis } : {}),
     }),
 )
-const rendererSeries = computed(() =>
-    model.value.series.map((series) => ({
-        ...series,
-        values: series.values.map((value): RendererDatum => ({
-            ...value,
-            color: series.color,
-            metric: series.metric,
-            name: series.name,
-        })),
-    })),
+const barValues = computed(() => {
+    const values: BarDatum[] = []
+    for (const series of model.value.series) {
+        for (const value of series.values) {
+            values.push({
+                color: series.color,
+                index: value.index,
+                metric: series.metric,
+                time: value.time,
+                value: value.value,
+            })
+        }
+    }
+    return values
+})
+const barTimes = computed(() =>
+    [...new Set(barValues.value.map(({ time }) => time))].toSorted((left, right) => left - right),
 )
-const empty = computed(() => model.value.points.length === 0 || model.value.series.length === 0)
-const label = computed(
-    () => props.title ?? `Insight ${props.variant === 'line' ? 'line' : 'area'} chart`,
+const empty = computed(
+    () =>
+        model.value.points.length === 0 ||
+        model.value.series.length === 0 ||
+        model.value.series.every(({ values }) => values.length === 0),
 )
+const label = computed(() => props.title ?? `Insight ${props.type} chart`)
 const notices = computed(() => createDataNotices(props.data.meta.quality))
 const messages = computed(() => notices.value.map(formatDataNotice))
 const areaBaseline = computed(() => {
@@ -117,31 +118,45 @@ const areaBaseline = computed(() => {
 })
 const curve = computed(() => (props.smooth ? d3Curve(curveMonotoneX) : undefined))
 const definition = computed(() => {
-    const marks = rendererSeries.value.flatMap((series) => {
-        const line = lineY(series.values, {
-            ...(curve.value ? { curve: curve.value } : {}),
-            id: `line-${series.metric}`,
-            stroke: series.color,
-            strokeWidth: 2.25,
-            x: 'time',
-            y: 'value',
-        })
-        if (props.variant === 'line') return [line]
-        return [
-            decorative(
-                areaY(series.values, {
-                    ...(curve.value ? { curve: curve.value } : {}),
-                    fill: series.color,
-                    fillOpacity: 0.16,
-                    id: `area-${series.metric}`,
-                    x: 'time',
-                    y1: areaBaseline.value,
-                    y2: 'value',
-                }),
-            ),
-            line,
-        ]
-    })
+    const marks =
+        props.type === 'bar'
+            ? [
+                  barY(barValues.value, {
+                      fill: (datum) => datum.color,
+                      id: 'bars',
+                      inset: 1,
+                      key: (datum) => `${datum.metric}:${datum.index}`,
+                      layout: group(),
+                      x: 'time',
+                      y: 'value',
+                      z: 'metric',
+                  }),
+              ]
+            : model.value.series.flatMap((series) => {
+                  const line = lineY(series.values, {
+                      ...(curve.value ? { curve: curve.value } : {}),
+                      id: `line-${series.metric}`,
+                      stroke: series.color,
+                      strokeWidth: 2.25,
+                      x: 'time',
+                      y: 'value',
+                  })
+                  if (props.type === 'line') return [line]
+                  return [
+                      decorative(
+                          areaY(series.values, {
+                              ...(curve.value ? { curve: curve.value } : {}),
+                              fill: series.color,
+                              fillOpacity: 0.16,
+                              id: `area-${series.metric}`,
+                              x: 'time',
+                              y1: areaBaseline.value,
+                              y2: 'value',
+                          }),
+                      ),
+                      line,
+                  ]
+              })
     const { timeDomain, yDomain } = model.value
     return defineChart({
         clip: true,
@@ -156,17 +171,18 @@ const definition = computed(() => {
                     ticks: {
                         count: Math.max(1, Math.floor(props.xAxis?.maxTicks ?? 6)),
                         format: (value) =>
-                            formatAxisTime(
-                                props.data,
-                                value,
-                                props.locale,
-                                props.timezone,
-                                props.xAxis,
-                            ),
+                            formatAxisTime(value, props.locale, props.timezone, props.xAxis),
                         size: 0,
                     },
                 },
-                scale: () => scaleLinear().domain(timeDomain),
+                scale:
+                    props.type === 'bar'
+                        ? () =>
+                              scaleBand<number>()
+                                  .domain(barTimes.value)
+                                  .paddingInner(0.12)
+                                  .paddingOuter(0.06)
+                        : () => scaleLinear().domain(timeDomain),
             },
             y: {
                 axis: {
@@ -190,14 +206,16 @@ const definition = computed(() => {
         },
     })
 })
+const showExactData = ref(false)
+const largeExactData = computed(() => model.value.points.length * model.value.series.length > 1_000)
+const showDataTable = computed(() => !largeExactData.value || showExactData.value)
 
 function tooltipForPoints(points: readonly RendererPoint[]): ChartTooltipModel | undefined {
     const index = points[0]?.datum.index
     return index === undefined
         ? undefined
         : createChartTooltipModel(
-              props.data,
-              model.value.series,
+              model.value,
               index,
               props.locale,
               props.timezone,
@@ -206,12 +224,8 @@ function tooltipForPoints(points: readonly RendererPoint[]): ChartTooltipModel |
           )
 }
 
-function pointKey(point: MetricSeriesPoint): string {
-    return `${point.time}:${JSON.stringify(point.dimensions ?? {})}`
-}
-
-function formatPointTime(index: number): string {
-    return formatSeriesPointTime(props.data, index, props.locale, props.timezone, props.xAxis)
+function formatPointTime(point: MetricSeriesPoint): string {
+    return formatSeriesPointTime(point, props.locale, props.timezone, props.xAxis)
 }
 
 function formatPointValue(point: MetricSeriesPoint, metric: string): string {
@@ -227,6 +241,7 @@ function formatPointValue(point: MetricSeriesPoint, metric: string): string {
         v-bind="$attrs"
         :aria-label="String($attrs['aria-label'] ?? label)"
         :class="[ui.root, props.class]"
+        :data-chart-type="props.type"
         :data-slot="String($attrs['data-slot'] ?? 'root')"
     >
         <header v-if="props.title || !empty" :class="ui.header" data-slot="header">
@@ -313,7 +328,18 @@ function formatPointValue(point: MetricSeriesPoint, metric: string): string {
             </Chart>
         </div>
 
-        <table v-if="!empty" class="insight-chart__data insight-sr-only">
+        <button
+            v-if="!empty && largeExactData"
+            :aria-expanded="showExactData"
+            class="insight-chart__data-toggle"
+            data-slot="data-toggle"
+            type="button"
+            @click="showExactData = !showExactData"
+        >
+            {{ showExactData ? 'Hide' : 'Show' }} exact data ({{ model.points.length }} rows)
+        </button>
+
+        <table v-if="!empty && showDataTable" class="insight-chart__data insight-sr-only">
             <caption>
                 {{
                     label
@@ -329,8 +355,8 @@ function formatPointValue(point: MetricSeriesPoint, metric: string): string {
                 </tr>
             </thead>
             <tbody>
-                <tr v-for="(point, index) in model.points" :key="pointKey(point)">
-                    <th scope="row">{{ formatPointTime(index) }}</th>
+                <tr v-for="point in model.points" :key="point.key">
+                    <th scope="row">{{ formatPointTime(point) }}</th>
                     <td v-for="series in model.series" :key="series.metric">
                         {{ formatPointValue(point, series.metric) }}
                     </td>

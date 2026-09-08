@@ -177,7 +177,7 @@ async function measure(packageRoot: string): Promise<BundleReport> {
             NITRO_PRESET: 'node_server',
         })
         const generated = await readText([join(nuxt, '.nuxt'), join(nuxt, '.output')])
-        for (const forbidden of ['@tanstack/charts', 'InsightAreaChart', '--insight-chart-1']) {
+        for (const forbidden of ['@tanstack/charts', 'InsightChart', '--insight-chart-1']) {
             if (generated.includes(forbidden)) {
                 throw new Error(`Nuxt module-only consumer contains Vue UI marker ${forbidden}`)
             }

@@ -149,8 +149,7 @@ Object.assign(globalThis, {
 const { createSSRApp, h, nextTick } = await import('vue')
 const { renderToString } = await import('vue/server-renderer')
 const {
-  InsightAreaChart, InsightBarChart, InsightBreakdownTable, InsightLineChart,
-  InsightQualityNotice, InsightSparkline, InsightStat,
+  InsightBarList, InsightBreakdownTable, InsightChart, InsightSparkline, InsightStat,
 } = await import('insight-ts/vue/ui')
 const style = await Bun.file(fileURLToPath(import.meta.resolve('insight-ts/vue/ui/style.css'))).text()
 if (!style.includes('--insight-chart-6:') || style.includes(':where(\\n')) throw new Error('Packed Vue CSS export is missing or unminified')
@@ -168,19 +167,19 @@ const data = {
 } as const
 const Root = () => h('main', [
   h(InsightStat, { data }),
-  h(InsightLineChart, { data }),
-  h(InsightAreaChart, { data }),
+  h(InsightChart, { data }),
+  h(InsightChart, { data, type: 'area' }),
+  h(InsightChart, { data, type: 'bar' }),
   h(InsightSparkline, { data }),
-  h(InsightBarChart, { data, dimension: 'country' }),
+  h(InsightBarList, { data, dimension: 'country' }),
   h(InsightBreakdownTable, { data }),
-  h(InsightQualityNotice, { data: data.meta.quality }),
 ])
 const html = await renderToString(createSSRApp(Root))
-if ((html.match(/<svg/g) ?? []).length !== 3 || !html.includes('insight-chart__data insight-sr-only') || !html.includes('50% sampling')) throw new Error('Packed Vue SSR failed')
+if ((html.match(/<svg/g) ?? []).length !== 4 || !html.includes('insight-chart__data insight-sr-only') || !html.includes('50% sampling')) throw new Error('Packed Vue SSR failed')
 const container = document.createElement('div'); container.innerHTML = html; document.body.append(container)
 const warnings: unknown[][] = []; const warn = console.warn; console.warn = (...args) => warnings.push(args)
 const app = createSSRApp(Root); app.mount(container); await nextTick(); console.warn = warn
-if (container.querySelectorAll('svg').length !== 3 || warnings.some(([message]) => String(message).includes('Hydration'))) {
+if (container.querySelectorAll('svg').length !== 4 || warnings.some(([message]) => String(message).includes('Hydration'))) {
   throw new Error('Packed Vue hydration failed')
 }
 app.unmount(); browser.close()

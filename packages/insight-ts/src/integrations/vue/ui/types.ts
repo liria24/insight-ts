@@ -20,7 +20,7 @@ export interface InsightStatUI {
     empty?: InsightUIClass
 }
 
-export interface InsightSeriesChartUI {
+export interface InsightChartUI {
     root?: InsightUIClass
     header?: InsightUIClass
     title?: InsightUIClass
@@ -35,9 +35,6 @@ export interface InsightSeriesChartUI {
     empty?: InsightUIClass
 }
 
-export type InsightLineChartUI = InsightSeriesChartUI
-export type InsightAreaChartUI = InsightSeriesChartUI
-
 export interface InsightBreakdownTableUI {
     root?: InsightUIClass
     table?: InsightUIClass
@@ -50,7 +47,7 @@ export interface InsightBreakdownTableUI {
     empty?: InsightUIClass
 }
 
-export interface InsightBarChartUI {
+export interface InsightBarListUI {
     root?: InsightUIClass
     list?: InsightUIClass
     item?: InsightUIClass
@@ -66,12 +63,6 @@ export interface InsightSparklineUI {
     path?: InsightUIClass
 }
 
-export interface InsightQualityNoticeUI {
-    root?: InsightUIClass
-    list?: InsightUIClass
-    item?: InsightUIClass
-}
-
 export interface InsightStatProps {
     class?: InsightUIClass
     data: MetricQueryResult
@@ -83,7 +74,9 @@ export interface InsightStatProps {
     ui?: InsightStatUI
 }
 
-export interface InsightSeriesChartProps {
+export type InsightChartType = 'area' | 'bar' | 'line'
+
+export interface InsightChartProps {
     class?: InsightUIClass | undefined
     colors?: readonly string[] | undefined
     data: MetricQueryResult
@@ -92,13 +85,11 @@ export interface InsightSeriesChartProps {
     smooth?: boolean | undefined
     timezone?: Timezone | undefined
     title?: string | undefined
-    ui?: InsightSeriesChartUI | undefined
+    type?: InsightChartType | undefined
+    ui?: InsightChartUI | undefined
     xAxis?: XAxisOptions | undefined
     yAxis?: YAxisOptions | undefined
 }
-
-export type InsightLineChartProps = InsightSeriesChartProps
-export type InsightAreaChartProps = InsightSeriesChartProps
 
 export interface InsightBreakdownTableProps {
     class?: InsightUIClass
@@ -109,7 +100,7 @@ export interface InsightBreakdownTableProps {
     ui?: InsightBreakdownTableUI
 }
 
-export interface InsightBarChartProps<TData extends MetricQueryResult = MetricQueryResult> {
+export interface InsightBarListProps<TData extends MetricQueryResult = MetricQueryResult> {
     class?: InsightUIClass
     data: TData
     dimension: TData extends MetricQueryResult<string, infer TDimension> ? TDimension : string
@@ -117,7 +108,7 @@ export interface InsightBarChartProps<TData extends MetricQueryResult = MetricQu
     formatter?: (value: number) => string
     height?: number
     locale?: string
-    ui?: InsightBarChartUI
+    ui?: InsightBarListUI
 }
 
 export interface InsightSparklineProps {
@@ -128,13 +119,7 @@ export interface InsightSparklineProps {
     width?: number
 }
 
-export interface InsightQualityNoticeProps {
-    class?: InsightUIClass
-    data?: QueryQuality
-    ui?: InsightQualityNoticeUI
-}
-
-export interface InsightSeriesChartSlots {
+export interface InsightChartSlots {
     empty(properties: { message: string }): unknown
     legend(properties: { series: readonly ChartSeries[] }): unknown
     notices(properties: {

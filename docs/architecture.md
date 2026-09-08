@@ -235,14 +235,18 @@ keys. Nuxt does not scan UI source, inject UI CSS, import Vue UI, control Vapor,
 secrets.
 
 UI Core contains Metric result selection, transformations, formatting, domains, Quality notices,
-and table models without framework, DOM, or renderer APIs. Public UI accepts already queried data
-and performs no Provider I/O, authentication, caching, or History work.
+and table models without framework, DOM, or renderer APIs. It keeps query-wide aggregates separate
+from row models, parses row timestamps once, and retains exact model points while bounding
+presentation series. Public UI accepts already queried data and performs no Provider I/O,
+authentication, caching, or History work.
 
 Framework UI integrations own markup, reactivity, lifecycle, and framework-native composition.
 Chart renderers remain private. Vue components use `data` for data-bearing props, preserve selected
-Metric order, expose semantic styling hooks, render accessible SSR output, and compile the same SFC
-source for VDOM and Vapor where practical. No Vapor-specific public entry exists while the full UI
-still needs VDOM interop. Log and Trace renderers remain application-local.
+Metric order, expose semantic styling hooks, and compile the same SFC source for VDOM and Vapor
+where practical. Cartesian charts and sparklines decimate only rendered geometry; exact model
+points remain available in a semantic table, mounted on demand when the table would be very large.
+No Vapor-specific public entry exists while the full UI still needs VDOM interop. Log and Trace
+renderers remain application-local.
 
 ## Release model
 

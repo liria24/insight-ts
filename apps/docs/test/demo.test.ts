@@ -9,29 +9,21 @@ describe('Demo analytics range', () => {
     it('renders direct MDC examples with literal data on every UI page', async () => {
         const pages = {
             '2.stat.md': { fixture: 'aggregate: { pageViews: 4140 }', tag: 'insight-stat' },
-            '3.line-chart.md': {
-                fixture: 'aggregate: { pageViews: 4140 }',
-                tag: 'insight-line-chart',
-            },
-            '4.area-chart.md': {
-                fixture: 'aggregate: { pageViews: 4140 }',
-                tag: 'insight-area-chart',
+            '3.chart.md': {
+                fixture: 'pageViews: 4140',
+                tag: 'insight-chart',
             },
             '5.breakdown-table.md': {
                 fixture: 'aggregate: { pageViews: 4140 }',
                 tag: 'insight-breakdown-table',
             },
-            '6.bar-chart.md': {
+            '4.bar-list.md': {
                 fixture: 'aggregate: { pageViews: 4140 }',
-                tag: 'insight-bar-chart',
+                tag: 'insight-bar-list',
             },
             '7.sparkline.md': {
                 fixture: 'aggregate: { pageViews: 4140 }',
                 tag: 'insight-sparkline',
-            },
-            '8.quality-notice.md': {
-                fixture: 'sampleRate: 0.25',
-                tag: 'insight-quality-notice',
             },
         } as const
         await Promise.all(
@@ -45,10 +37,8 @@ describe('Demo analytics range', () => {
                 )
                 expect(example).toContain(`:::${tag}{:data='`)
                 expect(example).toContain(fixture)
-                if (file !== '8.quality-notice.md') {
-                    expect(example).toContain('"aggregate":{"pageViews":4140}')
-                    expect(example).not.toContain('"pageViews":{"points"')
-                }
+                expect(example).toContain('"aggregate":{')
+                expect(example).not.toContain('"pageViews":{"points"')
                 expect(example).toContain('#code')
                 expect(example).not.toContain('dashboard.')
                 expect(example).not.toContain('\n---')
@@ -61,11 +51,9 @@ describe('Demo analytics range', () => {
             new URL('../app/plugins/insight-ui.ts', import.meta.url),
         ).text()
         for (const component of [
-            'InsightAreaChart',
-            'InsightBarChart',
+            'InsightBarList',
             'InsightBreakdownTable',
-            'InsightLineChart',
-            'InsightQualityNotice',
+            'InsightChart',
             'InsightSparkline',
             'InsightStat',
         ]) {
@@ -80,10 +68,9 @@ describe('Demo analytics range', () => {
 
         expect(source).toContain('await useFetch<DemoReportResponse>')
         expect(source).toContain('InsightDemoDashboard')
-        expect(dashboard).toContain('InsightAreaChart')
-        expect(dashboard).toContain('InsightBarChart')
+        expect(dashboard).toContain('InsightChart')
+        expect(dashboard).toContain('InsightBarList')
         expect(dashboard).toContain('InsightSparkline')
-        expect(dashboard).toContain('InsightQualityNotice')
         expect(dashboard).toContain("from 'insight-ts/vue/ui'")
         expect(dashboard).toContain(':data=')
         expect(dashboard).not.toContain(':report=')

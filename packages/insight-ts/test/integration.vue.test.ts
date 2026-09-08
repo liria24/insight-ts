@@ -4,21 +4,17 @@ import { renderToString } from 'vue/server-renderer'
 
 import { createBrowserInsight, type BrowserInsight } from '../src/integrations/browser/index.ts'
 import { provideBrowserInsight, useBrowserInsight } from '../src/integrations/vue/index.ts'
+import * as ui from '../src/integrations/vue/ui/index.ts'
 import {
-    InsightAreaChart,
-    InsightBarChart,
+    InsightBarList,
     InsightBreakdownTable,
-    InsightLineChart,
-    InsightQualityNotice,
+    InsightChart,
     InsightSparkline,
     InsightStat,
-    type InsightAreaChartProps,
-    type InsightBarChartProps,
-    type InsightBarChartUI,
+    type InsightBarListProps,
+    type InsightBarListUI,
     type InsightBreakdownTableProps,
-    type InsightLineChartProps,
-    type InsightQualityNoticeProps,
-    type InsightQualityNoticeUI,
+    type InsightChartProps,
     type InsightSparklineProps,
     type InsightSparklineUI,
     type InsightStatProps,
@@ -75,20 +71,23 @@ describe('Vue integration', () => {
     })
 
     it('uses data-only Metric Source props with inferred fields', () => {
+        expect(ui).not.toHaveProperty('InsightLineChart')
+        expect(ui).not.toHaveProperty('InsightAreaChart')
+        expect(ui).not.toHaveProperty('InsightBarChart')
+        expect(ui).not.toHaveProperty('InsightQualityNotice')
         expectTypeOf<InsightStatProps>().not.toHaveProperty('metric')
         expectTypeOf<InsightSparklineProps>().not.toHaveProperty('metric')
-        expectTypeOf<InsightBarChartProps<typeof data>>().not.toHaveProperty('metric')
-        expectTypeOf<InsightBarChartProps<typeof data>['dimension']>().toEqualTypeOf<'country'>()
-        expectTypeOf<InsightLineChartProps['data']>().toEqualTypeOf<MetricQueryResult>()
-        expectTypeOf<InsightAreaChartProps['data']>().toEqualTypeOf<MetricQueryResult>()
+        expectTypeOf<InsightBarListProps<typeof data>>().not.toHaveProperty('metric')
+        expectTypeOf<InsightBarListProps<typeof data>['dimension']>().toEqualTypeOf<'country'>()
+        expectTypeOf<InsightChartProps['data']>().toEqualTypeOf<MetricQueryResult>()
+        expectTypeOf<InsightChartProps['type']>().toEqualTypeOf<
+            'area' | 'bar' | 'line' | undefined
+        >()
         expectTypeOf<InsightBreakdownTableProps['data']>().toEqualTypeOf<MetricQueryResult>()
         expectTypeOf<InsightUIClass>().toEqualTypeOf<string | readonly string[]>()
-        expectTypeOf<InsightBarChartProps['ui']>().toEqualTypeOf<InsightBarChartUI | undefined>()
+        expectTypeOf<InsightBarListProps['ui']>().toEqualTypeOf<InsightBarListUI | undefined>()
         expectTypeOf<InsightSparklineProps['ui']>().toEqualTypeOf<InsightSparklineUI | undefined>()
-        expectTypeOf<InsightQualityNoticeProps['ui']>().toEqualTypeOf<
-            InsightQualityNoticeUI | undefined
-        >()
-        expectTypeOf<InsightLineChartProps>().not.toHaveProperty('metrics')
+        expectTypeOf<InsightChartProps>().not.toHaveProperty('metrics')
         expectTypeOf<InsightBreakdownTableProps>().not.toHaveProperty('dimensions')
     })
 
@@ -101,9 +100,10 @@ describe('Vue integration', () => {
                         data,
                         ui: { path: 'custom-sparkline-path', root: 'custom-sparkline' },
                     }),
-                    h(InsightLineChart, { data, title: 'Traffic line' }),
-                    h(InsightAreaChart, { data, title: 'Traffic area' }),
-                    h(InsightBarChart, {
+                    h(InsightChart, { data, title: 'Traffic line' }),
+                    h(InsightChart, { data, title: 'Traffic area', type: 'area' }),
+                    h(InsightChart, { data, title: 'Traffic bars', type: 'bar' }),
+                    h(InsightBarList, {
                         data,
                         dimension: 'country',
                         ui: {
@@ -117,14 +117,6 @@ describe('Vue integration', () => {
                         },
                     }),
                     h(InsightBreakdownTable, { data }),
-                    h(InsightQualityNotice, {
-                        data: data.meta.quality!,
-                        ui: {
-                            item: 'custom-quality-item',
-                            list: 'custom-quality-list',
-                            root: 'custom-quality-root',
-                        },
-                    }),
                 ]),
             ),
         )
@@ -132,15 +124,17 @@ describe('Vue integration', () => {
         expect(html).toContain('2,626')
         expect(html).toContain('Traffic line')
         expect(html).toContain('Traffic area')
+        expect(html).toContain('Traffic bars')
         expect(html).toContain('Page Views')
         expect(html).toContain('Visits')
         expect(html).toContain('JP')
         expect(html).toContain('Results use 25% sampling')
-        expect(html.match(/<svg/g)).toHaveLength(3)
-        expect(html).toContain('insight-bar-chart__bar')
+        expect(html.match(/<svg/g)).toHaveLength(4)
+        expect(html).toContain('data-chart-type="bar"')
+        expect(html).toContain('<rect')
+        expect(html).toContain('insight-bar-list__bar')
         expect(html).toContain('custom-bar-value')
         expect(html).toContain('custom-sparkline-path')
-        expect(html).toContain('custom-quality-item')
         expect(html).toContain('data-slot="table"')
     })
 
@@ -149,10 +143,36 @@ describe('Vue integration', () => {
             colors: ['#123456', '#654321'],
             yAxis: { domain: { max: 2_000, min: 0 } },
         })
-        const tooltip = createChartTooltipModel(data, model.series, 1, 'en-US', 'UTC')
+        const bars = createSeriesModel(data, {
+            colors: ['#123456', '#654321'],
+            includeZero: true,
+        })
+        const tooltip = createChartTooltipModel(model, 1, 'en-US', 'UTC')
 
         expect(model.series.map(({ metric }) => metric)).toEqual(['pageViews', 'visits'])
         expect(model.yDomain).toEqual({ min: 0, max: 2_000 })
+        expect(bars.yDomain.min).toBe(0)
         expect(tooltip?.values.map(({ value }) => value)).toEqual([1_386, 901])
+    })
+
+    it('bounds large chart and sparkline markup while keeping exact data available', async () => {
+        const large: MetricQueryResult<'errors' | 'requests'> = {
+            aggregate: { errors: 49_995_000, requests: 99_990_000 },
+            meta: { queriedAt: '2026-01-08T00:00:00.000Z' },
+            rows: Array.from({ length: 10_000 }, (_, index) => ({
+                time: new Date(Date.UTC(2026, 0, 1) + index * 60_000).toISOString(),
+                values: { errors: index, requests: index * 2 },
+            })),
+        }
+        const html = await renderToString(
+            createSSRApp(() =>
+                h('main', [h(InsightChart, { data: large }), h(InsightSparkline, { data: large })]),
+            ),
+        )
+        const sparklinePath = /data-slot="path" d="([^"]+)"/.exec(html)?.[1] ?? ''
+
+        expect(html).toContain('Show exact data (10000 rows)')
+        expect(html).not.toContain('<table')
+        expect(sparklinePath.match(/L /g)).toHaveLength(199)
     })
 })

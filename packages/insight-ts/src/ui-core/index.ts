@@ -36,10 +36,15 @@ export interface ChartSeries {
     values: readonly SeriesValue[]
 }
 
-export type MetricSeriesPoint = MetricPoint & { time: string }
+export type MetricSeriesPoint = MetricPoint & {
+    key: string
+    time: string
+    timestamp: number
+}
 
 export interface MetricTableRow {
     dimensions: Readonly<Record<string, DimensionValue | undefined>>
+    key: string
     metrics: Readonly<Record<string, number | null>>
 }
 
@@ -75,14 +80,28 @@ export interface BreakdownModel {
     rows: readonly MetricTableRow[]
 }
 
+const numberFormatters = new Map<string, Intl.NumberFormat>()
+const timeFormatters = new Map<string, Intl.DateTimeFormat>()
+
 export const formatMetricName = (value: string): string =>
     value
         .replaceAll(/([a-z\d])([A-Z])/g, '$1 $2')
         .replaceAll(/[-_.]+/g, ' ')
         .replace(/^\w/, (character) => character.toUpperCase())
 
-export const formatNumber = (value: number, locale = 'en-US', maximumFractionDigits = 2): string =>
-    new Intl.NumberFormat(locale, { maximumFractionDigits }).format(value)
+export const formatNumber = (
+    value: number,
+    locale = 'en-US',
+    maximumFractionDigits = 2,
+): string => {
+    const key = `${locale}\0${maximumFractionDigits}`
+    let formatter = numberFormatters.get(key)
+    if (!formatter) {
+        formatter = new Intl.NumberFormat(locale, { maximumFractionDigits })
+        numberFormatters.set(key, formatter)
+    }
+    return formatter.format(value)
+}
 
 export const formatMetricValue = (value: number, locale = 'en-US'): string =>
     formatNumber(value, locale, 2)
@@ -106,7 +125,7 @@ export const tableCellValue = (
 export const createStatModel = (
     result: MetricQueryResult,
 ): { metric: string; value: number | null } | undefined => {
-    const metric = Object.keys(result.aggregate)[0]
+    const metric = Object.keys(result.aggregate ?? {})[0]
     if (!metric) return undefined
     return { metric, value: result.aggregate[metric] ?? null }
 }
@@ -142,32 +161,59 @@ export const createSeriesModel = (
     result: MetricQueryResult,
     options: {
         colors: readonly string[]
+        includeZero?: boolean
         locale?: string
+        maxPoints?: number
         timezone?: Timezone
         xAxis?: XAxisOptions
         yAxis?: YAxisOptions
     },
 ): SeriesModel => {
-    const metrics = Object.keys(result.aggregate)
+    const metrics = metricNames(result)
     const points = seriesPoints(result)
-    const series = metrics.map((metric, index) => ({
-        color: options.colors[index % options.colors.length] ?? 'currentColor',
-        metric,
-        name: formatMetricName(metric),
-        values: points.flatMap((point, pointIndex) => {
+    const indexes = sampledIndexes(points.length, options.maxPoints ?? points.length)
+    const series = metrics.map((metric, seriesIndex) => {
+        const values: SeriesValue[] = []
+        for (const index of indexes) {
+            const point = points[index]
+            const value = point?.values[metric]
+            if (point && value !== null && value !== undefined) {
+                values.push({ index, time: point.timestamp, value })
+            }
+        }
+        return {
+            color: options.colors[seriesIndex % options.colors.length] ?? 'currentColor',
+            metric,
+            name: formatMetricName(metric),
+            values,
+        }
+    })
+    let minimumTime = Number.POSITIVE_INFINITY
+    let maximumTime = Number.NEGATIVE_INFINITY
+    let minimumValue = Number.POSITIVE_INFINITY
+    let maximumValue = Number.NEGATIVE_INFINITY
+    for (const point of points) {
+        minimumTime = Math.min(minimumTime, point.timestamp)
+        maximumTime = Math.max(maximumTime, point.timestamp)
+        for (const metric of metrics) {
             const value = point.values[metric]
-            return value === null || value === undefined
-                ? []
-                : [{ index: pointIndex, time: new Date(point.time).valueOf(), value }]
-        }),
-    }))
-    const times = points.map(({ time }) => new Date(time).valueOf()).filter(Number.isFinite)
-    const values = series.flatMap(({ values: items }) => items.map(({ value }) => value))
-    const minimumTime = times.length === 0 ? 0 : Math.min(...times)
-    const maximumTime = times.length === 0 ? 1 : Math.max(...times)
+            if (value !== null && value !== undefined && Number.isFinite(value)) {
+                minimumValue = Math.min(minimumValue, value)
+                maximumValue = Math.max(maximumValue, value)
+            }
+        }
+    }
     const timeDomain: [number, number] =
-        minimumTime === maximumTime ? [minimumTime, minimumTime + 1] : [minimumTime, maximumTime]
-    const automatic = domain(values)
+        minimumTime === Number.POSITIVE_INFINITY
+            ? [0, 1]
+            : minimumTime === maximumTime
+              ? [minimumTime, minimumTime + 1]
+              : [minimumTime, maximumTime]
+    const automatic = domain(minimumValue, maximumValue)
+    if (options.includeZero) {
+        automatic.min = Math.min(0, automatic.min)
+        automatic.max = Math.max(0, automatic.max)
+    }
     return {
         points,
         series,
@@ -180,27 +226,35 @@ export const createSeriesModel = (
 }
 
 export const createBreakdownModel = (result: MetricQueryResult): BreakdownModel => {
-    const metrics = Object.keys(result.aggregate)
-    const rows = breakdownRows(result, metrics)
-    const dimensions = [...new Set(rows.flatMap(({ dimensions: values }) => Object.keys(values)))]
-    return { dimensions, metrics, rows }
+    const metrics = metricNames(result)
+    const dimensions = new Set<string>()
+    const rows: MetricTableRow[] = []
+    for (const point of result.rows ?? []) {
+        if (!point.dimensions) continue
+        for (const dimension of Object.keys(point.dimensions)) dimensions.add(dimension)
+        rows.push({
+            dimensions: point.dimensions,
+            key: rowKey(point),
+            metrics: point.values,
+        })
+    }
+    return { dimensions: [...dimensions], metrics, rows }
 }
 
 export const createChartTooltipModel = (
-    result: MetricQueryResult,
-    series: readonly ChartSeries[],
+    model: SeriesModel,
     index: number,
     locale = 'en-US',
     timezone?: Timezone,
     xAxis?: XAxisOptions,
     yAxis?: YAxisOptions,
 ): ChartTooltipModel | undefined => {
-    const point = seriesPoints(result)[index]
+    const point = model.points[index]
     if (!point) return undefined
     return {
-        label: formatTime(point.time, locale, timezone, xAxis),
+        label: formatTime(point.timestamp, locale, timezone, xAxis),
         point,
-        values: series.map((item) => {
+        values: model.series.map((item) => {
             const value = point.values[item.metric] ?? null
             return {
                 color: item.color,
@@ -217,73 +271,89 @@ export const createChartTooltipModel = (
 }
 
 export const formatAxisTime = (
-    _result: MetricQueryResult,
     value: number,
     locale = 'en-US',
     timezone?: Timezone,
     options?: XAxisOptions,
-): string => formatTime(new Date(value).toISOString(), locale, timezone, options)
+): string => formatTime(value, locale, timezone, options)
 
 export const formatSeriesPointTime = (
-    result: MetricQueryResult,
-    index: number,
+    point: MetricSeriesPoint,
     locale = 'en-US',
     timezone?: Timezone,
     options?: XAxisOptions,
-): string => {
-    const point = seriesPoints(result)[index]
-    return point ? formatTime(point.time, locale, timezone, options) : ''
+): string => formatTime(point.timestamp, locale, timezone, options)
+
+export const seriesPoints = (data: MetricData): MetricSeriesPoint[] => {
+    const points: MetricSeriesPoint[] = []
+    for (const point of data.rows ?? []) {
+        if (point.time === undefined) continue
+        const timestamp = Date.parse(point.time)
+        if (!Number.isFinite(timestamp)) continue
+        points.push({
+            ...(point.dimensions ? { dimensions: point.dimensions } : {}),
+            key: rowKey(point),
+            time: point.time,
+            timestamp,
+            values: point.values,
+        })
+    }
+    points.sort((left, right) => left.timestamp - right.timestamp)
+    return points
 }
 
-export const seriesPoints = (data: MetricData): MetricSeriesPoint[] =>
-    (data.rows ?? [])
-        .filter((point): point is MetricSeriesPoint => point.time !== undefined)
-        .toSorted((left, right) => left.time.localeCompare(right.time))
+const metricNames = (data: MetricData): string[] => {
+    const aggregate = Object.keys(data.aggregate ?? {})
+    return aggregate.length > 0 ? aggregate : Object.keys(data.rows?.[0]?.values ?? {})
+}
 
-const breakdownRows = (data: MetricData, metrics: readonly string[]): MetricTableRow[] => {
-    return (data.rows ?? []).flatMap((point) =>
-        point.dimensions
-            ? [
-                  {
-                      dimensions: point.dimensions,
-                      metrics: Object.fromEntries(
-                          metrics.map((metric) => [metric, point.values[metric] ?? null]),
-                      ),
-                  },
-              ]
-            : [],
+const rowKey = (point: MetricPoint): string =>
+    JSON.stringify([point.time ?? null, point.dimensions ?? null])
+
+const sampledIndexes = (length: number, maximum: number): number[] => {
+    const size = Math.max(1, Math.floor(maximum))
+    if (length <= size) return Array.from({ length }, (_, index) => index)
+    if (size === 1) return [0]
+    // ponytail: even sampling can miss narrow peaks; use shape-aware decimation if charts need them.
+    return Array.from({ length: size }, (_, index) =>
+        Math.round((index * (length - 1)) / (size - 1)),
     )
 }
 
 const formatTime = (
-    value: string,
+    value: number,
     locale: string,
     timezone?: Timezone,
     options?: XAxisOptions,
 ): string => {
     const date = new Date(value)
     if (options?.formatter) return options.formatter(date)
-    return new Intl.DateTimeFormat(locale, {
-        dateStyle: 'medium',
-        timeStyle: 'short',
-        ...(timezone === 'utc'
-            ? { timeZone: 'UTC' }
+    const timeZone =
+        timezone === 'utc'
+            ? 'UTC'
             : timezone && timezone !== 'local' && timezone !== 'source'
-              ? { timeZone: timezone }
-              : {}),
-    }).format(date)
+              ? timezone
+              : undefined
+    const key = `${locale}\0${timeZone ?? ''}`
+    let formatter = timeFormatters.get(key)
+    if (!formatter) {
+        formatter = new Intl.DateTimeFormat(locale, {
+            dateStyle: 'medium',
+            timeStyle: 'short',
+            ...(timeZone ? { timeZone } : {}),
+        })
+        timeFormatters.set(key, formatter)
+    }
+    return formatter.format(date)
 }
 
-const domain = (values: readonly number[]): YAxisDomain => {
-    if (values.length === 0) return { max: 1, min: 0 }
-    let min = Math.min(...values)
-    let max = Math.max(...values)
-    if (min === max) {
-        const padding = Math.abs(min) * 0.1 || 1
-        min -= padding
-        max += padding
+const domain = (minimum: number, maximum: number): YAxisDomain => {
+    if (minimum === Number.POSITIVE_INFINITY) return { max: 1, min: 0 }
+    if (minimum === maximum) {
+        const padding = Math.abs(minimum) * 0.1 || 1
+        return { max: maximum + padding, min: minimum - padding }
     }
-    return { max, min }
+    return { max: maximum, min: minimum }
 }
 
 export type TimeFormatContext = {

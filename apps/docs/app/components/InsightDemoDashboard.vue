@@ -1,11 +1,9 @@
 <script setup lang="ts">
 import type { MetricQueryResult } from 'insight-ts/ui-core'
 import {
-    InsightAreaChart,
-    InsightBarChart,
+    InsightBarList,
     InsightBreakdownTable,
-    InsightLineChart,
-    InsightQualityNotice,
+    InsightChart,
     InsightSparkline,
     InsightStat,
 } from 'insight-ts/vue/ui'
@@ -105,16 +103,13 @@ const selectMetric = (data: MetricQueryResult, metric: string): MetricQueryResul
                         </div>
                     </div>
                     <div class="border-t border-default p-5 sm:p-6">
-                        <InsightAreaChart
+                        <InsightChart
                             :data="data.analytics.trafficSeries"
                             :height="compact ? 240 : 320"
                             locale="en-US"
                             title="Traffic over time"
                             :timezone="timezone"
-                        />
-                        <InsightQualityNotice
-                            class="mt-3 text-xs text-muted"
-                            :data="data.analytics.trafficSeries.meta.quality"
+                            type="area"
                         />
                     </div>
                 </UCard>
@@ -132,7 +127,7 @@ const selectMetric = (data: MetricQueryResult, metric: string): MetricQueryResul
                             <h3 class="mb-5 font-semibold text-highlighted">
                                 Web Analytics breakdowns
                             </h3>
-                            <InsightBarChart :data="data.analytics.topPages" dimension="path" />
+                            <InsightBarList :data="data.analytics.topPages" dimension="path" />
                             <div class="mt-6 grid gap-5 md:grid-cols-2">
                                 <InsightBreakdownTable :data="data.analytics.countries" />
                                 <InsightBreakdownTable :data="data.analytics.devices" />
@@ -154,7 +149,7 @@ const selectMetric = (data: MetricQueryResult, metric: string): MetricQueryResul
                                     :ui="statUi"
                                 />
                             </div>
-                            <InsightLineChart
+                            <InsightChart
                                 class="mt-6"
                                 :data="data.analytics.searchSeries"
                                 title="Search performance"
@@ -189,13 +184,14 @@ const selectMetric = (data: MetricQueryResult, metric: string): MetricQueryResul
                         </UCard>
                         <UCard class="xl:row-span-2" variant="subtle">
                             <h3 class="mb-5 font-semibold text-highlighted">MRR by plan</h3>
-                            <InsightBarChart :data="data.product.revenue" dimension="plan" />
+                            <InsightBarList :data="data.product.revenue" dimension="plan" />
                         </UCard>
                         <UCard class="xl:col-span-2" variant="subtle">
-                            <InsightAreaChart
+                            <InsightChart
                                 :data="data.product.series"
                                 title="Product growth"
                                 :timezone="timezone"
+                                type="area"
                             />
                         </UCard>
                     </div>
@@ -225,15 +221,11 @@ const selectMetric = (data: MetricQueryResult, metric: string): MetricQueryResul
                                 :ui="statUi"
                             />
                         </div>
-                        <InsightLineChart
+                        <InsightChart
                             class="mt-6"
                             :data="data.observability.series"
                             title="Service health"
                             :timezone="timezone"
-                        />
-                        <InsightQualityNotice
-                            class="mt-3 text-xs text-muted"
-                            :data="data.observability.series.meta.quality"
                         />
                     </UCard>
                 </section>

@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { InsightAreaChart } from '../../../../src/integrations/vue/ui/index.ts'
+import { InsightChart } from '../../../../src/integrations/vue/ui/index.ts'
 
 const data = {
     aggregate: { pageViews: 30 },
@@ -16,4 +16,4 @@ const data = {
 }
 </script>
 
-<template><InsightAreaChart :data="data" title="Fixture traffic" /></template>
+<template><InsightChart :data="data" title="Fixture traffic" type="area" /></template>

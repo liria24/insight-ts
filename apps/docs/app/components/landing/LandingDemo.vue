@@ -24,8 +24,8 @@ const isLoading = computed(() => status.value === 'idle' || status.value === 'pe
                         credentials, run History, or impose application layout.
                     </p>
                     <p class="text-muted mt-4 leading-7">
-                        This compact view uses the same `InsightStat` and `InsightAreaChart` as the
-                        full demo, fixed to the last seven days.
+                        This compact view uses the same `InsightStat` and `InsightChart` as the full
+                        demo, fixed to the last seven days.
                     </p>
                     <UButton
                         to="/demo"

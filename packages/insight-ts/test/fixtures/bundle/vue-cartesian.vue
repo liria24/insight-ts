@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { InsightLineChart } from 'insight-ts/vue/ui'
+import { InsightChart } from 'insight-ts/vue/ui'
 
 const data = {
     aggregate: { views: 1 },
@@ -8,4 +8,4 @@ const data = {
 }
 </script>
 
-<template><InsightLineChart :data="data" /></template>
+<template><InsightChart :data="data" /></template>

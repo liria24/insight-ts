@@ -28,7 +28,7 @@ describe('Nuxt bundle isolation', () => {
                 await buildNuxt(nuxt)
                 const text = await readBuildText([generated, output])
                 expect(text.includes('@tanstack/charts')).toBe(ui)
-                expect(text.includes('InsightAreaChart')).toBe(ui)
+                expect(text.includes('InsightChart')).toBe(ui)
                 expect(text.includes('--insight-chart-1')).toBe(ui)
                 expect(text).toContain('/api/_insight/events')
                 expect(text).toContain('createNitroEventRelay')

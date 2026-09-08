@@ -8,12 +8,10 @@ import * as compiler36 from 'vue-compiler-36'
 
 const components = [
     'InsightStat.vue',
-    'InsightLineChart.vue',
-    'InsightAreaChart.vue',
+    'InsightChart.vue',
     'InsightBreakdownTable.vue',
-    'InsightBarChart.vue',
+    'InsightBarList.vue',
     'InsightSparkline.vue',
-    'InsightQualityNotice.vue',
 ] as const
 const fs = { fileExists: existsSync, readFile: (path: string) => readFileSync(path, 'utf8') }
 

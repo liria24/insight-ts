@@ -202,21 +202,41 @@ describe('History', () => {
     })
 })
 
-const uiResult = {
-    aggregate: { errors: 501, latency: 502, requests: 500 },
+const uiCases = [1, 5, 10].map((metricCount) => {
+    const metricNames = Array.from({ length: metricCount }, (_, index) => `metric${index}`)
+    return {
+        metricCount,
+        result: {
+            aggregate: Object.fromEntries(metricNames.map((metric) => [metric, 10_000])),
+            meta: { queriedAt: time.to },
+            rows: Array.from({ length: 10_000 }, (_, index) => ({
+                time: new Date(Date.parse(time.from) + index * 60_000).toISOString(),
+                values: Object.fromEntries(metricNames.map((metric) => [metric, index])),
+            })),
+        },
+    }
+})
+const breakdownResult = {
+    aggregate: { requests: 25_000 },
     meta: { queriedAt: time.to },
-    rows: Array.from({ length: 500 }, (_, index) => ({
-        dimensions: { service: index % 2 === 0 ? 'api' : 'worker' },
-        time: new Date(Date.parse(time.from) + index * 60_000).toISOString(),
-        values: { errors: index + 1, latency: index + 2, requests: index },
+    rows: Array.from({ length: 25_000 }, (_, index) => ({
+        dimensions: { path: `/page-${index}`, service: index % 2 === 0 ? 'api' : 'worker' },
+        values: { requests: index },
     })),
 }
 
 describe('UI Core', () => {
-    test('build series and breakdown models', async ({ bench }) => {
+    for (const fixture of uiCases) {
+        test(`build ${fixture.metricCount} series x 10,000 points`, async ({ bench }) => {
+            await bench('execute', () => {
+                createSeriesModel(fixture.result, { colors: ['red'] })
+            }).run()
+        })
+    }
+
+    test('build a 25,000-row breakdown', async ({ bench }) => {
         await bench('execute', () => {
-            createSeriesModel(uiResult, { colors: ['red', 'green', 'blue'] })
-            createBreakdownModel(uiResult)
+            createBreakdownModel(breakdownResult)
         }).run()
     })
 })

@@ -2,11 +2,9 @@
 // oxlint-disable-next-line import/no-unassigned-import -- verifies explicit and automatic style imports share one asset
 import 'insight-ts/vue/ui/style.css'
 import {
-    InsightAreaChart,
-    InsightBarChart,
+    InsightBarList,
     InsightBreakdownTable,
-    InsightLineChart,
-    InsightQualityNotice,
+    InsightChart,
     InsightSparkline,
     InsightStat,
 } from 'insight-ts/vue/ui'
@@ -26,10 +24,10 @@ const data = {
 
 <template>
     <InsightStat :data="data" />
-    <InsightLineChart :data="data" />
-    <InsightAreaChart :data="data" />
+    <InsightChart :data="data" />
+    <InsightChart :data="data" type="area" />
+    <InsightChart :data="data" type="bar" />
     <InsightSparkline :data="data" />
-    <InsightBarChart :data="data" dimension="country" />
+    <InsightBarList :data="data" dimension="country" />
     <InsightBreakdownTable :data="data" />
-    <InsightQualityNotice :data="{}" />
 </template>
