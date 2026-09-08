@@ -75,7 +75,7 @@ const features = [
                 </div>
                 <div class="flex shrink-0 flex-wrap gap-3">
                     <UButton
-                        to="/get-started/overview/first-query"
+                        to="/getting-started/first-query"
                         label="Build your first query"
                         trailing-icon="mingcute:arrow-right-line"
                         color="neutral"
@@ -83,8 +83,8 @@ const features = [
                         class="rounded-full"
                     />
                     <UButton
-                        to="/get-started/query/introduction"
-                        label="Read the concepts"
+                        to="/query/introduction"
+                        label="Explore Query"
                         variant="outline"
                         color="neutral"
                         size="lg"

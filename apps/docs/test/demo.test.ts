@@ -8,20 +8,20 @@ const now = new Date('2026-08-21T12:00:00.000Z')
 describe('Demo analytics range', () => {
     it('renders direct MDC examples with literal data on every UI page', async () => {
         const pages = {
-            '2.stat.md': { fixture: 'aggregate: { pageViews: 4140 }', tag: 'insight-stat' },
-            '3.chart.md': {
+            '1.stat.md': { fixture: 'aggregate: { pageViews: 4140 }', tag: 'insight-stat' },
+            '2.chart.md': {
                 fixture: 'pageViews: 4140',
                 tag: 'insight-chart',
             },
-            '5.breakdown-table.md': {
+            '4.breakdown-table.md': {
                 fixture: 'aggregate: { pageViews: 4140 }',
                 tag: 'insight-breakdown-table',
             },
-            '4.bar-list.md': {
+            '3.bar-list.md': {
                 fixture: 'aggregate: { pageViews: 4140 }',
                 tag: 'insight-bar-list',
             },
-            '7.sparkline.md': {
+            '5.sparkline.md': {
                 fixture: 'aggregate: { pageViews: 4140 }',
                 tag: 'insight-sparkline',
             },
@@ -29,7 +29,7 @@ describe('Demo analytics range', () => {
         await Promise.all(
             Object.entries(pages).map(async ([file, { fixture, tag }]) => {
                 const content = await Bun.file(
-                    new URL(`../content/4.ui/${file}`, import.meta.url),
+                    new URL(`../content/7.ui/${file}`, import.meta.url),
                 ).text()
                 const example = content.slice(
                     content.indexOf('## Example'),

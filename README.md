@@ -55,7 +55,7 @@ const traffic = await insight.metrics({
 console.log(traffic.aggregate.pageViews)
 ```
 
-Configured canonical Metrics and dimensions are inferred across Provider adapters without `as const` or explicit generics.
+Configured canonical Metrics and dimensions are inferred from Providers without `as const` or explicit generics.
 Metric queries can request `aggregate`, `rows`, or `both`; ungrouped scalar queries default to
 `aggregate`, while grouped and time-series queries default to `both`.
 Paginated Logs and Traces continue with `await insight.next(result)` without repeating the query.
@@ -67,7 +67,7 @@ The Nuxt module provides the bounded endpoint used by the default browser event 
 
 ### Typed end to end
 
-A Scope's adapters define the canonical fields they can execute. TypeScript carries that information through direct capability methods such as `insight.metrics()`, while runtime capability intersections reject incompatible cross-adapter dimensions and filters before I/O.
+A Scope's Providers define the canonical fields they can execute. TypeScript carries that information through direct capability methods such as `insight.metrics()`, while unsupported dimension and filter combinations fail before I/O.
 
 ### Provider details stay visible
 
@@ -89,14 +89,13 @@ Built-in support currently includes:
 - **Google Search Console** — Search Analytics metrics with data-state and quality metadata
 - **Application-defined adapters** — canonical Metric, Log, and Trace adapters through focused entrypoints and custom Providers through `defineProvider()`
 
-Custom adapters use the same scope-aware planning and result merging as built-in Providers.
+Application-defined adapters use the same canonical query methods as built-in Providers.
 
 ## History
 
-History preserves configured canonical capabilities with one Scope-aware workflow. Capability
-adapters retain their own identity, pagination, and safe rollup semantics while the engine owns
-coverage, stable and provisional refreshability, bounded partition synchronization, storage, and
-explicit expiration.
+History preserves configured canonical capabilities with one Scope-aware workflow. It synchronizes
+missing and provisional ranges, serves only queries it can reconstruct exactly, and falls back to
+live Providers when stored data cannot satisfy the request safely.
 
 ```ts
 import { createHistory } from 'insight-ts/history'
@@ -148,7 +147,7 @@ The complete documentation is available at [insight.liria.me](https://insight.li
 - [Query](https://insight.liria.me/query/introduction)
 - [Track](https://insight.liria.me/track/events)
 - [History](https://insight.liria.me/history/introduction)
-- [Providers](https://insight.liria.me/providers/cloudflare)
+- [Providers / Adapters](https://insight.liria.me/providers/cloudflare)
 - [UI](https://insight.liria.me/ui/stat)
 - [API reference](https://insight.liria.me/reference/api)
 - [Live demo](https://insight.liria.me/demo)

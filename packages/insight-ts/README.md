@@ -53,7 +53,7 @@ const traffic = await insight.metrics({
 console.log(traffic.aggregate.pageViews)
 ```
 
-Configured canonical Metrics and dimensions are inferred across Provider adapters without `as const` or explicit generics.
+Configured canonical Metrics and dimensions are inferred from Providers without `as const` or explicit generics.
 Metric queries can request `aggregate`, `rows`, or `both`; ungrouped scalar queries default to
 `aggregate`, while grouped and time-series queries default to `both`.
 Paginated Logs and Traces continue with `await insight.next(result)` without repeating the query.
@@ -63,7 +63,7 @@ The Nuxt module provides the bounded endpoint used by the default browser event 
 
 ## What you get
 
-- **Typed queries and results** — configured adapters define canonical fields and results.
+- **Typed queries and results** — configured Providers define canonical fields and results.
 - **Provider details stay visible** — sampling, approximation, partial results, pagination, freshness, and native metadata are not hidden behind artificial parity.
 - **Composable features** — use Core alone or add Providers, History, browser events, Nitro, Nuxt, Vue UI, and OpenTelemetry independently.
 - **Logical Scopes** — use the same canonical query API for production, staging, or another analysis boundary.
@@ -82,8 +82,8 @@ for application-specific canonical data.
 
 ## History
 
-One optional History workflow preserves Metrics, Logs, Traces, and future materializable
-capabilities beyond native Provider retention.
+One optional History workflow preserves supported Metrics, Logs, and Traces beyond native Provider
+retention.
 
 ```ts
 import { createHistory } from 'insight-ts/history'
@@ -131,12 +131,12 @@ Components support root `class` customization and semantic `ui` slots. They do n
 
 Read the complete documentation at [insight.liria.me](https://insight.liria.me).
 
-- [Get started](https://insight.liria.me/getting-started/introduction)
+- [Getting Started](https://insight.liria.me/getting-started/introduction)
 - [First query](https://insight.liria.me/getting-started/first-query)
 - [Query](https://insight.liria.me/query/introduction)
 - [Track](https://insight.liria.me/track/events)
 - [History](https://insight.liria.me/history/introduction)
-- [Providers](https://insight.liria.me/providers/cloudflare)
+- [Providers / Adapters](https://insight.liria.me/providers/cloudflare)
 - [UI](https://insight.liria.me/ui/stat)
 - [API reference](https://insight.liria.me/reference/api)
 - [Live demo](https://insight.liria.me/demo)
