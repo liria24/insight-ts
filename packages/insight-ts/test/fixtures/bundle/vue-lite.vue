@@ -1,13 +1,14 @@
 <script setup lang="ts">
-import { InsightQualityNotice, InsightStat } from 'insight-ts/vue/ui'
+import { InsightBarList, InsightStat } from 'insight-ts/vue/ui'
 
 const data = {
-    data: { values: { views: 1 } },
-    meta: { contributions: [], queriedAt: '2026-08-31T00:00:00.000Z' },
+    aggregate: { views: 1 },
+    meta: { queriedAt: '2026-08-31T00:00:00.000Z' },
+    rows: [{ dimensions: { country: 'JP' }, values: { views: 1 } }],
 }
 </script>
 
 <template>
     <InsightStat :data="data" />
-    <InsightQualityNotice :data="{}" />
+    <InsightBarList :data="data" dimension="country" />
 </template>

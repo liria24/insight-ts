@@ -30,16 +30,22 @@ const core = createInsight({
 })
 
 describe('Core query', () => {
-    test('normalize, deduplicate, and execute a selection', async ({ bench }) => {
+    test('execute one canonical contribution', async ({ bench }) => {
         await bench('execute', async () => {
-            await core.query((q) => ({
-                first: q.metrics({ metrics: ['value'], time }),
-                second: q.metrics({ metrics: ['value'], time }),
-                third: q.metrics({
+            await core.metrics({ metrics: ['value'], time })
+        }).run()
+    })
+
+    test('schedule and deduplicate concurrent capability calls', async ({ bench }) => {
+        await bench('execute', async () => {
+            await Promise.all([
+                core.metrics({ metrics: ['value'], time }),
+                core.metrics({ metrics: ['value'], time }),
+                core.metrics({
                     metrics: ['value'],
                     time: { ...time, to: '2026-01-09T00:00:00.000Z' },
                 }),
-            }))
+            ])
         }).run()
     })
 })
@@ -187,38 +193,69 @@ describe('History', () => {
 
     test('read an already-covered range', async ({ bench }) => {
         await bench('execute', async () => {
-            await coveredHistory.query((q) => ({
-                report: q.metrics({
-                    dimensions: ['service'],
-                    metrics: ['errorRate', 'requests'],
-                    time: { ...time, grain: 'day' },
-                }),
-            }))
+            await coveredHistory.metrics({
+                dimensions: ['service'],
+                metrics: ['errorRate', 'requests'],
+                time: { ...time, grain: 'day' },
+            })
         }).run()
     })
 })
 
-const uiResult = {
-    data: {
-        points: Array.from({ length: 500 }, (_, index) => ({
-            dimensions: { service: index % 2 === 0 ? 'api' : 'worker' },
-            time: new Date(Date.parse(time.from) + index * 60_000).toISOString(),
-            values: { errors: index + 1, latency: index + 2, requests: index },
-        })),
-        values: { errors: 501, latency: 502, requests: 500 },
-    },
-    meta: { contributions: [], queriedAt: time.to },
+const uiCases = [1, 5, 10].map((metricCount) => {
+    const metricNames = Array.from({ length: metricCount }, (_, index) => `metric${index}`)
+    return {
+        metricCount,
+        result: {
+            aggregate: Object.fromEntries(metricNames.map((metric) => [metric, 10_000])),
+            meta: { queriedAt: time.to },
+            rows: Array.from({ length: 10_000 }, (_, index) => ({
+                time: new Date(Date.parse(time.from) + index * 60_000).toISOString(),
+                values: Object.fromEntries(metricNames.map((metric) => [metric, index])),
+            })),
+        },
+    }
+})
+const breakdownResult = {
+    aggregate: { requests: 25_000 },
+    meta: { queriedAt: time.to },
+    rows: Array.from({ length: 25_000 }, (_, index) => ({
+        dimensions: { path: `/page-${index}`, service: index % 2 === 0 ? 'api' : 'worker' },
+        values: { requests: index },
+    })),
 }
 
 describe('UI Core', () => {
-    test('build series and breakdown models', async ({ bench }) => {
+    for (const fixture of uiCases) {
+        test(`build ${fixture.metricCount} series x 10,000 points`, async ({ bench }) => {
+            await bench('execute', () => {
+                createSeriesModel(fixture.result, { colors: ['red'] })
+            }).run()
+        })
+    }
+
+    test('build a 25,000-row breakdown', async ({ bench }) => {
         await bench('execute', () => {
-            createSeriesModel(uiResult, { colors: ['red', 'green', 'blue'] })
-            createBreakdownModel(uiResult)
+            createBreakdownModel(breakdownResult)
         }).run()
     })
 })
 
+const cloudflareAggregate = [
+    {
+        avg: { sampleInterval: 1 },
+        count: 10,
+        sum: { visits: 8 },
+    },
+]
+const cloudflareRows = [
+    {
+        avg: { sampleInterval: 1 },
+        count: 10,
+        dimensions: { country: 'JP', time: time.from },
+        sum: { visits: 8 },
+    },
+]
 const cloudflare = createCloudflare({
     accountId: 'account',
     apiToken: 'token',
@@ -229,14 +266,12 @@ const cloudflare = createCloudflare({
                     viewer: {
                         accounts: [
                             {
-                                rows: [
-                                    {
-                                        avg: { sampleInterval: 1 },
-                                        count: 10,
-                                        dimensions: { country: 'JP', time: time.from },
-                                        sum: { visits: 8 },
-                                    },
-                                ],
+                                aggregate: cloudflareAggregate,
+                                q0Aggregate: cloudflareAggregate,
+                                q0Rows: cloudflareRows,
+                                q1Aggregate: cloudflareAggregate,
+                                q1Rows: cloudflareRows,
+                                rows: cloudflareRows,
                             },
                         ],
                     },
@@ -262,8 +297,16 @@ const searchConsolePayload = JSON.stringify({
 })
 const searchConsole = googleSearchConsole({
     auth: { getAccessToken: async () => 'token' },
-    fetch: async () =>
-        new Response(searchConsolePayload, { headers: { 'content-type': 'application/json' } }),
+    fetch: async (_input, init) => {
+        const body = typeof init?.body === 'string' ? JSON.parse(init.body) : undefined
+        return body?.dimensions?.length === 0
+            ? Response.json({
+                  rows: [{ clicks: 25_000, ctr: 0.5, impressions: 50_000, position: 3 }],
+              })
+            : new Response(searchConsolePayload, {
+                  headers: { 'content-type': 'application/json' },
+              })
+    },
     property: 'sc-domain:example.com',
 }).adapters.searchAnalytics
 const searchConsoleQuery = searchConsole.normalize({
@@ -281,6 +324,23 @@ describe('Provider normalization', () => {
                 provider: 'cloudflare',
                 scope: 'default',
             })
+        }).run()
+    })
+
+    test('coalesce concurrent Cloudflare responses', async ({ bench }) => {
+        await bench('execute', async () => {
+            await Promise.all([
+                cloudflare.execute(cloudflareQuery, {
+                    adapter: 'cloudflare.webAnalytics',
+                    provider: 'cloudflare',
+                    scope: 'default',
+                }),
+                cloudflare.execute(cloudflareQuery, {
+                    adapter: 'cloudflare.webAnalytics',
+                    provider: 'cloudflare',
+                    scope: 'default',
+                }),
+            ])
         }).run()
     })
 

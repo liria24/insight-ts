@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from 'vitest'
 
 import { createInsight, defineProvider } from '../src/core/index.ts'
-import { defineMetricAdapter } from '../src/metrics/index.ts'
+import { defineMetricAdapter, type MetricAdapterOutput } from '../src/metrics/index.ts'
 
 const time = {
     from: '2026-08-01T00:00:00.000Z',
@@ -39,32 +39,91 @@ describe('Metrics contract', () => {
             providers: [defineProvider({ adapters: { usage: adapter }, id: 'app' })],
         })
 
-        const result = await insight.query((q) => ({
-            usage: q.metrics({
-                dimensions: ['country'],
-                metrics: ['requests'],
-                time,
-                where: { country: 'JP' },
-            }),
-        }))
+        const result = await insight.metrics({
+            dimensions: ['country'],
+            metrics: ['requests'],
+            time,
+            where: { country: 'JP' },
+        })
 
         expect(execute).toHaveBeenCalledWith(
             expect.objectContaining({
                 metrics: ['requests'],
+                projection: 'both',
                 where: { field: 'country', operator: 'eq', value: 'JP' },
             }),
             expect.any(Object),
         )
-        expect(result.usage.data).toEqual({
-            points: [
+        expect(result).toMatchObject({
+            aggregate: { requests: 7 },
+            rows: [
                 {
                     dimensions,
                     time: '2026-08-01T10:00:00.000Z',
                     values: { requests: 7 },
                 },
             ],
-            values: { requests: 7 },
         })
+        expect(result).not.toHaveProperty('data')
+    })
+
+    it('selects aggregate and row projections independently', async () => {
+        const execute = vi.fn<
+            (query: { projection: 'aggregate' | 'both' | 'rows' }) => MetricAdapterOutput
+        >(() => ({
+            points: [{ dimensions: { country: 'JP' }, values: { requests: 3 } }],
+            values: { requests: 7 },
+        }))
+        const insight = createInsight({
+            providers: [
+                defineProvider({
+                    adapters: {
+                        usage: defineMetricAdapter({
+                            dimensions: { country: 'string' },
+                            execute,
+                            metrics: { requests: {} },
+                        }),
+                    },
+                    id: 'app',
+                }),
+            ],
+        })
+
+        const aggregate = await insight.metrics({
+            metrics: ['requests'],
+            projection: 'aggregate',
+            time,
+        })
+        const defaultAggregate = await insight.metrics({ metrics: ['requests'], time })
+        const rows = await insight.metrics({
+            dimensions: ['country'],
+            metrics: ['requests'],
+            projection: 'rows',
+            time,
+        })
+        const both = await insight.metrics({
+            dimensions: ['country'],
+            metrics: ['requests'],
+            projection: 'both',
+            time,
+        })
+
+        expect(aggregate).toMatchObject({ aggregate: { requests: 7 } })
+        expect(aggregate).not.toHaveProperty('rows')
+        expect(defaultAggregate).toMatchObject({ aggregate: { requests: 7 } })
+        expect(defaultAggregate).not.toHaveProperty('rows')
+        expect(rows).toMatchObject({ rows: [{ values: { requests: 3 } }] })
+        expect(rows).not.toHaveProperty('aggregate')
+        expect(both).toMatchObject({
+            aggregate: { requests: 7 },
+            rows: [{ values: { requests: 3 } }],
+        })
+        expect(execute.mock.calls.map(([query]) => query.projection)).toEqual([
+            'aggregate',
+            'aggregate',
+            'rows',
+            'both',
+        ])
     })
 
     it('normalizes equivalent filters and rejects unsupported Metrics before I/O', async () => {
@@ -94,14 +153,20 @@ describe('Metrics contract', () => {
         })
 
         await expect(
-            insight.query((q) => ({
-                invalid: q.metrics({
-                    // @ts-expect-error runtime contract rejects invalid JavaScript callers
-                    metrics: ['missing'],
-                    time,
-                }),
-            })),
+            insight.metrics({
+                // @ts-expect-error runtime contract rejects invalid JavaScript callers
+                metrics: ['missing'],
+                time,
+            }),
         ).rejects.toMatchObject({ code: 'UNSUPPORTED_METRIC' })
+        await expect(
+            insight.metrics({
+                metrics: ['requests'],
+                // @ts-expect-error runtime contract rejects invalid JavaScript callers
+                projection: 'summary',
+                time,
+            }),
+        ).rejects.toMatchObject({ code: 'INVALID_QUERY' })
         expect(execute).not.toHaveBeenCalled()
     })
 })

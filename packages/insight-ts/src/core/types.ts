@@ -16,37 +16,22 @@ export interface QueryQuality {
     warnings?: readonly Warning[]
 }
 
-export type HistoryTransformation =
-    | { kind: 'sample'; rate: number }
-    | { id: string; kind: 'filter' }
-    | { kind: 'truncate'; limit: number }
-    | { id: string; kind: 'custom' }
-
-export interface HistoryFidelity {
-    preservation: 'full' | 'reduced' | 'not-preserved'
-    transformations: readonly HistoryTransformation[]
-}
-
-export interface HistoryFidelityBand extends HistoryFidelity {
-    range: TimeRange
-}
-
 declare const cursorBrand: unique symbol
 export type InsightCursor = string & { readonly [cursorBrand]?: never }
 
-export interface QueryContribution {
-    fields?: readonly string[]
+interface CapabilityResultContribution {
     quality?: QueryQuality
 }
 
 export interface QueryPagination {
-    next?: InsightCursor
+    next: InsightCursor
 }
 
-export interface QueryResult<TData, TMeta extends object = Record<never, never>> {
-    data: TData
+export type QueryResult<TData extends object, TMeta extends object = Record<never, never>> = Omit<
+    TData,
+    'meta'
+> & {
     meta: {
-        contributions: readonly QueryContribution[]
         pagination?: QueryPagination
         quality?: QueryQuality
         queriedAt: string
@@ -71,24 +56,24 @@ declare const adapterDefinitionType: unique symbol
 
 export interface CapabilitySchema<
     TQuery extends object = Record<string, unknown>,
-    TData = unknown,
+    TData extends object = Record<string, unknown>,
     TMeta extends object = Record<never, never>,
-    TSelections extends Readonly<Record<string, string>> = Record<never, never>,
-    TRequiredSelection extends keyof TSelections = never,
+    TParameters extends Readonly<Record<string, string>> = Record<never, never>,
+    TRequiredParameter extends keyof TParameters = never,
 > {
     readonly data: TData
     readonly meta: TMeta
+    readonly parameters: TParameters
     readonly query: TQuery
-    readonly requiredSelections: TRequiredSelection
-    readonly selections: TSelections
+    readonly requiredParameters: TRequiredParameter
 }
 
 interface CapabilitySchemaShape {
-    readonly data: unknown
+    readonly data: object
     readonly meta: object
+    readonly parameters: Readonly<Record<string, string>>
     readonly query: object
-    readonly requiredSelections: PropertyKey
-    readonly selections: Readonly<Record<string, string>>
+    readonly requiredParameters: PropertyKey
 }
 
 export interface CapabilityContribution {
@@ -101,12 +86,12 @@ export interface CapabilityExecutionResult<
     TData = unknown,
     TMeta extends object = object,
 > extends AdapterExecutionResult<TData, TMeta> {
-    contributions?: readonly QueryContribution[]
-    pagination?: QueryPagination
+    contributions?: readonly CapabilityResultContribution[]
 }
 
 export interface CapabilityContract<TName extends string = string, TNormalized = unknown> {
     readonly name: TName
+    continue?(query: TNormalized, nativeCursor: string): TNormalized
     key(query: TNormalized): string
     merge(
         query: TNormalized,
@@ -152,8 +137,13 @@ export interface HistoryMaterializer<
     cursor?(query: TQuery): string | undefined
     itemId(item: unknown, index: number): string
     items(data: TData): readonly unknown[]
+    isCompatible?(query: TQuery, segments: readonly { meta?: TMeta; range: TimeRange }[]): boolean
     limit?(query: TQuery): number | undefined
-    materialize(query: TQuery, items: readonly unknown[]): AdapterExecutionResult<TData, TMeta>
+    materialize(
+        query: TQuery,
+        items: readonly unknown[],
+        segments: readonly { meta?: TMeta; range: TimeRange }[],
+    ): AdapterExecutionResult<TData, TMeta>
     partitionMs?: number
     range(query: TQuery): TimeRange | undefined
     read: 'all' | 'bounded'
@@ -176,17 +166,6 @@ export interface Instrumentation {
     ): Awaitable<T>
 }
 
-export interface ProviderExecutionRequest {
-    adapter: string
-    execute(): Promise<AdapterExecutionResult<unknown, object>>
-    key: string
-    query: unknown
-}
-
-export interface ProviderExecutionContext {
-    signal?: AbortSignal
-}
-
 export interface Event {
     context?: { spanId?: string; traceId?: string }
     id: string
@@ -206,10 +185,6 @@ export interface ProviderDefinition<
 > {
     adapters?: TAdapters
     events?: EventDestination
-    execute?(
-        requests: readonly ProviderExecutionRequest[],
-        context: ProviderExecutionContext,
-    ): Awaitable<readonly AdapterExecutionResult<unknown, object>[]>
     id: TId
 }
 
@@ -336,47 +311,59 @@ type AdaptersFor<TAdapters, TName extends string> =
         : never
 
 type QueryBase<TSchema> = TSchema extends { query: infer TQuery extends object } ? TQuery : never
-type DataForSchema<TSchema> = TSchema extends { data: infer TData } ? TData : never
+type DataForSchema<TSchema> = TSchema extends { data: infer TData extends object } ? TData : never
 type MetaForSchema<TSchema> = TSchema extends { meta: infer TMeta extends object } ? TMeta : never
-type SelectionsOf<TSchema> = TSchema extends {
-    selections: infer TSelections extends Readonly<Record<string, string>>
+type ParametersOf<TSchema> = TSchema extends {
+    parameters: infer TParameters extends Readonly<Record<string, string>>
 }
-    ? TSelections
+    ? TParameters
     : never
-type SelectionKeys<TSchema> = TSchema extends TSchema ? keyof SelectionsOf<TSchema> : never
-type SelectionValue<TSchema, TKey extends PropertyKey> = TSchema extends TSchema
-    ? TKey extends keyof SelectionsOf<TSchema>
-        ? SelectionsOf<TSchema>[TKey]
+type ParameterKeys<TSchema> = TSchema extends TSchema ? keyof ParametersOf<TSchema> : never
+type ParameterValue<TSchema, TKey extends PropertyKey> = TSchema extends TSchema
+    ? TKey extends keyof ParametersOf<TSchema>
+        ? ParametersOf<TSchema>[TKey]
         : never
     : never
-type RequiredSelections<TSchema> = TSchema extends {
-    requiredSelections: infer TRequired extends PropertyKey
+type RequiredParameters<TSchema> = TSchema extends {
+    requiredParameters: infer TRequired extends PropertyKey
 }
     ? TRequired
     : never
 type QueryForSchema<TSchema> = QueryBase<TSchema> & {
-    readonly [TKey in Extract<RequiredSelections<TSchema>, string>]: readonly Extract<
-        SelectionValue<TSchema, TKey>,
+    readonly [TKey in Extract<RequiredParameters<TSchema>, string>]: readonly Extract<
+        ParameterValue<TSchema, TKey>,
         string
     >[]
 } & {
     readonly [
         TKey in Exclude<
-            Extract<SelectionKeys<TSchema>, string>,
-            Extract<RequiredSelections<TSchema>, string>
+            Extract<ParameterKeys<TSchema>, string>,
+            Extract<RequiredParameters<TSchema>, string>
         >
-    ]?: readonly Extract<SelectionValue<TSchema, TKey>, string>[]
+    ]?: readonly Extract<ParameterValue<TSchema, TKey>, string>[]
 }
 type SchemaFor<TAdapters, TName extends string> = SchemaOf<AdaptersFor<TAdapters, TName>>
 
-export interface QueryDescriptor<TResult extends QueryResult<unknown, object>> {
-    readonly result?: TResult
+type MetricDataForProjection<TData, TProjection> = TData extends {
+    readonly aggregate: infer TAggregate
+    readonly rows?: infer TRows
 }
+    ? TProjection extends 'aggregate'
+        ? { readonly aggregate: TAggregate }
+        : TProjection extends 'rows'
+          ? { readonly rows: NonNullable<TRows> }
+          : TProjection extends 'both'
+            ? { readonly aggregate: TAggregate; readonly rows: NonNullable<TRows> }
+            : TData
+    : TData
 
-export type QuerySelection = Readonly<Record<string, QueryDescriptor<QueryResult<unknown, object>>>>
-export type QuerySelectionResult<TSelection extends QuerySelection> = {
-    readonly [TKey in keyof TSelection]: NonNullable<TSelection[TKey]['result']>
-}
+type DataForQuery<TSchema, TName extends string, TQuery> = TName extends 'metrics'
+    ? 'projection' extends keyof TQuery
+        ? TQuery extends { readonly projection?: infer TProjection }
+            ? MetricDataForProjection<DataForSchema<TSchema>, TProjection>
+            : DataForSchema<TSchema>
+        : DataForSchema<TSchema>
+    : DataForSchema<TSchema>
 
 type TrackArguments<
     TSchema extends InsightSchema,
@@ -385,19 +372,21 @@ type TrackArguments<
     ? []
     : [properties: EventProperties<TSchema, TName>]
 
-type CapabilityAccessor<TAdapters, TName extends string> = <
+type CapabilityMethod<TAdapters, TName extends string> = <
     const TQuery extends QueryForSchema<SchemaFor<TAdapters, TName>>,
 >(
-    query: TQuery,
-) => QueryDescriptor<
+    query: TQuery &
+        Record<Exclude<keyof TQuery, keyof QueryForSchema<SchemaFor<TAdapters, TName>>>, never>,
+    options?: QueryExecutionOptions,
+) => Promise<
     QueryResult<
-        DataForSchema<SchemaFor<TAdapters, TName>>,
+        DataForQuery<SchemaFor<TAdapters, TName>, TName, TQuery>,
         MetaForSchema<SchemaFor<TAdapters, TName>>
     >
 >
 
-export type QueryBuilder<TProviders extends readonly ProviderDefinition[]> = {
-    readonly [TName in CapabilityName<AdapterUnion<TProviders>>]: CapabilityAccessor<
+type CapabilityMethods<TProviders extends readonly ProviderDefinition[]> = {
+    readonly [TName in CapabilityName<AdapterUnion<TProviders>>]: CapabilityMethod<
         AdapterUnion<TProviders>,
         TName
     >
@@ -406,11 +395,11 @@ export type QueryBuilder<TProviders extends readonly ProviderDefinition[]> = {
 type ScopedInsightClient<
     TOptions extends CreateInsightOptions,
     TProviders extends readonly ProviderDefinition[],
-> = {
-    query<const TSelection extends QuerySelection>(
-        select: (query: QueryBuilder<TProviders>) => TSelection,
+> = CapabilityMethods<TProviders> & {
+    next<TResult extends QueryResult<object, object>>(
+        result: TResult,
         options?: QueryExecutionOptions,
-    ): Promise<QuerySelectionResult<TSelection>>
+    ): Promise<TResult>
     track<TName extends EventName<TOptions>>(
         name: TName,
         ...arguments_: TrackArguments<TOptions, TName>

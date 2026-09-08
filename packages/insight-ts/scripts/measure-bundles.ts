@@ -68,6 +68,8 @@ async function measure(packageRoot: string): Promise<BundleReport> {
                 process.execPath,
                 'add',
                 join(root, filename),
+                '@tanstack/charts@0.16.0',
+                'd3-shape@3.2.0',
                 'nuxt@4.5.2',
                 'vue@3.5.42',
                 '--backend=copyfile',
@@ -92,6 +94,7 @@ async function measure(packageRoot: string): Promise<BundleReport> {
         ]
         const results: BundleMeasurement[] = []
         const modules = new Map<string, readonly string[]>()
+        const styles = new Map<string, string>()
         for (const entry of entries) {
             const name = entry.replace(/\.(?:ts|vue)$/, '')
             const built = await build({
@@ -127,6 +130,20 @@ async function measure(packageRoot: string): Promise<BundleReport> {
                 name,
                 outputs.flatMap((file) => ('modules' in file ? Object.keys(file.modules) : [])),
             )
+            styles.set(
+                name,
+                outputs
+                    .flatMap((file) =>
+                        !('code' in file) && file.fileName.endsWith('.css')
+                            ? [
+                                  typeof file.source === 'string'
+                                      ? file.source
+                                      : Buffer.from(file.source).toString(),
+                              ]
+                            : [],
+                    )
+                    .join('\n'),
+            )
         }
 
         assertExcludes(
@@ -150,6 +167,9 @@ async function measure(packageRoot: string): Promise<BundleReport> {
             ['/node_modules/@tanstack/charts/', '/node_modules/d3-shape/'],
         )
         assertIncludes(modules, ['vue-cartesian', 'vue-full'], '/node_modules/@tanstack/charts/')
+        if ((styles.get('vue-full')?.match(/--insight-chart-6:/g) ?? []).length !== 1) {
+            throw new Error('Automatic and explicit Vue UI style imports emitted duplicate CSS')
+        }
 
         const nuxt = join(consumer, 'fixtures', 'nuxt')
         await run([process.execPath, 'x', 'nuxt', 'build'], nuxt, {
@@ -157,7 +177,7 @@ async function measure(packageRoot: string): Promise<BundleReport> {
             NITRO_PRESET: 'node_server',
         })
         const generated = await readText([join(nuxt, '.nuxt'), join(nuxt, '.output')])
-        for (const forbidden of ['@tanstack/charts', 'InsightAreaChart', '--insight-chart-1']) {
+        for (const forbidden of ['@tanstack/charts', 'InsightChart', '--insight-chart-1']) {
             if (generated.includes(forbidden)) {
                 throw new Error(`Nuxt module-only consumer contains Vue UI marker ${forbidden}`)
             }
@@ -174,6 +194,7 @@ async function measure(packageRoot: string): Promise<BundleReport> {
                 'Vue integration excludes Vue UI and chart code',
                 'Lightweight Vue UI excludes chart dependencies',
                 'Cartesian and full Vue UI include the chart renderer',
+                'Automatic and explicit Vue UI style imports share one stylesheet',
                 'Nuxt module-only consumer excludes Vue UI client code',
             ],
             results,

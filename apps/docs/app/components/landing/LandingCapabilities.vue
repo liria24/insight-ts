@@ -9,7 +9,7 @@ const inferredTypes = [
 const principles = [
     {
         title: 'Provider-aware',
-        description: 'Each contribution keeps sampling, freshness, and quality visible.',
+        description: 'Sampling, freshness, and quality stay visible on each result.',
         icon: 'mingcute:layers-line',
     },
     {
@@ -59,12 +59,10 @@ const principles = [
                     </div>
                     <pre
                         class="m-0 overflow-x-auto bg-default/70 p-5 font-mono text-sm leading-7 sm:p-7"
-                    ><code><span class="text-dimmed">const</span> dashboard = <span class="text-dimmed">await</span> insight.query((q) => ({
-    traffic: q.metrics({
+                    ><code><span class="text-dimmed">const</span> traffic = <span class="text-dimmed">await</span> insight.metrics({
         metrics: [<span class="text-highlighted">'pageViews'</span>, <span class="text-highlighted">'visits'</span>],
         time: { ...range, grain: <span class="text-highlighted">'day'</span> },
-    }),
-}))</code></pre>
+})</code></pre>
 
                     <dl class="divide-y divide-default border-t border-default">
                         <div

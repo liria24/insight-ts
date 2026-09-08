@@ -11,12 +11,13 @@ const fixtures = fileURLToPath(new URL('./fixtures/', import.meta.url))
 
 describe('Nuxt bundle isolation', () => {
     it.each([
-        ['nuxt-no-ui', false, false],
-        ['nuxt-minimal', true, false],
-        ['nuxt-custom-storage', false, true],
+        ['nuxt-no-ui', false, false, true],
+        ['nuxt-minimal', true, false, false],
+        ['nuxt-custom-storage', false, true, false],
+        ['nuxt-scopes', false, false, true],
     ] as const)(
         'builds %s with only configured capabilities',
-        async (scenario, ui, history) => {
+        async (scenario, ui, history, cloudflareWebAnalytics) => {
             const directory = join(fixtures, scenario)
             const generated = join(directory, '.nuxt')
             const output = join(directory, '.output')
@@ -27,8 +28,10 @@ describe('Nuxt bundle isolation', () => {
                 await buildNuxt(nuxt)
                 const text = await readBuildText([generated, output])
                 expect(text.includes('@tanstack/charts')).toBe(ui)
-                expect(text.includes('InsightAreaChart')).toBe(ui)
+                expect(text.includes('InsightChart')).toBe(ui)
                 expect(text.includes('--insight-chart-1')).toBe(ui)
+                expect(text).toContain('/api/_insight/events')
+                expect(text).toContain('createNitroEventRelay')
                 expect(text.includes("from 'insight-ts/history'")).toBe(history)
                 expect(text).not.toContain('vue/ui/vapor')
                 expect(text).not.toContain('vapor: true')
@@ -38,10 +41,19 @@ describe('Nuxt bundle isolation', () => {
                     'utf8',
                 )
                 expect(runtimeTypes.includes('ReturnType<typeof cloudflare<')).toBe(
-                    scenario === 'nuxt-no-ui',
+                    cloudflareWebAnalytics,
                 )
                 expect(runtimeTypes).toContain('InsightClient<RuntimeConfig>')
+                expect(runtimeTypes).not.toContain("ServerConfig['providers']")
                 expect(runtimeTypes).not.toContain('any')
+                expect(
+                    runtimeTypes.includes(
+                        'ServerConfig extends { readonly providers: infer Providers',
+                    ),
+                ).toBe(cloudflareWebAnalytics)
+                expect(text.includes('requires a single-Scope server config')).toBe(
+                    cloudflareWebAnalytics,
+                )
             } finally {
                 await nuxt.close()
                 await cleanup([generated, output, fixtureModules])

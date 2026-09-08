@@ -1,3 +1,5 @@
+import { compileEvents } from '../../core/insight.ts'
+import type { Awaitable, EventDefinitions } from '../../core/types.ts'
 import type {
     HistoryCoverage,
     HistoryRepository,
@@ -6,11 +8,66 @@ import type {
 } from '../../history/index.ts'
 
 const mount = 'insight'
-const historyPrefix = 'history:v3'
+const historyPrefix = 'history:v4'
+const eventRelayBodyLimit = 64 * 1024
+const eventRelayBatchLimit = 100
+const bodyTooLarge = Symbol('bodyTooLarge')
+
+export interface NitroEventRelayOptions {
+    events?: EventDefinitions
+    track(name: string, properties: Readonly<Record<string, unknown>>): Awaitable<void>
+}
+
+interface RelayedEvent {
+    name: string
+    properties: Readonly<Record<string, unknown>>
+}
+
+export const createNitroEventRelay = (
+    options: NitroEventRelayOptions,
+): ((request: Request) => Promise<Response>) => {
+    const validators = compileEvents(options.events)
+
+    return async (request) => {
+        if (request.method !== 'POST') {
+            return new Response('Method not allowed', {
+                headers: { allow: 'POST' },
+                status: 405,
+            })
+        }
+        if (
+            request.headers.get('content-type')?.split(';', 1)[0]?.trim().toLowerCase() !==
+            'application/json'
+        ) {
+            return new Response('Content-Type must be application/json', { status: 415 })
+        }
+
+        let events: readonly RelayedEvent[]
+        try {
+            events = parseEventBatch(await readBoundedBody(request), validators)
+        } catch (error) {
+            return new Response(
+                error === bodyTooLarge ? 'Event batch is too large' : 'Invalid event batch',
+                { status: error === bodyTooLarge ? 413 : 400 },
+            )
+        }
+
+        try {
+            await Promise.all(
+                events.map(({ name, properties }) =>
+                    Promise.resolve().then(() => options.track(name, properties)),
+                ),
+            )
+        } catch {
+            return new Response('Event delivery failed', { status: 503 })
+        }
+        return new Response(null, { status: 204 })
+    }
+}
 
 interface HistoryPartitionIndex {
     partitions: HistoryCoverage['range'][]
-    schemaVersion: 3
+    schemaVersion: 4
 }
 
 interface HistoryCursor {
@@ -119,7 +176,7 @@ export const createNitroHistoryRepository = (storage: NitroStorage): HistoryRepo
             const nextCoverageKey = coverage ? coverageKey(target, coverage.range) : undefined
             if (coverage && nextCoverageKey) await storage.setItem(nextCoverageKey, coverage)
             await writeIndex(storage, target, {
-                schemaVersion: 3,
+                schemaVersion: 4,
                 partitions: [
                     ...new Map(
                         [
@@ -155,6 +212,79 @@ export const configureNitroHistory = (
         description: 'Synchronize missing Insight History ranges',
         handler: tasks.syncHandler,
     }
+}
+
+const readBoundedBody = async (request: Request): Promise<string> => {
+    const declared = request.headers.get('content-length')
+    if (declared !== null) {
+        const length = Number(declared)
+        if (!Number.isSafeInteger(length) || length < 0)
+            throw new TypeError('Invalid Content-Length')
+        if (length > eventRelayBodyLimit) throw bodyTooLarge
+    }
+    if (!request.body) return ''
+
+    const reader = request.body.getReader()
+    const chunks: Uint8Array[] = []
+    let length = 0
+    try {
+        while (true) {
+            // Request streams must be consumed in order.
+            // oxlint-disable-next-line no-await-in-loop
+            const { done, value } = await reader.read()
+            if (done) break
+            length += value.byteLength
+            if (length > eventRelayBodyLimit) {
+                try {
+                    // oxlint-disable-next-line no-await-in-loop
+                    await reader.cancel()
+                } catch {}
+                throw bodyTooLarge
+            }
+            chunks.push(value)
+        }
+    } finally {
+        reader.releaseLock()
+    }
+
+    const bytes = new Uint8Array(length)
+    let offset = 0
+    for (const chunk of chunks) {
+        bytes.set(chunk, offset)
+        offset += chunk.byteLength
+    }
+    return new TextDecoder('utf-8', { fatal: true }).decode(bytes)
+}
+
+const parseEventBatch = (
+    body: string,
+    validators: ReturnType<typeof compileEvents>,
+): readonly RelayedEvent[] => {
+    const value: unknown = JSON.parse(body)
+    if (
+        !isRecord(value) ||
+        Object.keys(value).length !== 1 ||
+        !Array.isArray(value.events) ||
+        value.events.length === 0 ||
+        value.events.length > eventRelayBatchLimit
+    ) {
+        throw new TypeError('Invalid event batch')
+    }
+
+    return value.events.map((event) => {
+        if (
+            !isRecord(event) ||
+            Object.keys(event).length !== 2 ||
+            typeof event.name !== 'string' ||
+            event.name.length === 0 ||
+            !isRecord(event.properties)
+        ) {
+            throw new TypeError('Invalid event')
+        }
+        const validator = validators.get(event.name)
+        if (!validator) throw new TypeError('Unknown event')
+        return { name: event.name, properties: validator(event.properties) }
+    })
 }
 
 const segmentKey = (segment: HistorySegment, partition: HistoryCoverage['range']): string =>
@@ -214,7 +344,7 @@ const readIndex = async (
     target: HistoryTarget,
 ): Promise<HistoryPartitionIndex> => {
     const value = await storage.getItem(indexKey(target))
-    if (value === null) return { partitions: [], schemaVersion: 3 }
+    if (value === null) return { partitions: [], schemaVersion: 4 }
     if (!isPartitionIndex(value)) {
         throw new TypeError('Insight History storage contains an invalid partition index')
     }
@@ -285,7 +415,7 @@ const isHistoryCoverage = (value: unknown): value is HistoryCoverage =>
 
 const isPartitionIndex = (value: unknown): value is HistoryPartitionIndex =>
     isRecord(value) &&
-    value.schemaVersion === 3 &&
+    value.schemaVersion === 4 &&
     Array.isArray(value.partitions) &&
     value.partitions.every(
         (partition) =>
@@ -296,7 +426,7 @@ const isPartitionIndex = (value: unknown): value is HistoryPartitionIndex =>
     )
 
 const isHistorySegment = (value: unknown): value is HistorySegment => {
-    if (!isRecord(value) || !isRecord(value.range) || !isRecord(value.fidelity)) return false
+    if (!isRecord(value) || !isRecord(value.range)) return false
     return (
         typeof value.id === 'string' &&
         typeof value.adapter === 'string' &&
@@ -304,11 +434,9 @@ const isHistorySegment = (value: unknown): value is HistorySegment => {
         typeof value.scope === 'string' &&
         typeof value.observedAt === 'string' &&
         typeof value.sortKey === 'string' &&
-        value.schemaVersion === 2 &&
+        value.schemaVersion === 3 &&
         typeof value.range.from === 'string' &&
         typeof value.range.to === 'string' &&
-        (value.empty === true || value.data !== undefined) &&
-        ['full', 'reduced', 'not-preserved'].includes(String(value.fidelity.preservation)) &&
-        Array.isArray(value.fidelity.transformations)
+        (value.empty === true || value.data !== undefined)
     )
 }

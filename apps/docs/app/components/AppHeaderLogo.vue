@@ -21,7 +21,7 @@ const color = computed(() => (props.white ? 'text-white' : 'text-highlighted hov
             :items="[
                 {
                     label: 'Docs',
-                    to: '/get-started/overview/introduction',
+                    to: '/getting-started/introduction',
                 },
                 {
                     label: 'Demo',

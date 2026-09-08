@@ -40,30 +40,34 @@ const insight = createInsight({
     ],
 })
 
-const dashboard = await insight.query((q) => ({
-    traffic: q.metrics({
-        metrics: ['pageViews', 'visits'],
-        time: {
-            from: '2026-08-01T00:00:00.000Z',
-            to: '2026-08-08T00:00:00.000Z',
-            grain: 'day',
-        },
-        where: {
-            country: { in: ['JP', 'US'] },
-        },
-    }),
-}))
+const traffic = await insight.metrics({
+    metrics: ['pageViews', 'visits'],
+    time: {
+        from: '2026-08-01T00:00:00.000Z',
+        to: '2026-08-08T00:00:00.000Z',
+        grain: 'day',
+    },
+    where: {
+        country: { in: ['JP', 'US'] },
+    },
+})
 
-console.log(dashboard.traffic.data.values.pageViews)
+console.log(traffic.aggregate.pageViews)
 ```
 
-Configured canonical Metrics and dimensions are inferred across Provider adapters without `as const` or explicit generics.
+Configured canonical Metrics and dimensions are inferred from Providers without `as const` or explicit generics.
+Metric queries can request `aggregate`, `rows`, or `both`; ungrouped scalar queries default to
+`aggregate`, while grouped and time-series queries default to `both`.
+Paginated Logs and Traces continue with `await insight.next(result)` without repeating the query.
+Concurrent capability calls keep independent errors and cancellation while exact or Provider-compatible
+native work may be shared internally.
+The Nuxt module provides the bounded endpoint used by the default browser event client.
 
 ## Why Insight.ts?
 
 ### Typed end to end
 
-A Scope's adapters define the canonical fields they can execute. TypeScript carries that information through `insight.query()`, while runtime capability intersections reject incompatible cross-adapter dimensions and filters before I/O.
+A Scope's Providers define the canonical fields they can execute. TypeScript carries that information through direct capability methods such as `insight.metrics()`, while unsupported dimension and filter combinations fail before I/O.
 
 ### Provider details stay visible
 
@@ -80,18 +84,18 @@ Core does not require a framework, History engine, UI renderer, or OpenTelemetry
 Built-in support currently includes:
 
 - **Cloudflare Web Analytics** — page views, visits, dimensions, filters, and quality metadata
-- **Cloudflare Workers Observability** — canonical Logs, Traces, and telemetry Metrics with opaque pagination
+- **Cloudflare Workers Observability** — canonical Logs, Traces, and telemetry Metrics with result-local continuation
 - **Cloudflare Analytics Engine** — Metric queries, event delivery, or both
 - **Google Search Console** — Search Analytics metrics with data-state and quality metadata
 - **Application-defined adapters** — canonical Metric, Log, and Trace adapters through focused entrypoints and custom Providers through `defineProvider()`
 
-Custom adapters use the same scope-aware planning and result merging as built-in Providers.
+Application-defined adapters use the same canonical query methods as built-in Providers.
 
 ## History
 
-History preserves configured canonical capabilities with one Scope-aware workflow. Capability
-adapters retain their own identity, pagination, and safe rollup semantics while the engine owns
-coverage, bounded partition synchronization, Fidelity, storage, compaction, and expiration.
+History preserves configured canonical capabilities with one Scope-aware workflow. It synchronizes
+missing and provisional ranges, serves only queries it can reconstruct exactly, and falls back to
+live Providers when stored data cannot satisfy the request safely.
 
 ```ts
 import { createHistory } from 'insight-ts/history'
@@ -108,15 +112,24 @@ await insight.history.sync({ range: { from, to } })
 
 Insight.ts includes optional Vue components for Metric results.
 
+```sh
+npm install insight-ts vue @tanstack/charts d3-shape
+```
+
 ```vue
 <script setup lang="ts">
-import { InsightAreaChart, InsightStat } from 'insight-ts/vue/ui'
+import { InsightChart, InsightStat } from 'insight-ts/vue/ui'
 </script>
 
 <template>
     <InsightStat :data="dashboard.summary" />
 
-    <InsightAreaChart :data="dashboard.traffic" title="Traffic" :ui="{ title: 'font-semibold' }" />
+    <InsightChart
+        :data="dashboard.traffic"
+        title="Traffic"
+        type="area"
+        :ui="{ title: 'font-semibold' }"
+    />
 </template>
 ```
 
@@ -134,7 +147,7 @@ The complete documentation is available at [insight.liria.me](https://insight.li
 - [Query](https://insight.liria.me/query/introduction)
 - [Track](https://insight.liria.me/track/events)
 - [History](https://insight.liria.me/history/introduction)
-- [Providers](https://insight.liria.me/providers/cloudflare)
+- [Providers / Adapters](https://insight.liria.me/providers/cloudflare)
 - [UI](https://insight.liria.me/ui/stat)
 - [API reference](https://insight.liria.me/reference/api)
 - [Live demo](https://insight.liria.me/demo)

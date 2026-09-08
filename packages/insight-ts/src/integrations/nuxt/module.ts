@@ -4,6 +4,7 @@ import { pathToFileURL } from 'node:url'
 
 import {
     addServerImports,
+    addServerHandler,
     addServerTemplate,
     addTemplate,
     addTypeTemplate,
@@ -23,6 +24,10 @@ interface ServerRuntimeTypeTemplateOptions {
     cloudflareWebAnalytics: boolean
     history: boolean
     userConfigPath?: string
+}
+
+interface BrowserRelayTemplateOptions {
+    scope?: string
 }
 
 const module: NuxtModule<NuxtInsightModuleOptions> = defineNuxtModule<NuxtInsightModuleOptions>({
@@ -66,6 +71,20 @@ const module: NuxtModule<NuxtInsightModuleOptions> = defineNuxtModule<NuxtInsigh
             { from: '#insight/server', name: 'useInsight', typeFrom: runtimeTypes.dst },
         ])
 
+        if (options.browser !== false) {
+            const relay = addTemplate({
+                filename: 'insight/event-relay.mjs',
+                getContents: () =>
+                    createBrowserRelayTemplate(
+                        options.browser && options.browser.scope
+                            ? { scope: options.browser.scope }
+                            : {},
+                    ),
+                write: true,
+            })
+            addServerHandler({ handler: relay.dst, route: '/api/_insight/events' })
+        }
+
         if (!options.history) return
         let handlers: { syncHandler: string } | undefined
         if (options.history.tasks) {
@@ -100,13 +119,16 @@ export const createServerRuntimeTemplate = ({
     const historySetup = history
         ? `, history: createHistory({ repository: createNitroHistoryRepository(useStorage('insight'))${history.capabilities ? `, capabilities: ${JSON.stringify(history.capabilities)}` : ''}${history.scopes ? `, scopes: ${JSON.stringify(history.scopes)}` : ''} })`
         : ''
+    const configValidation = cloudflareWebAnalytics
+        ? `if (!Array.isArray(config.providers)) throw new TypeError('Nuxt Cloudflare Web Analytics auto-configuration requires a single-Scope server config; configure Cloudflare in server/insight.config.ts when using scopes')\n\n`
+        : ''
     const providerSetup = cloudflareWebAnalytics
         ? `const runtimeConfig = useRuntimeConfig()\n  const cloudflareConfig = runtimeConfig.cloudflare ?? {}\n  const providers = [...config.providers, cloudflare({\n    accountId: cloudflareConfig.accountId ?? '',\n    apiToken: cloudflareConfig.apiToken ?? '',\n    webAnalytics: {\n      host: cloudflareConfig.host,\n      siteTag: cloudflareConfig.siteTag ?? '',\n    },\n  })]`
         : 'const providers = config.providers'
     return `import { createInsight } from 'insight-ts'
 ${historyImports}${cloudflareImports}import config from '#insight/server-config'
 
-let instance
+${configValidation}let instance
 export const useInsight = () => {
   if (instance) return instance
   ${providerSetup}
@@ -129,15 +151,36 @@ export const createServerRuntimeTypeTemplate = ({
     const cloudflareProvider = cloudflareWebAnalytics
         ? `type CloudflareProvider = ReturnType<typeof cloudflare<{ readonly webAnalytics: { readonly siteTag: string } }>>`
         : ''
-    const providers = cloudflareWebAnalytics
-        ? "readonly [...ServerConfig['providers'], CloudflareProvider]"
-        : "ServerConfig['providers']"
+    const coreTypes = cloudflareWebAnalytics
+        ? 'HistoryExtension, InsightClient, ProviderDefinition'
+        : 'HistoryExtension, InsightClient'
+    const runtimeConfig = cloudflareWebAnalytics
+        ? "ServerConfig extends { readonly providers: infer Providers extends readonly ProviderDefinition[] } ? Omit<ServerConfig, 'providers'> & { readonly providers: readonly [...Providers, CloudflareProvider] } : never"
+        : 'ServerConfig'
     return `${serverConfig}
-${cloudflareImport}import type { HistoryExtension, InsightClient } from 'insight-ts'
+${cloudflareImport}import type { ${coreTypes} } from 'insight-ts'
 
 ${cloudflareProvider}
-type RuntimeConfig = Omit<ServerConfig, 'providers'> & { readonly providers: ${providers} }${history ? ' & { history: HistoryExtension }' : ''}
+type RuntimeConfig = (${runtimeConfig})${history ? ' & { history: HistoryExtension }' : ''}
 export declare const useInsight: () => InsightClient<RuntimeConfig>
+`
+}
+
+export const createBrowserRelayTemplate = ({ scope }: BrowserRelayTemplateOptions): string => {
+    const client = scope ? `useInsight().scope(${JSON.stringify(scope)})` : 'useInsight()'
+    return `import { fromWebHandler } from 'h3'
+import { createNitroEventRelay } from 'insight-ts/nitro'
+import config from '#insight/server-config'
+import { useInsight } from '#insight/server'
+
+export default fromWebHandler(createNitroEventRelay({
+  events: config.events,
+  track(name, properties) {
+    const client = ${client}
+    if (typeof client.track !== 'function') throw new TypeError('Insight browser relay requires insight.browser.scope when using multiple Scopes')
+    return client.track(name, properties)
+  },
+}))
 `
 }
 

@@ -1,13 +1,11 @@
 <script setup lang="ts">
-import { InsightLineChart } from 'insight-ts/vue/ui'
+import { InsightChart } from 'insight-ts/vue/ui'
 
 const data = {
-    data: {
-        points: [{ time: '2026-08-31T00:00:00.000Z', values: { views: 1 } }],
-        values: { views: 1 },
-    },
-    meta: { contributions: [], queriedAt: '2026-08-31T00:00:00.000Z' },
+    aggregate: { views: 1 },
+    meta: { queriedAt: '2026-08-31T00:00:00.000Z' },
+    rows: [{ time: '2026-08-31T00:00:00.000Z', values: { views: 1 } }],
 }
 </script>
 
-<template><InsightLineChart :data="data" /></template>
+<template><InsightChart :data="data" /></template>

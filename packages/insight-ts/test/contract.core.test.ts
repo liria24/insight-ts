@@ -5,12 +5,13 @@ import { describe, expect, expectTypeOf, it, vi } from 'vitest'
 import {
     createInsight,
     defineProvider,
-    type AdapterExecutionResult,
+    type CapabilityAdapterDefinition,
+    type CapabilityContract,
+    type CapabilitySchema,
     type EventDestination,
     type EventProperties,
     type HistoryExtension,
     type Instrumentation,
-    type ProviderExecutionRequest,
     type QueryResult,
 } from '../src/core/index.ts'
 import { defineMetricAdapter, type MetricData, type TimeRange } from '../src/metrics/index.ts'
@@ -19,6 +20,39 @@ const time = {
     from: '2026-08-01T00:00:00.000Z',
     to: '2026-08-02T00:00:00.000Z',
 } satisfies TimeRange
+
+const usageContract: CapabilityContract<'usage', { account: string }> = {
+    key: ({ account }) => account,
+    merge: (_query, [contribution]) => ({
+        data: contribution?.result.data ?? { spent: 0 },
+    }),
+    name: 'usage',
+    normalize(input) {
+        if (
+            typeof input !== 'object' ||
+            input === null ||
+            !('account' in input) ||
+            typeof input.account !== 'string'
+        ) {
+            throw new TypeError('Usage query requires an account')
+        }
+        return { account: input.account }
+    },
+    plan: (query) => query,
+}
+
+const usageAdapter: CapabilityAdapterDefinition<
+    'usage',
+    CapabilitySchema<{ account: string }, { spent: number }>,
+    { account: string },
+    { account: string },
+    { spent: number }
+> = {
+    contract: usageContract,
+    execute: ({ account }) => ({ data: { spent: account.length } }),
+    key: ({ account }) => account,
+    normalize: (query) => query,
+}
 
 describe('canonical query planning', () => {
     it('fans one Metric query across adapters and merges rows deterministically', async () => {
@@ -69,39 +103,28 @@ describe('canonical query planning', () => {
             ],
         })
 
-        const result = await insight.query((q) => ({
-            overview: q.metrics({
-                dimensions: ['country'],
-                metrics: ['requests', 'errors'],
-                time,
-            }),
-        }))
+        const result = await insight.metrics({
+            dimensions: ['country'],
+            metrics: ['requests', 'errors'],
+            time,
+        })
 
-        expectTypeOf(result.overview.data).toEqualTypeOf<MetricData>()
+        expectTypeOf(result).toMatchTypeOf<QueryResult<MetricData>>()
         expect(requests).toHaveBeenCalledOnce()
         expect(errors).toHaveBeenCalledOnce()
-        expect(result.overview).toEqual({
-            data: {
-                points: [
-                    {
-                        dimensions: { country: 'JP' },
-                        time: '2026-08-01T01:00:00.000Z',
-                        values: { errors: 1, requests: 7 },
-                    },
-                ],
-                values: { errors: 1, requests: 7 },
-            },
+        expect(result).toEqual({
+            aggregate: { errors: 1, requests: 7 },
             meta: {
-                contributions: [
-                    {
-                        fields: ['requests'],
-                        quality: { sampled: true, sampleRate: 0.5 },
-                    },
-                    { fields: ['errors'] },
-                ],
                 quality: { sampled: true, sampleRate: 0.5 },
                 queriedAt: '2026-08-02T00:00:00.000Z',
             },
+            rows: [
+                {
+                    dimensions: { country: 'JP' },
+                    time: '2026-08-01T01:00:00.000Z',
+                    values: { errors: 1, requests: 7 },
+                },
+            ],
         })
     })
 
@@ -132,42 +155,215 @@ describe('canonical query planning', () => {
         })
 
         await expect(
-            insight.query((q) => ({
-                invalid: q.metrics({
-                    dimensions: ['country'],
-                    metrics: ['requests', 'errors'],
-                    time,
-                }),
-            })),
+            insight.metrics({
+                dimensions: ['country'],
+                metrics: ['requests', 'errors'],
+                time,
+            }),
         ).rejects.toMatchObject({ code: 'UNSUPPORTED_DIMENSION' })
         expect(execute).not.toHaveBeenCalled()
     })
 
-    it('deduplicates exact plans and batches compatible Provider requests', async () => {
+    it('deduplicates exact concurrent direct queries', async () => {
+        const execute = vi.fn(({ metrics }: { metrics: readonly string[] }) => ({
+            values: Object.fromEntries(metrics.map((key) => [key, 1])),
+        }))
         const adapter = defineMetricAdapter({
-            execute: ({ metrics }) => ({
-                values: Object.fromEntries(metrics.map((key) => [key, 1])),
-            }),
+            execute,
             metrics: { requests: {} },
         })
-        const execute = vi.fn(
-            async (
-                requests: readonly ProviderExecutionRequest[],
-            ): Promise<readonly AdapterExecutionResult<unknown, object>[]> =>
-                Promise.all(requests.map(({ execute: run }) => run())),
-        )
         const insight = createInsight({
-            providers: [defineProvider({ adapters: { traffic: adapter }, execute, id: 'batched' })],
+            providers: [defineProvider({ adapters: { traffic: adapter }, id: 'app' })],
         })
 
-        const result = await insight.query((q) => ({
-            first: q.metrics({ metrics: ['requests'], time }),
-            second: q.metrics({ metrics: ['requests'], time }),
-        }))
+        const [first, second] = await Promise.all([
+            insight.metrics({ metrics: ['requests'], time }),
+            insight.metrics({ metrics: ['requests'], time }),
+        ])
 
         expect(execute).toHaveBeenCalledOnce()
-        expect(execute.mock.calls[0]?.[0]).toHaveLength(1)
-        expect(result.first).toEqual(result.second)
+        expect(first.aggregate).toEqual(second.aggregate)
+    })
+
+    it('cancels queued work before the scheduler flushes', async () => {
+        const execute = vi.fn(usageAdapter.execute)
+        const insight = createInsight({
+            providers: [
+                defineProvider({ adapters: { usage: { ...usageAdapter, execute } }, id: 'app' }),
+            ],
+        })
+        const controller = new AbortController()
+        const reason = new Error('cancel queued query')
+
+        const result = insight.usage({ account: 'acme' }, { signal: controller.signal })
+        controller.abort(reason)
+
+        await expect(result).rejects.toBe(reason)
+        expect(execute).not.toHaveBeenCalled()
+
+        const alreadyAborted = new AbortController()
+        alreadyAborted.abort(reason)
+        await expect(
+            insight.usage({ account: 'already-aborted' }, { signal: alreadyAborted.signal }),
+        ).rejects.toBe(reason)
+        expect(execute).not.toHaveBeenCalled()
+    })
+
+    it('keeps shared in-flight work alive until its last caller aborts', async () => {
+        const resolutions: ((value: { data: { spent: number } }) => void)[] = []
+        const nativeSignals: AbortSignal[] = []
+        const execute = vi.fn(
+            (_query: { account: string }, { signal }: { signal?: AbortSignal }) =>
+                new Promise<{ data: { spent: number } }>((resolve, reject) => {
+                    nativeSignals.push(signal!)
+                    resolutions.push(resolve)
+                    signal?.addEventListener('abort', () => reject(signal.reason), { once: true })
+                }),
+        )
+        const insight = createInsight({
+            providers: [
+                defineProvider({ adapters: { usage: { ...usageAdapter, execute } }, id: 'app' }),
+            ],
+        })
+        const firstController = new AbortController()
+        const secondController = new AbortController()
+        const firstReason = new Error('cancel first caller')
+        const first = insight.usage({ account: 'shared' }, { signal: firstController.signal })
+        await vi.waitFor(() => expect(execute).toHaveBeenCalledOnce())
+        const second = insight.usage({ account: 'shared' }, { signal: secondController.signal })
+
+        firstController.abort(firstReason)
+
+        await expect(first).rejects.toBe(firstReason)
+        expect(nativeSignals[0]?.aborted).toBe(false)
+        resolutions[0]!({ data: { spent: 6 } })
+        await expect(second).resolves.toMatchObject({ spent: 6 })
+
+        const thirdController = new AbortController()
+        const fourthController = new AbortController()
+        const thirdReason = new Error('cancel third caller')
+        const fourthReason = new Error('cancel fourth caller')
+        const third = insight.usage({ account: 'abandoned' }, { signal: thirdController.signal })
+        const fourth = insight.usage({ account: 'abandoned' }, { signal: fourthController.signal })
+        await vi.waitFor(() => expect(execute).toHaveBeenCalledTimes(2))
+
+        thirdController.abort(thirdReason)
+        fourthController.abort(fourthReason)
+
+        await expect(third).rejects.toBe(thirdReason)
+        await expect(fourth).rejects.toBe(fourthReason)
+        expect(nativeSignals[1]?.aborted).toBe(true)
+    })
+
+    it('applies one concurrency limit across direct calls', async () => {
+        let active = 0
+        let maximum = 0
+        let release!: () => void
+        const gate = new Promise<void>((resolve) => {
+            release = resolve
+        })
+        const execute = vi.fn(async ({ account }: { account: string }) => {
+            active += 1
+            maximum = Math.max(maximum, active)
+            await gate
+            active -= 1
+            return { data: { spent: account.length } }
+        })
+        const insight = createInsight({
+            providers: [
+                defineProvider({ adapters: { usage: { ...usageAdapter, execute } }, id: 'app' }),
+            ],
+        })
+
+        const results = Array.from({ length: 12 }, (_, index) =>
+            insight.usage({ account: `account-${index}` }),
+        )
+        await vi.waitFor(() => expect(execute).toHaveBeenCalledTimes(8))
+
+        expect(maximum).toBe(8)
+        release()
+        await Promise.all(results)
+        expect(execute).toHaveBeenCalledTimes(12)
+        expect(maximum).toBe(8)
+    })
+
+    it('keeps failures from different scheduled queries independent', async () => {
+        const failure = new Error('account unavailable')
+        const insight = createInsight({
+            providers: [
+                defineProvider({
+                    adapters: {
+                        usage: {
+                            ...usageAdapter,
+                            execute: ({ account }: { account: string }) => {
+                                if (account === 'broken') throw failure
+                                return { data: { spent: account.length } }
+                            },
+                        },
+                    },
+                    id: 'app',
+                }),
+            ],
+        })
+
+        const [broken, working] = await Promise.allSettled([
+            insight.usage({ account: 'broken' }),
+            insight.usage({ account: 'working' }),
+        ])
+
+        expect(broken).toEqual({ reason: failure, status: 'rejected' })
+        expect(working).toMatchObject({ status: 'fulfilled', value: { spent: 7 } })
+    })
+
+    it('exposes custom capabilities directly and reserves client method names', async () => {
+        const insight = createInsight({
+            providers: [defineProvider({ adapters: { usage: usageAdapter }, id: 'app' })],
+        })
+
+        const result = await insight.usage({ account: 'acme' })
+
+        expectTypeOf(result.spent).toEqualTypeOf<number>()
+        expect(result.spent).toBe(4)
+        for (const name of ['history', 'next', 'scope', 'then', 'track']) {
+            expect(() =>
+                createInsight({
+                    providers: [
+                        defineProvider({
+                            adapters: {
+                                reserved: {
+                                    ...usageAdapter,
+                                    contract: { ...usageContract, name },
+                                },
+                            },
+                            id: 'app',
+                        }),
+                    ],
+                }),
+            ).toThrow('reserved')
+        }
+    })
+
+    it('rejects capability data that collides with public metadata', async () => {
+        const insight = createInsight({
+            providers: [
+                defineProvider({
+                    adapters: {
+                        usage: {
+                            ...usageAdapter,
+                            contract: {
+                                ...usageContract,
+                                merge: () => ({ data: { meta: 'private' } }),
+                            },
+                        },
+                    },
+                    id: 'app',
+                }),
+            ],
+        })
+
+        await expect(insight.usage({ account: 'acme' })).rejects.toMatchObject({
+            code: 'INVALID_QUERY',
+        })
     })
 
     it('overlaps direct and History-managed plans after one ownership pass', async () => {
@@ -208,16 +404,14 @@ describe('canonical query planning', () => {
             ],
         })
 
-        const result = await insight.query(
-            (q) => ({
-                mixed: q.metrics({ metrics: ['direct', 'managed'], time }),
-            }),
+        const result = await insight.metrics(
+            { metrics: ['direct', 'managed'], time },
             { signal: controller.signal },
         )
 
         expect(overlapped).toBe(true)
         expect(handles).toHaveBeenCalledTimes(2)
-        expect(result.mixed.data.values).toEqual({ direct: 1, managed: 2 })
+        expect(result.aggregate).toEqual({ direct: 1, managed: 2 })
     })
 
     it('selects logical Scopes without changing the query DSL', async () => {
@@ -235,15 +429,13 @@ describe('canonical query planning', () => {
             scopes: { production: [provider(10)], staging: [provider(1)] },
         })
 
-        const production = await insight.scope('production').query((q) => ({
-            requests: q.metrics({ metrics: ['requests'], time }),
-        }))
-        const staging = await insight.scope('staging').query((q) => ({
-            requests: q.metrics({ metrics: ['requests'], time }),
-        }))
+        const production = await insight
+            .scope('production')
+            .metrics({ metrics: ['requests'], time })
+        const staging = await insight.scope('staging').metrics({ metrics: ['requests'], time })
 
-        expect(production.requests.data.values.requests).toBe(10)
-        expect(staging.requests.data.values.requests).toBe(1)
+        expect(production.aggregate.requests).toBe(10)
+        expect(staging.aggregate.requests).toBe(1)
         const invalidScope = () => {
             // @ts-expect-error Scope names are inferred from configuration
             insight.scope('provider')
@@ -251,11 +443,11 @@ describe('canonical query planning', () => {
         void invalidScope
     })
 
-    it('rejects duplicate Metric ownership and forwards abort signals', async () => {
+    it('rejects duplicate Metric ownership and supplies a native abort signal', async () => {
         const adapter = (metric: 'requests') =>
             defineMetricAdapter({
                 execute: (_query, context) => {
-                    expect(context.signal).toBe(controller.signal)
+                    expect(context.signal?.aborted).toBe(false)
                     return { values: { [metric]: 1 } }
                 },
                 metrics: { [metric]: {} },
@@ -273,9 +465,7 @@ describe('canonical query planning', () => {
         const insight = createInsight({
             providers: [defineProvider({ adapters: { first: adapter('requests') }, id: 'first' })],
         })
-        await insight.query((q) => ({ requests: q.metrics({ metrics: ['requests'], time }) }), {
-            signal: controller.signal,
-        })
+        await insight.metrics({ metrics: ['requests'], time }, { signal: controller.signal })
     })
 })
 
@@ -328,8 +518,8 @@ describe('Metric adapter boundary', () => {
             { adapter: 'demo.metrics', provider: 'demo', scope: 'default' },
         )
 
-        expect(result.data.points?.[0]?.time).toBe('2026-08-01T10:00:00.000Z')
-        expect(result.data.points?.[0]?.dimensions).toBe(dimensions)
+        expect(result.data.rows?.[0]?.time).toBe('2026-08-01T10:00:00.000Z')
+        expect(result.data.rows?.[0]?.dimensions).toBe(dimensions)
         const invalidQueries = () => {
             adapter.normalize({
                 metrics: ['requests'],
@@ -351,15 +541,24 @@ describe('Metric adapter boundary', () => {
 describe('events and instrumentation', () => {
     it('routes Track through the selected Scope without exposing query values', async () => {
         const track = vi.fn<EventDestination['track']>()
+        let insideInsightSpan = false
         const calls: {
             attributes: Readonly<Record<string, boolean | number | string>>
             name: string
         }[] = []
         const instrumentation: Instrumentation = {
-            activeTraceContext: () => ({ spanId: 'span', traceId: 'trace' }),
+            activeTraceContext: () => {
+                expect(insideInsightSpan).toBe(false)
+                return { spanId: 'span', traceId: 'trace' }
+            },
             async run(name, attributes, operation) {
                 calls.push({ attributes, name })
-                return operation({ recordException() {}, setAttribute() {} })
+                insideInsightSpan = true
+                try {
+                    return await operation({ recordException() {}, setAttribute() {} })
+                } finally {
+                    insideInsightSpan = false
+                }
             },
         }
         const options = {
@@ -382,9 +581,7 @@ describe('events and instrumentation', () => {
         expectTypeOf<SearchProperties>().toEqualTypeOf<{ readonly resultCount: number }>()
         const insight = createInsight(options)
 
-        await insight.query((q) => ({
-            secret: q.metrics({ metrics: ['requests'], time: { ...time, to: '2026-08-02' } }),
-        }))
+        await insight.metrics({ metrics: ['requests'], time: { ...time, to: '2026-08-02' } })
         await insight.track('search', { resultCount: 4 })
 
         expect(track).toHaveBeenCalledWith(
@@ -428,4 +625,4 @@ describe('events and instrumentation', () => {
     })
 })
 
-expectTypeOf<QueryResult<{ value: number }>>().toMatchTypeOf<QueryResult<unknown>>()
+expectTypeOf<QueryResult<{ value: number }>>().toMatchTypeOf<QueryResult<object>>()

@@ -2,7 +2,12 @@
 
 import { describe, expect, it, vi } from 'vitest'
 
-import { createInsight, defineProvider, type EventDestination } from '../src/core/index.ts'
+import {
+    createInsight,
+    defineProvider,
+    type EventDestination,
+    ProviderError,
+} from '../src/core/index.ts'
 
 describe('Track contract', () => {
     it('rejects unknown events, missing or extra properties, and invalid values', async () => {
@@ -83,5 +88,30 @@ describe('Track contract', () => {
         await expect(insight.track('ping')).rejects.toBe(failure)
         expect(failed).toHaveBeenCalledOnce()
         expect(delivered).toHaveBeenCalledOnce()
+    })
+
+    it('retries only a retryable destination with the same event', async () => {
+        const transient = new ProviderError('transient', 'destination unavailable', {
+            retryable: true,
+        })
+        const retried = vi
+            .fn<EventDestination['track']>()
+            .mockRejectedValueOnce(transient)
+            .mockResolvedValueOnce()
+        const delivered = vi.fn<EventDestination['track']>()
+        const insight = createInsight({
+            events: { ping: {} },
+            providers: [
+                defineProvider({ events: { track: retried }, id: 'retried' }),
+                defineProvider({ events: { track: delivered }, id: 'delivered' }),
+            ],
+        })
+
+        await insight.track('ping')
+
+        expect(retried).toHaveBeenCalledTimes(2)
+        expect(delivered).toHaveBeenCalledOnce()
+        expect(retried.mock.calls[0]?.[0]).toBe(retried.mock.calls[1]?.[0])
+        expect(retried.mock.calls[0]?.[0]).toBe(delivered.mock.calls[0]?.[0])
     })
 })

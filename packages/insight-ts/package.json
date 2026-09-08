@@ -77,7 +77,7 @@
             "types": "./dist/vue-ui.d.ts",
             "import": "./dist/vue-ui.js"
         },
-        "./vue/ui/style.css": "./dist/vue/ui/style.css",
+        "./vue/ui/style.css": "./dist/style.css",
         "./package.json": "./package.json"
     },
     "publishConfig": {
@@ -92,16 +92,14 @@
         "test": "vitest run",
         "typecheck": "vue-tsc --noEmit"
     },
-    "dependencies": {
-        "@tanstack/charts": "0.16.0",
-        "d3-shape": "3.2.0"
-    },
     "devDependencies": {
         "@arethetypeswrong/cli": "^0.18.5",
         "@opentelemetry/api": "^1.9.1",
+        "@tanstack/charts": "0.16.0",
         "@tsdown/css": "^0.23.0",
         "@types/bun": "^1.4.1",
         "@vue/compiler-sfc": "3.5.42",
+        "d3-shape": "3.2.0",
         "happy-dom": "^20.14.0",
         "publint": "^0.3.24",
         "tsdown": "^0.23.0",
@@ -115,11 +113,19 @@
     },
     "peerDependencies": {
         "@opentelemetry/api": "^1.9.1",
+        "@tanstack/charts": "^0.16.0",
+        "d3-shape": "^3.2.0",
         "nuxt": "^4.5.1",
         "vue": ">=3.5.0"
     },
     "peerDependenciesMeta": {
         "@opentelemetry/api": {
+            "optional": true
+        },
+        "@tanstack/charts": {
+            "optional": true
+        },
+        "d3-shape": {
             "optional": true
         },
         "nuxt": {

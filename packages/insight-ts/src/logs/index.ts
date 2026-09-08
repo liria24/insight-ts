@@ -1,22 +1,12 @@
 import { InsightError } from '../core/errors.ts'
-import {
-    decodeContinuation,
-    encodeContinuation,
-    initialContinuation,
-    mergeContinuation,
-    shouldFetchContinuation,
-    type ContinuationState,
-} from '../core/pagination.ts'
+import { mergePage } from '../core/pagination.ts'
 import { normalizeTimeRange, normalizeTimestamp, type TimeRange } from '../core/time.ts'
 import type {
     AdapterExecutionContext,
     CapabilityAdapterDefinition,
     CapabilityContract,
-    CapabilityContribution,
     CapabilitySchema,
-    HistoryFidelityBand,
     HistoryMaterializer,
-    InsightCursor,
     QueryQuality,
 } from '../core/types.ts'
 
@@ -61,12 +51,9 @@ export interface LogData {
     logs: readonly LogRecord[]
 }
 
-export interface LogMeta {
-    fidelity?: readonly HistoryFidelityBand[]
-}
+export type LogMeta = Record<never, never>
 
 export interface LogQuery {
-    cursor?: InsightCursor
     limit?: number
     time: TimeRange
     where?: LogWhere
@@ -79,7 +66,6 @@ export interface CanonicalLogFilter {
 }
 
 export interface NormalizedLogQuery {
-    cursor?: InsightCursor
     limit?: number
     nativeCursor?: string
     time: TimeRange
@@ -140,91 +126,60 @@ export const defineLogAdapter = (options: LogAdapterOptions): LogAdapterDefiniti
 }
 
 const logContract: LogContract = {
+    continue: (query, nativeCursor) => ({ ...query, nativeCursor }),
     key: (query) => JSON.stringify(query),
     merge(query, contributions) {
-        const context = requirePaginationContext(query)
-        const merged = mergeContinuation({
+        if (contributions.length > 1 && contributions.some(({ result }) => result.nativeCursor)) {
+            throw new InsightError(
+                'UNSUPPORTED_OPERATION',
+                'Multi-adapter Log pagination is not supported',
+            )
+        }
+        const records = contributions.map(({ result }) => {
+            // Log adapters canonicalize their result before Core invokes the contract.
+            // eslint-disable-next-line typescript/no-unsafe-type-assertion
+            const data = result.data as LogData
+            return data.logs
+        })
+        const logs = mergePage({
             compare: compareLogs,
-            contributions: contributions.map((contribution) => {
-                const index = context.adapters.findIndex(
-                    (adapter) => adapter === contribution.adapter.definition,
-                )
-                if (index < 0) throw new InsightError('INVALID_QUERY', 'Invalid Log contribution')
-                return {
-                    index,
-                    ...(contribution.result.nativeCursor
-                        ? { nativeCursor: contribution.result.nativeCursor }
-                        : {}),
-                    records: requireLogData(contribution.result.data).logs,
-                }
-            }),
             id: (log) => log.id,
             ...(query.limit === undefined ? {} : { limit: query.limit }),
-            state: context.state,
+            pages: records,
         })
-        const next = merged.state
-            ? encodeContinuation('logs', context.key, merged.state)
-            : undefined
+        const single = contributions.length === 1 ? contributions[0] : undefined
+        if (single && query.limit !== undefined && records[0]!.length > query.limit) {
+            throw new InsightError('INVALID_QUERY', 'Log adapter exceeded the requested limit')
+        }
         return {
-            contributions: contributions.map(({ result }) => ({
-                fields: logFields(requireLogData(result.data).logs),
-                ...(result.quality ? { quality: result.quality } : {}),
-            })),
-            data: { logs: merged.records },
-            ...mergeLogMeta(contributions),
-            ...(next ? { pagination: { next } } : {}),
+            ...(single
+                ? single.result.quality
+                    ? { quality: single.result.quality }
+                    : {}
+                : {
+                      contributions: contributions.map(({ result }) =>
+                          result.quality ? { quality: result.quality } : {},
+                      ),
+                  }),
+            data: { logs },
+            ...(single?.result.nativeCursor ? { nativeCursor: single.result.nativeCursor } : {}),
         }
     },
     name: 'logs',
     normalize(input, adapters) {
         const logs = logAdapters(adapters)
-        const query = normalizeLogQuery(input, commonFilters(logs), commonAttributes(logs))
-        const key = logicalLogKey(query)
-        logPagination.set(query, {
-            adapters: logs,
-            key,
-            state: query.cursor
-                ? decodeContinuation({
-                      adapters: logs.length,
-                      capability: 'logs',
-                      cursor: query.cursor,
-                      query: key,
-                      records: normalizeLogs,
-                  })
-                : initialContinuation(logs.length),
-        })
-        return query
+        return normalizeLogQuery(input, commonFilters(logs), commonAttributes(logs))
     },
     plan(query, adapter) {
         if (!isLogAdapter(adapter)) return undefined
-        const context = requirePaginationContext(query)
-        const index = context.adapters.indexOf(adapter)
-        const page = context.state.pages[index]
-        if (index < 0 || !page || !shouldFetchContinuation(page, query.limit)) return undefined
         return {
             ...(query.limit === undefined ? {} : { limit: query.limit }),
-            ...(page.nativeCursor ? { nativeCursor: page.nativeCursor } : {}),
+            ...(query.nativeCursor ? { nativeCursor: query.nativeCursor } : {}),
             time: query.time,
             ...(query.where ? { where: query.where } : {}),
         }
     },
 }
-
-interface LogPaginationContext {
-    adapters: readonly LogAdapterDefinition[]
-    key: string
-    state: ContinuationState<LogRecord>
-}
-
-const logPagination = new WeakMap<object, LogPaginationContext>()
-const requirePaginationContext = (query: NormalizedLogQuery): LogPaginationContext => {
-    const context = logPagination.get(query)
-    if (!context) throw new InsightError('INVALID_QUERY', 'Missing Log pagination state')
-    return context
-}
-
-const logicalLogKey = ({ cursor: _cursor, nativeCursor: _native, ...query }: NormalizedLogQuery) =>
-    JSON.stringify(query)
 
 const compareLogs = (left: LogRecord, right: LogRecord): number =>
     right.timestamp.localeCompare(left.timestamp) || left.id.localeCompare(right.id)
@@ -277,23 +232,6 @@ const matchesLogWhere = (
         return filter.operator === 'in' ? includes : !includes
     })
 
-const mergeLogMeta = (contributions: readonly CapabilityContribution[]): { meta?: LogMeta } => {
-    const fidelity = contributions.flatMap(({ result }) => {
-        if (!isRecord(result.meta) || !Array.isArray(result.meta.fidelity)) return []
-        return result.meta.fidelity.filter(isHistoryFidelityBand)
-    })
-    return fidelity.length > 0 ? { meta: { fidelity } } : {}
-}
-
-const isHistoryFidelityBand = (value: unknown): value is HistoryFidelityBand =>
-    isRecord(value) &&
-    typeof value.preservation === 'string' &&
-    ['full', 'reduced', 'not-preserved'].includes(value.preservation) &&
-    Array.isArray(value.transformations) &&
-    isRecord(value.range) &&
-    typeof value.range.from === 'string' &&
-    typeof value.range.to === 'string'
-
 const normalizeLogQuery = (
     input: unknown,
     filters: readonly LogFilterField[],
@@ -307,11 +245,7 @@ const normalizeLogQuery = (
     if (query.limit !== undefined && (!Number.isInteger(query.limit) || Number(query.limit) <= 0)) {
         throw new InsightError('INVALID_QUERY', 'Query limit must be a positive integer')
     }
-    if (query.cursor !== undefined && typeof query.cursor !== 'string') {
-        throw new InsightError('INVALID_QUERY', 'Log cursor must be an opaque string')
-    }
     return {
-        ...(typeof query.cursor === 'string' ? { cursor: query.cursor } : {}),
         ...(typeof query.limit === 'number' ? { limit: query.limit } : {}),
         time: normalizeTimeRange({ from: time.from, to: time.to }),
         ...(query.where === undefined
@@ -425,16 +359,6 @@ const normalizeLogs = (logs: unknown): readonly LogRecord[] => {
         }
     })
 }
-
-const requireLogData = (value: unknown): LogData => {
-    if (!isRecord(value) || !Array.isArray(value.logs)) {
-        throw new InsightError('INVALID_QUERY', 'Log adapter returned invalid data')
-    }
-    return { logs: normalizeLogs(value.logs) }
-}
-
-const logFields = (logs: readonly LogRecord[]): readonly string[] =>
-    [...new Set(logs.flatMap((log) => Object.keys(log)))].toSorted()
 
 const commonFilters = (adapters: readonly LogAdapterDefinition[]): readonly LogFilterField[] =>
     adapters.length === 0

@@ -67,19 +67,17 @@ describe('canonical Traces', () => {
             ],
         })
 
-        const result = await insight.query((q) => ({
-            failures: q.traces({
-                time,
-                where: {
-                    attributes: { tenant: 'acme' },
-                    durationMs: { gte: 50 },
-                    service: 'api',
-                    status: 'error',
-                },
-            }),
-        }))
+        const result = await insight.traces({
+            time,
+            where: {
+                attributes: { tenant: 'acme' },
+                durationMs: { gte: 50 },
+                service: 'api',
+                status: 'error',
+            },
+        })
 
-        expectTypeOf(result.failures.data).toEqualTypeOf<TraceData>()
+        expectTypeOf(result.traces).toEqualTypeOf<TraceData['traces']>()
         const expectedQuery: NormalizedTraceQuery = {
             time: {
                 from: '2026-08-01T00:00:00.000Z',
@@ -94,14 +92,11 @@ describe('canonical Traces', () => {
         }
         expect(first).toHaveBeenCalledWith(expectedQuery, expect.any(Object))
         expect(second).toHaveBeenCalledWith(expectedQuery, expect.any(Object))
-        expect(result.failures.data.traces.map(({ traceId }) => traceId)).toEqual([
-            'trace-new',
-            'trace-old',
-        ])
-        const trace = result.failures.data.traces[0]
+        expect(result.traces.map(({ traceId }) => traceId)).toEqual(['trace-new', 'trace-old'])
+        const trace = result.traces[0]
         expect(trace?.spanCount).toBe(2)
         expect(trace?.spans?.[1]).toMatchObject({ parentSpanId: 'root', traceId: 'trace-new' })
-        expect(result.failures.meta.quality).toEqual({ partial: true })
+        expect(result.meta.quality).toEqual({ partial: true })
     })
 
     it('uses the same stable result shape for trace detail by id', async () => {
@@ -126,13 +121,11 @@ describe('canonical Traces', () => {
             ],
         })
 
-        const { detail } = await insight.query((q) => ({
-            detail: q.traces({ time, where: { traceId: 'trace-1' } }),
-        }))
+        const detail = await insight.traces({ time, where: { traceId: 'trace-1' } })
 
-        expect(detail.data).toEqual({
-            traces: [{ startTime: '2026-08-01T00:00:00.000Z', traceId: 'trace-1' }],
-        })
+        expect(detail.traces).toEqual([
+            { startTime: '2026-08-01T00:00:00.000Z', traceId: 'trace-1' },
+        ])
     })
 
     it('rejects filters outside the adapter intersection before I/O', async () => {
@@ -153,9 +146,7 @@ describe('canonical Traces', () => {
         })
 
         await expect(
-            insight.query((q) => ({
-                invalid: q.traces({ time, where: { durationMs: { gt: 10 } } }),
-            })),
+            insight.traces({ time, where: { durationMs: { gt: 10 } } }),
         ).rejects.toMatchObject({ code: 'UNSUPPORTED_OPERATION' })
         expect(execute).not.toHaveBeenCalled()
     })

@@ -32,10 +32,30 @@ const ANALYTICS_ENGINE_ENDPOINT = 'https://api.cloudflare.com/client/v4/accounts
 const WORKERS_TELEMETRY_PATH = 'workers/observability/telemetry/query'
 const MAX_GRAPHQL_ROWS = 10_000
 const MAX_TELEMETRY_ROWS = 2_000
+const MAX_CLOUDFLARE_BATCH = 8
 const MAX_INDEX_BYTES = 96
 const MAX_BLOB_BYTES = 16 * 1024
 
 type Fetch = (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>
+
+interface CoalescedInput {
+    batchKey: string
+}
+
+interface CoalescedEntry<TInput, TOutput> {
+    aborted: () => void
+    active: boolean
+    group?: CoalescedGroup<TInput, TOutput>
+    input: TInput
+    reject: (reason?: unknown) => void
+    resolve: (value: TOutput) => void
+    signal?: AbortSignal
+}
+
+interface CoalescedGroup<TInput, TOutput> {
+    controller: AbortController
+    entries: Set<CoalescedEntry<TInput, TOutput>>
+}
 
 const webDimensionFields = {
     browser: 'userAgentBrowser',
@@ -51,6 +71,7 @@ interface GraphQLErrorShape {
     code?: number | string
     extensions?: { code?: number | string }
     message?: string
+    path?: readonly (number | string)[]
 }
 
 interface WebAnalyticsRow {
@@ -58,6 +79,15 @@ interface WebAnalyticsRow {
     count?: unknown
     dimensions?: Record<string, unknown>
     sum?: { visits?: unknown }
+}
+
+interface WebAnalyticsRequest extends CoalescedInput {
+    filter: Record<string, unknown>
+    includeAggregate: boolean
+    includeRows: boolean
+    nativeLimit: number
+    query: ResolvedMetricQuery
+    timeField?: string
 }
 
 export class CloudflareApiError extends ProviderError {
@@ -136,11 +166,46 @@ type CloudflareProvider<TOptions extends CloudflareOptions> = ProviderDefinition
 
 function cloudflareWebAnalytics(options: CloudflareWebAnalyticsOptions) {
     const fetcher = options.fetch ?? globalThis.fetch
-    const execute = async (
+    const batch = createCloudflareBatcher<WebAnalyticsRequest, MetricAdapterOutput>(
+        async (requests, signal) => {
+            const response = await fetchWithRetry(fetcher, GRAPHQL_ENDPOINT, {
+                body: JSON.stringify(webGraphqlBody(options.accountId, requests)),
+                headers: {
+                    accept: 'application/json',
+                    authorization: `Bearer ${options.apiToken}`,
+                    'content-type': 'application/json',
+                },
+                method: 'POST',
+                signal,
+            })
+            const payload = await readJson(response, 'Cloudflare GraphQL')
+            if (!response.ok) {
+                throw apiError(payload, response.status, 'Cloudflare GraphQL request failed')
+            }
+            const errors = graphqlErrors(payload)
+            const aliases = requests.flatMap((request, index) =>
+                webAliases(request, requests.length === 1 ? undefined : `q${index}`),
+            )
+            return requests.map((request, index) =>
+                captureResult(() =>
+                    webResponse(
+                        request,
+                        payload,
+                        response.status,
+                        errors,
+                        aliases,
+                        requests.length === 1 ? undefined : `q${index}`,
+                    ),
+                ),
+            )
+        },
+    )
+    const execute = (
         query: ResolvedMetricQuery,
         signal?: AbortSignal,
     ): Promise<MetricAdapterOutput> => {
-        if (!options.accountId || !options.apiToken) {
+        const { accountId, apiToken } = options
+        if (!accountId || !apiToken) {
             throw new InsightError(
                 'CONFIGURATION_MISSING',
                 'Cloudflare Web Analytics credentials are missing',
@@ -153,7 +218,10 @@ function cloudflareWebAnalytics(options: CloudflareWebAnalyticsOptions) {
             )
         }
         validateWebQuery(query)
-        const timeField = query.dimensions.includes('time') ? webTimeField(query.grain) : undefined
+        const includeAggregate = query.projection !== 'rows'
+        const includeRows = query.projection !== 'aggregate'
+        const timeField =
+            includeRows && query.dimensions.includes('time') ? webTimeField(query.grain) : undefined
         const nativeLimit =
             timeField === 'date' && !['auto', 'day'].includes(query.grain)
                 ? MAX_GRAPHQL_ROWS
@@ -170,39 +238,18 @@ function cloudflareWebAnalytics(options: CloudflareWebAnalyticsOptions) {
                 ...(providerFilter === undefined ? [] : [providerFilter]),
             ],
         }
-        const response = await fetchWithRetry(fetcher, GRAPHQL_ENDPOINT, {
-            body: JSON.stringify({
-                query: webGraphqlQuery(query, timeField),
-                variables: { accountTag: options.accountId, filter, limit: nativeLimit },
-            }),
-            headers: {
-                accept: 'application/json',
-                authorization: `Bearer ${options.apiToken}`,
-                'content-type': 'application/json',
+        return batch(
+            {
+                batchKey: 'webAnalytics',
+                filter,
+                includeAggregate,
+                includeRows,
+                nativeLimit,
+                query,
+                ...(timeField ? { timeField } : {}),
             },
-            method: 'POST',
-            ...(signal ? { signal } : {}),
-        })
-        const payload = await readJson(response, 'Cloudflare GraphQL')
-        if (!response.ok) {
-            throw apiError(payload, response.status, 'Cloudflare GraphQL request failed')
-        }
-        const errors = graphqlErrors(payload)
-        const rows = webRows(payload)
-        if (rows === undefined) {
-            throw apiError(
-                payload,
-                response.status,
-                'Cloudflare GraphQL response contained no account data',
-            )
-        }
-        if (!rows.every((row) => isWebAnalyticsRow(row, query))) {
-            throw new CloudflareApiError('Cloudflare Web Analytics returned malformed rows', 502)
-        }
-        if (errors.length > 0 && rows.length === 0) {
-            throw apiError(payload, response.status, 'Cloudflare GraphQL query failed')
-        }
-        return webReport(query, rows, errors, nativeLimit)
+            signal,
+        )
     }
 
     return defineMetricAdapter({
@@ -314,7 +361,19 @@ interface TelemetryFilter {
     value?: boolean | number | string
 }
 
+interface TelemetryResponse {
+    payload: unknown
+    result: Record<string, unknown>
+}
+
+interface WorkersMetricRequest extends CoalescedInput {
+    body: Record<string, unknown>
+    calculations: readonly Record<string, unknown>[]
+    query: ResolvedMetricQuery
+}
+
 function workersObservabilityAdapters(options: WorkersObservabilityRuntimeOptions) {
+    const executeMetrics = createWorkersMetrics(options)
     return {
         workersLogs: defineLogAdapter({
             attributes: true,
@@ -324,8 +383,7 @@ function workersObservabilityAdapters(options: WorkersObservabilityRuntimeOption
         workersMetrics: defineMetricAdapter({
             dimensions: { time: { operators: [], type: 'datetime' } },
             execute: (query, { signal }) =>
-                workersMetrics(
-                    options,
+                executeMetrics(
                     resolvedMetricQuery('cloudflare.workersMetrics', query, 'time'),
                     signal,
                 ),
@@ -408,11 +466,25 @@ async function workersTraces(
     }
 }
 
-async function workersMetrics(
+function createWorkersMetrics(options: WorkersObservabilityRuntimeOptions) {
+    const batch = createCloudflareBatcher<WorkersMetricRequest, MetricAdapterOutput>(
+        async (requests, signal) => {
+            const response = await telemetryQuery(options, workersMetricBody(requests), signal)
+            return requests.map(({ query }) =>
+                captureResult(() => workersMetricReport(query, response)),
+            )
+        },
+    )
+    return (query: ResolvedMetricQuery, signal?: AbortSignal): Promise<MetricAdapterOutput> => {
+        validateWorkersCredentials(options)
+        return batch(workersMetricRequest(options, query), signal)
+    }
+}
+
+function workersMetricRequest(
     options: WorkersObservabilityRuntimeOptions,
     query: ResolvedMetricQuery,
-    signal?: AbortSignal,
-): Promise<MetricAdapterOutput> {
+): WorkersMetricRequest {
     if (query.timezone !== 'UTC') {
         throw new InsightError(
             'UNSUPPORTED_OPERATION',
@@ -435,48 +507,86 @@ async function workersMetrics(
                   operator: 'p95',
               },
     )
-    const granularity = telemetryGranularity(query)
-    const response = await telemetryQuery(
-        options,
-        {
-            ...telemetryBody(
-                'calculations',
-                query.range,
-                [telemetryFilter('$metadata.type', 'eq', 'cf-worker-event')],
-                {},
-            ),
-            chart: granularity !== undefined,
-            chartType: granularity === undefined ? 'aggregate' : 'timeseries_and_aggregate',
-            ...(granularity === undefined ? { ignoreSeries: true } : { granularity }),
-            parameters: {
-                calculations,
-                datasets: options.datasets ?? [],
-                filterCombination: 'and',
-                filters: [telemetryFilter('$metadata.type', 'eq', 'cf-worker-event')],
-            },
+    const includeRows = query.projection !== 'aggregate'
+    const granularity = includeRows ? telemetryGranularity(query) : undefined
+    if (includeRows && granularity === undefined) {
+        throw new InsightError(
+            'UNSUPPORTED_OPERATION',
+            'Cloudflare Workers metric rows require an explicit time grain',
+        )
+    }
+    const filters = [telemetryFilter('$metadata.type', 'eq', 'cf-worker-event')]
+    const parameters = {
+        datasets: options.datasets ?? [],
+        filterCombination: 'and',
+        filters,
+    }
+    const base = {
+        ...telemetryBody('calculations', query.range, filters, {}),
+        chart: includeRows,
+        chartType:
+            query.projection === 'both'
+                ? 'timeseries_and_aggregate'
+                : query.projection === 'rows'
+                  ? 'timeseries'
+                  : 'aggregate',
+        ...(includeRows ? { granularity } : { ignoreSeries: true }),
+        parameters,
+    }
+    return {
+        batchKey: JSON.stringify(base),
+        body: { ...base, parameters: { ...parameters, calculations } },
+        calculations,
+        query,
+    }
+}
+
+function workersMetricBody(requests: readonly WorkersMetricRequest[]): Record<string, unknown> {
+    const first = requests[0]!
+    if (requests.length === 1) return first.body
+    const calculations = new Map<string, Record<string, unknown>>()
+    for (const request of requests) {
+        for (const calculation of request.calculations) {
+            calculations.set(text(calculation.alias), calculation)
+        }
+    }
+    return {
+        ...first.body,
+        parameters: {
+            ...record(first.body.parameters),
+            calculations: [...calculations.values()],
         },
-        signal,
-    )
+    }
+}
+
+function workersMetricReport(
+    query: ResolvedMetricQuery,
+    response: TelemetryResponse,
+): MetricAdapterOutput {
+    const includeAggregate = query.projection !== 'rows'
+    const includeRows = query.projection !== 'aggregate'
     if (!Array.isArray(response.result.calculations)) {
         throw new CloudflareApiError(
             'Cloudflare Workers metrics returned malformed calculations',
             502,
         )
     }
-    const values: Record<string, number | null> = Object.fromEntries(
-        query.metrics.map((metric) => [metric, null]),
-    )
+    const values: Record<string, number | null> | undefined = includeAggregate
+        ? Object.fromEntries(query.metrics.map((metric) => [metric, null]))
+        : undefined
     const points = new Map<string, MetricAdapterPoint>()
     let sampleInterval = 1
     for (const value of response.result.calculations) {
         const calculation = record(value)
         const metric = text(calculation?.alias) || text(calculation?.calculation)
         if (!query.metrics.includes(metric)) continue
-        const aggregates = Array.isArray(calculation?.aggregates) ? calculation.aggregates : []
-        const aggregate = record(aggregates[0])
-        values[metric] = number(aggregate?.value)
-        sampleInterval = Math.max(sampleInterval, number(aggregate?.sampleInterval) ?? 1)
-        const series = Array.isArray(calculation?.series) ? calculation.series : []
+        if (values) {
+            const aggregates = Array.isArray(calculation?.aggregates) ? calculation.aggregates : []
+            const aggregate = record(aggregates[0])
+            values[metric] = number(aggregate?.value)
+            sampleInterval = Math.max(sampleInterval, number(aggregate?.sampleInterval) ?? 1)
+        }
+        const series = includeRows && Array.isArray(calculation?.series) ? calculation.series : []
         for (const entry of series) {
             const item = record(entry)
             if (typeof item?.time !== 'string' || !Array.isArray(item.data)) continue
@@ -497,7 +607,7 @@ async function workersMetrics(
                 sourceTimezone: 'UTC',
             },
         },
-        ...(points.size > 0
+        ...(includeRows
             ? {
                   points: [...points.values()]
                       .toSorted((left, right) => left.time!.localeCompare(right.time!))
@@ -505,7 +615,7 @@ async function workersMetrics(
               }
             : {}),
         ...qualityOutput(response.payload, false, sampleInterval),
-        values,
+        ...(values ? { values } : {}),
     }
 }
 
@@ -533,17 +643,21 @@ function telemetryBody(
     }
 }
 
-async function telemetryQuery(
-    options: WorkersObservabilityRuntimeOptions,
-    body: Record<string, unknown>,
-    signal?: AbortSignal,
-): Promise<{ payload: unknown; result: Record<string, unknown> }> {
+function validateWorkersCredentials(options: WorkersObservabilityRuntimeOptions): void {
     if (!options.accountId || !options.apiToken) {
         throw new InsightError(
             'CONFIGURATION_MISSING',
             'Cloudflare Workers Observability credentials are missing',
         )
     }
+}
+
+async function telemetryQuery(
+    options: WorkersObservabilityRuntimeOptions,
+    body: Record<string, unknown>,
+    signal?: AbortSignal,
+): Promise<TelemetryResponse> {
+    validateWorkersCredentials(options)
     const fetcher = options.fetch ?? globalThis.fetch
     const response = await fetchWithRetry(
         fetcher,
@@ -635,7 +749,7 @@ function compileTelemetryFilter(
     }
     const type = typeof values[0]
     if (
-        !['boolean', 'number', 'string'].includes(type) ||
+        (type !== 'boolean' && type !== 'number' && type !== 'string') ||
         values.some((value) => typeof value !== type)
     ) {
         throw new InsightError(
@@ -651,19 +765,25 @@ function compileTelemetryFilter(
               : filter.operator === 'in'
                 ? 'in'
                 : filter.operator
-    return telemetryFilter(key, operation, values.length === 1 ? values[0]! : values.join(','))
+    return telemetryFilter(
+        key,
+        operation,
+        values.length === 1 ? values[0]! : values.join(','),
+        type,
+    )
 }
 
 function telemetryFilter(
     key: string,
     operation: string,
     value: boolean | number | string,
+    type?: TelemetryFilter['type'],
 ): TelemetryFilter {
-    const type = typeof value
-    if (type !== 'boolean' && type !== 'number' && type !== 'string') {
+    const inferred = typeof value
+    if (inferred !== 'boolean' && inferred !== 'number' && inferred !== 'string') {
         throw new TypeError('Cloudflare telemetry filters require scalar values')
     }
-    return { key, kind: 'filter', operation, type, value }
+    return { key, kind: 'filter', operation, type: type ?? inferred, value }
 }
 
 function logRecord(value: unknown): LogRecord {
@@ -899,35 +1019,50 @@ function analyticsEngineAdapter(options: AnalyticsEngineReadOptions) {
         query: ResolvedMetricQuery,
         signal?: AbortSignal,
     ): Promise<MetricAdapterOutput> => {
-        if (!options.accountId || !options.apiToken) {
+        const { accountId, apiToken } = options
+        if (!accountId || !apiToken) {
             throw new InsightError(
                 'CONFIGURATION_MISSING',
                 'Cloudflare Analytics Engine credentials are missing',
             )
         }
         validate(query)
-        const response = await fetchWithRetry(
-            fetcher,
-            `${ANALYTICS_ENGINE_ENDPOINT}/${encodeURIComponent(options.accountId)}/analytics_engine/sql`,
-            {
-                body: analyticsEngineSql(options.dataset, query),
-                headers: { authorization: `Bearer ${options.apiToken}` },
-                method: 'POST',
-                ...(signal ? { signal } : {}),
-            },
-        )
-        const payload = await readJson(response, 'Cloudflare Analytics Engine')
-        if (!response.ok) {
-            throw apiError(payload, response.status, 'Cloudflare Analytics Engine query failed')
+        const request = async (projection: 'aggregate' | 'rows'): Promise<unknown[]> => {
+            const response = await fetchWithRetry(
+                fetcher,
+                `${ANALYTICS_ENGINE_ENDPOINT}/${encodeURIComponent(accountId)}/analytics_engine/sql`,
+                {
+                    body: analyticsEngineSql(options.dataset, query, projection),
+                    headers: { authorization: `Bearer ${apiToken}` },
+                    method: 'POST',
+                    ...(signal ? { signal } : {}),
+                },
+            )
+            const payload = await readJson(response, 'Cloudflare Analytics Engine')
+            if (!response.ok) {
+                throw apiError(payload, response.status, 'Cloudflare Analytics Engine query failed')
+            }
+            const data = record(payload)?.data
+            if (!Array.isArray(data)) {
+                throw new CloudflareApiError(
+                    'Cloudflare Analytics Engine returned malformed data',
+                    502,
+                )
+            }
+            const dimensions = projection === 'aggregate' ? [] : query.dimensions
+            if (!data.every((row) => isAnalyticsEngineRow(row, dimensions))) {
+                throw new CloudflareApiError(
+                    'Cloudflare Analytics Engine returned malformed rows',
+                    502,
+                )
+            }
+            return data
         }
-        const data = record(payload)?.data
-        if (!Array.isArray(data)) {
-            throw new CloudflareApiError('Cloudflare Analytics Engine returned malformed data', 502)
-        }
-        if (!data.every((row) => isAnalyticsEngineRow(row, query))) {
-            throw new CloudflareApiError('Cloudflare Analytics Engine returned malformed rows', 502)
-        }
-        return analyticsEngineReport(query, data)
+        const [aggregate, rows] = await Promise.all([
+            query.projection === 'rows' ? undefined : request('aggregate'),
+            query.projection === 'aggregate' ? undefined : request('rows'),
+        ])
+        return analyticsEngineReport(query, aggregate, rows)
     }
 
     return defineMetricAdapter({
@@ -948,7 +1083,11 @@ function analyticsEngineAdapter(options: AnalyticsEngineReadOptions) {
     })
 }
 
-function analyticsEngineSql(dataset: string, query: ResolvedMetricQuery): string {
+function analyticsEngineSql(
+    dataset: string,
+    query: ResolvedMetricQuery,
+    projection: 'aggregate' | 'rows',
+): string {
     const from = sqlDate(query.range.from)
     const to = sqlDate(query.range.to)
     const nameFilter = compileEngineNameFilter(query.where)
@@ -959,7 +1098,7 @@ function analyticsEngineSql(dataset: string, query: ResolvedMetricQuery): string
     ].join(' AND ')
     const limit = Math.max(1, query.limit ?? 10_000)
 
-    if (query.dimensions.length === 0) {
+    if (projection === 'aggregate') {
         return `SELECT SUM(_sample_interval) AS events, MAX(_sample_interval) AS sampleInterval FROM ${dataset} WHERE ${where} FORMAT JSON`
     }
     if (query.dimensions[0] === 'name') {
@@ -969,15 +1108,18 @@ function analyticsEngineSql(dataset: string, query: ResolvedMetricQuery): string
     return `SELECT toStartOfInterval(timestamp, INTERVAL '1' ${unit}) AS time, SUM(_sample_interval) AS events, MAX(_sample_interval) AS sampleInterval FROM ${dataset} WHERE ${where} GROUP BY time ORDER BY time ASC LIMIT ${limit} FORMAT JSON`
 }
 
-function analyticsEngineReport(query: ResolvedMetricQuery, data: unknown[]): MetricAdapterOutput {
-    const rows = data.map((item) => record(item) ?? {})
+function analyticsEngineReport(
+    query: ResolvedMetricQuery,
+    aggregateData: unknown[] | undefined,
+    rowData: unknown[] | undefined,
+): MetricAdapterOutput {
+    const aggregateRows = (aggregateData ?? []).map((item) => record(item) ?? {})
+    const rows = (rowData ?? []).map((item) => record(item) ?? {})
     let maxInterval = 1
-    let total = 0
     const points: MetricAdapterPoint[] = []
     const dimension = query.dimensions[0]
     for (const row of rows) {
         maxInterval = Math.max(maxInterval, number(row.sampleInterval) ?? 1)
-        total += number(row.events) ?? 0
         if (dimension === 'time') {
             points.push({ time: text(row.time), values: { events: number(row.events) } })
         } else if (dimension === 'name') {
@@ -987,14 +1129,96 @@ function analyticsEngineReport(query: ResolvedMetricQuery, data: unknown[]): Met
             })
         }
     }
+    for (const row of aggregateRows) {
+        maxInterval = Math.max(maxInterval, number(row.sampleInterval) ?? 1)
+    }
     const meta = reportMeta(
         query,
         maxInterval > 1 ? { approximate: true, sampled: true, sampleRate: 1 / maxInterval } : {},
     )
-    if (query.dimensions.length === 0) {
-        return { ...meta, values: { events: number(rows[0]?.events) } }
+    return {
+        ...meta,
+        ...(aggregateData ? { values: { events: number(aggregateRows[0]?.events) } } : {}),
+        ...(rowData ? { points } : {}),
     }
-    return { ...meta, points, values: { events: total } }
+}
+
+function webGraphqlBody(
+    accountTag: string,
+    requests: readonly WebAnalyticsRequest[],
+): Record<string, unknown> {
+    const first = requests[0]!
+    if (requests.length === 1) {
+        return {
+            query: webGraphqlQuery(first.query, first.timeField),
+            variables: {
+                accountTag,
+                filter: first.filter,
+                ...(first.includeRows ? { limit: first.nativeLimit } : {}),
+            },
+        }
+    }
+    const variables: Record<string, unknown> = { accountTag }
+    for (const [index, request] of requests.entries()) {
+        variables[`q${index}Filter`] = request.filter
+        if (request.includeRows) variables[`q${index}Limit`] = request.nativeLimit
+    }
+    return { query: webGraphqlBatchQuery(requests), variables }
+}
+
+function webResponse(
+    request: WebAnalyticsRequest,
+    payload: unknown,
+    status: number,
+    errors: readonly GraphQLErrorShape[],
+    batchAliases: readonly string[],
+    prefix?: string,
+): MetricAdapterOutput {
+    const aliases = webAliases(request, prefix)
+    const requestErrors = errors.filter((error) => {
+        const target = error.path?.find(
+            (part): part is string => typeof part === 'string' && batchAliases.includes(part),
+        )
+        return target === undefined || aliases.includes(target)
+    })
+    const aggregateRows = request.includeAggregate ? webRows(payload, aliases[0]!) : undefined
+    const rows = request.includeRows ? webRows(payload, aliases.at(-1)!) : undefined
+    if (
+        (request.includeAggregate && aggregateRows === undefined) ||
+        (request.includeRows && rows === undefined)
+    ) {
+        throw apiError(
+            payload,
+            status,
+            'Cloudflare GraphQL response contained no account data',
+            requestErrors,
+        )
+    }
+    if (
+        (aggregateRows !== undefined &&
+            !aggregateRows.every((row) => isWebAnalyticsRow(row, request.query, []))) ||
+        (rows !== undefined &&
+            !rows.every((row) => isWebAnalyticsRow(row, request.query, request.query.dimensions)))
+    ) {
+        throw new CloudflareApiError('Cloudflare Web Analytics returned malformed rows', 502)
+    }
+    if (requestErrors.length > 0 && (aggregateRows?.length ?? 0) + (rows?.length ?? 0) === 0) {
+        throw apiError(payload, status, 'Cloudflare GraphQL query failed', requestErrors)
+    }
+    return webReport(
+        request.query,
+        aggregateRows ?? [],
+        rows ?? [],
+        requestErrors,
+        request.nativeLimit,
+    )
+}
+
+function webAliases(request: WebAnalyticsRequest, prefix?: string): string[] {
+    return [
+        ...(request.includeAggregate ? [prefix ? `${prefix}Aggregate` : 'aggregate'] : []),
+        ...(request.includeRows ? [prefix ? `${prefix}Rows` : 'rows'] : []),
+    ]
 }
 
 function validateWebQuery(query: ResolvedMetricQuery): void {
@@ -1014,7 +1238,13 @@ function validateWebQuery(query: ResolvedMetricQuery): void {
     compileWebFilter(query.where)
 }
 
-function webGraphqlQuery(query: ResolvedMetricQuery, timeField: string | undefined): string {
+function webGraphqlSelection(
+    query: ResolvedMetricQuery,
+    timeField: string | undefined,
+    filterVariable: string,
+    limitVariable: string,
+    prefix?: string,
+): string {
     const dimensions = query.dimensions
         .map((dimension) => {
             if (dimension === 'time') {
@@ -1038,14 +1268,54 @@ function webGraphqlQuery(query: ResolvedMetricQuery, timeField: string | undefin
                 ? 'sum_visits_DESC'
                 : 'count_DESC'
             : `${timeField}_ASC`
-    return `query WebAnalytics($accountTag: String!, $filter: AccountRumPageloadEventsAdaptiveGroupsFilter_InputObject!, $limit: Int!) {
+    const fields = `${metrics}
+        avg { sampleInterval }`
+    const aggregate =
+        query.projection === 'rows'
+            ? ''
+            : `${prefix ? `${prefix}Aggregate` : 'aggregate'}: rumPageloadEventsAdaptiveGroups(filter: ${filterVariable}, limit: 1) {
+        ${fields}
+      }`
+    const rows =
+        query.projection === 'aggregate'
+            ? ''
+            : `${prefix ? `${prefix}Rows` : 'rows'}: rumPageloadEventsAdaptiveGroups(filter: ${filterVariable}, limit: ${limitVariable}, orderBy: [${orderBy}]) {
+        ${fields}
+        ${dimensions.length === 0 ? '' : `dimensions { ${dimensions} }`}
+      }`
+    return `${aggregate}
+      ${rows}`
+}
+
+function webGraphqlQuery(query: ResolvedMetricQuery, timeField: string | undefined): string {
+    return `query WebAnalytics($accountTag: String!, $filter: AccountRumPageloadEventsAdaptiveGroupsFilter_InputObject!${query.projection === 'aggregate' ? '' : ', $limit: Int!'}) {
   viewer {
     accounts(filter: { accountTag: $accountTag }) {
-      rows: rumPageloadEventsAdaptiveGroups(filter: $filter, limit: $limit, orderBy: [${orderBy}]) {
-        ${metrics}
-        avg { sampleInterval }
-        ${dimensions.length === 0 ? '' : `dimensions { ${dimensions} }`}
-      }
+      ${webGraphqlSelection(query, timeField, '$filter', '$limit')}
+    }
+  }
+}`
+}
+
+function webGraphqlBatchQuery(requests: readonly WebAnalyticsRequest[]): string {
+    const variables = requests.flatMap((request, index) => [
+        `$q${index}Filter: AccountRumPageloadEventsAdaptiveGroupsFilter_InputObject!`,
+        ...(request.includeRows ? [`$q${index}Limit: Int!`] : []),
+    ])
+    return `query WebAnalyticsBatch($accountTag: String!, ${variables.join(', ')}) {
+  viewer {
+    accounts(filter: { accountTag: $accountTag }) {
+      ${requests
+          .map((request, index) =>
+              webGraphqlSelection(
+                  request.query,
+                  request.timeField,
+                  `$q${index}Filter`,
+                  `$q${index}Limit`,
+                  `q${index}`,
+              ),
+          )
+          .join('\n')}
     }
   }
 }`
@@ -1111,6 +1381,7 @@ function compileEngineNameFilter(filter: CanonicalWhere | undefined): string | u
 
 function webReport(
     query: ResolvedMetricQuery,
+    aggregateRows: WebAnalyticsRow[],
     input: WebAnalyticsRow[],
     errors: GraphQLErrorShape[],
     nativeLimit: number,
@@ -1118,7 +1389,7 @@ function webReport(
     const rows = rollupWebRows(query, input)
     const limited = query.limit === undefined ? rows : rows.slice(0, query.limit)
     let maxInterval = 1
-    for (const row of input) {
+    for (const row of [...aggregateRows, ...input]) {
         maxInterval = Math.max(maxInterval, number(row.avg?.sampleInterval) ?? 1)
     }
     const partial = errors.length > 0 || input.length === nativeLimit
@@ -1144,28 +1415,31 @@ function webReport(
         ...(warnings.length === 0 ? {} : { warnings }),
     })
 
-    if (query.dimensions.length === 0) {
-        return { ...meta, values: sumWebMetrics(query.metrics, limited) }
-    }
     const hasTimeDimension = query.dimensions.includes('time')
     const dimensions = query.dimensions.filter((dimension) => dimension !== 'time')
     return {
         ...meta,
-        points: limited.map((row) => ({
-            ...(hasTimeDimension ? { time: text(row.dimensions?.time) } : {}),
-            ...(dimensions.length === 0
-                ? {}
-                : {
-                      dimensions: Object.fromEntries(
-                          dimensions.map((dimension) => [
-                              dimension,
-                              dimensionValue(row.dimensions?.[dimension]),
-                          ]),
-                      ),
-                  }),
-            values: webMetricValues(query.metrics, row),
-        })),
-        values: sumWebMetrics(query.metrics, limited),
+        ...(query.projection === 'rows'
+            ? {}
+            : { values: sumWebMetrics(query.metrics, aggregateRows) }),
+        ...(query.projection === 'aggregate'
+            ? {}
+            : {
+                  points: limited.map((row) => ({
+                      ...(hasTimeDimension ? { time: text(row.dimensions?.time) } : {}),
+                      ...(dimensions.length === 0
+                          ? {}
+                          : {
+                                dimensions: Object.fromEntries(
+                                    dimensions.map((dimension) => [
+                                        dimension,
+                                        dimensionValue(row.dimensions?.[dimension]),
+                                    ]),
+                                ),
+                            }),
+                      values: webMetricValues(query.metrics, row),
+                  })),
+              }),
     }
 }
 
@@ -1249,6 +1523,113 @@ function reportMeta(
     }
 }
 
+function settleCoalesced<TInput, TOutput>(
+    entry: CoalescedEntry<TInput, TOutput>,
+    result: PromiseSettledResult<TOutput>,
+): void {
+    if (!entry.active) return
+    entry.active = false
+    entry.signal?.removeEventListener('abort', entry.aborted)
+    entry.group?.entries.delete(entry)
+    if (result.status === 'fulfilled') entry.resolve(result.value)
+    else entry.reject(result.reason)
+}
+
+function createCloudflareBatcher<TInput extends CoalescedInput, TOutput>(
+    execute: (
+        inputs: readonly TInput[],
+        signal: AbortSignal,
+    ) => Promise<readonly PromiseSettledResult<TOutput>[]>,
+): (input: TInput, signal?: AbortSignal) => Promise<TOutput> {
+    let queue: CoalescedEntry<TInput, TOutput>[] = []
+    let flushQueued = false
+
+    const run = async (entries: CoalescedEntry<TInput, TOutput>[]) => {
+        const group: CoalescedGroup<TInput, TOutput> = {
+            controller: new AbortController(),
+            entries: new Set(entries),
+        }
+        for (const entry of entries) entry.group = group
+        const signal =
+            entries.length === 1
+                ? (entries[0]!.signal ?? group.controller.signal)
+                : group.controller.signal
+        try {
+            const results = await execute(
+                entries.map(({ input }) => input),
+                signal,
+            )
+            if (results.length !== entries.length) {
+                throw new TypeError('Cloudflare coalescer returned the wrong result count')
+            }
+            for (const [index, entry] of entries.entries()) {
+                settleCoalesced(entry, results[index]!)
+            }
+        } catch (reason) {
+            for (const entry of entries) {
+                settleCoalesced(entry, { reason, status: 'rejected' })
+            }
+        }
+    }
+
+    const flush = () => {
+        flushQueued = false
+        const queued = queue
+        queue = []
+        const groups = new Map<string, CoalescedEntry<TInput, TOutput>[]>()
+        for (const entry of queued) {
+            if (!entry.active) continue
+            const entries = groups.get(entry.input.batchKey) ?? []
+            entries.push(entry)
+            groups.set(entry.input.batchKey, entries)
+        }
+        for (const entries of groups.values()) {
+            for (let index = 0; index < entries.length; index += MAX_CLOUDFLARE_BATCH) {
+                void run(entries.slice(index, index + MAX_CLOUDFLARE_BATCH))
+            }
+        }
+    }
+
+    return (input, signal) => {
+        signal?.throwIfAborted()
+        return new Promise((resolve, reject) => {
+            let entry!: CoalescedEntry<TInput, TOutput>
+            const aborted = () => {
+                if (!entry.active) return
+                entry.active = false
+                signal?.removeEventListener('abort', aborted)
+                entry.group?.entries.delete(entry)
+                reject(signal?.reason)
+                if (entry.group?.entries.size === 0) {
+                    entry.group.controller.abort(signal?.reason)
+                }
+            }
+            entry = {
+                aborted,
+                active: true,
+                input,
+                reject,
+                resolve,
+                ...(signal ? { signal } : {}),
+            }
+            queue.push(entry)
+            signal?.addEventListener('abort', aborted, { once: true })
+            if (!flushQueued) {
+                flushQueued = true
+                queueMicrotask(flush)
+            }
+        })
+    }
+}
+
+function captureResult<T>(operation: () => T): PromiseSettledResult<T> {
+    try {
+        return { status: 'fulfilled', value: operation() }
+    } catch (reason) {
+        return { reason, status: 'rejected' }
+    }
+}
+
 async function readJson(response: Response, provider: string): Promise<unknown> {
     try {
         return await response.json()
@@ -1257,8 +1638,12 @@ async function readJson(response: Response, provider: string): Promise<unknown> 
     }
 }
 
-function apiError(payload: unknown, status: number, fallback: string): CloudflareApiError {
-    const errors = graphqlErrors(payload)
+function apiError(
+    payload: unknown,
+    status: number,
+    fallback: string,
+    errors = graphqlErrors(payload),
+): CloudflareApiError {
     const first = errors[0]
     const response = record(payload)
     const message =
@@ -1279,6 +1664,10 @@ function graphqlErrors(payload: unknown): GraphQLErrorShape[] {
                 ? { code: item.code }
                 : {}),
             ...(typeof item?.message === 'string' ? { message: item.message } : {}),
+            ...(Array.isArray(item?.path) &&
+            item.path.every((part) => typeof part === 'string' || typeof part === 'number')
+                ? { path: item.path }
+                : {}),
             ...(typeof extensions?.code === 'string' || typeof extensions?.code === 'number'
                 ? { extensions: { code: extensions.code } }
                 : {}),
@@ -1286,12 +1675,12 @@ function graphqlErrors(payload: unknown): GraphQLErrorShape[] {
     })
 }
 
-function webRows(payload: unknown): WebAnalyticsRow[] | undefined {
+function webRows(payload: unknown, field: string): WebAnalyticsRow[] | undefined {
     const data = record(payload)?.data
     const viewer = record(record(data)?.viewer)
     const accounts = viewer?.accounts
     if (!Array.isArray(accounts) || accounts.length === 0) return undefined
-    const rows = record(accounts[0])?.rows
+    const rows = record(accounts[0])?.[field]
     return Array.isArray(rows) ? rows : undefined
 }
 
@@ -1303,7 +1692,11 @@ function isRecord(value: unknown): value is Record<string, unknown> {
     return typeof value === 'object' && value !== null && !Array.isArray(value)
 }
 
-function isWebAnalyticsRow(value: unknown, query: ResolvedMetricQuery): value is WebAnalyticsRow {
+function isWebAnalyticsRow(
+    value: unknown,
+    query: ResolvedMetricQuery,
+    expectedDimensions: readonly string[],
+): value is WebAnalyticsRow {
     if (!isRecord(value)) return false
     const average = record(value.avg)
     if (number(average?.sampleInterval) === null) return false
@@ -1311,18 +1704,18 @@ function isWebAnalyticsRow(value: unknown, query: ResolvedMetricQuery): value is
     if (query.metrics.includes('visits') && number(record(value.sum)?.visits) === null) {
         return false
     }
-    if (query.dimensions.length === 0) return true
+    if (expectedDimensions.length === 0) return true
     const dimensions = record(value.dimensions)
     return (
         dimensions !== undefined &&
-        query.dimensions.every(
+        expectedDimensions.every(
             (dimension) =>
                 typeof dimensions[dimension] === 'string' && dimensions[dimension].length > 0,
         )
     )
 }
 
-function isAnalyticsEngineRow(value: unknown, query: ResolvedMetricQuery): boolean {
+function isAnalyticsEngineRow(value: unknown, dimensions: readonly string[]): boolean {
     if (
         !isRecord(value) ||
         number(value.events) === null ||
@@ -1330,8 +1723,8 @@ function isAnalyticsEngineRow(value: unknown, query: ResolvedMetricQuery): boole
     ) {
         return false
     }
-    if (query.dimensions[0] === 'name') return typeof value.name === 'string'
-    if (query.dimensions[0] === 'time') {
+    if (dimensions[0] === 'name') return typeof value.name === 'string'
+    if (dimensions[0] === 'time') {
         return typeof value.time === 'string' && Number.isFinite(new Date(value.time).valueOf())
     }
     return true

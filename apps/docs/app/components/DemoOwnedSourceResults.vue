@@ -2,7 +2,7 @@
 import { computed } from 'vue'
 
 const props = defineProps<{ data: DemoReportResponse }>()
-const trace = computed(() => props.data.trace.data.traces[0])
+const trace = computed(() => props.data.trace.traces[0])
 
 const money = new Intl.NumberFormat('en-US', { currency: 'USD', style: 'currency' })
 </script>
@@ -13,7 +13,7 @@ const money = new Intl.NumberFormat('en-US', { currency: 'USD', style: 'currency
             <h3 class="font-semibold text-highlighted">Funnel</h3>
             <ol class="mt-4 space-y-3">
                 <li
-                    v-for="step in data.funnel.data.steps"
+                    v-for="step in data.funnel.steps"
                     :key="step.name"
                     class="grid grid-cols-[1fr_auto] gap-3"
                 >
@@ -35,7 +35,7 @@ const money = new Intl.NumberFormat('en-US', { currency: 'USD', style: 'currency
             <h3 class="font-semibold text-highlighted">Paginated logs</h3>
             <ul class="mt-4 divide-y divide-default font-mono text-xs">
                 <li
-                    v-for="entry in data.logs.data.logs"
+                    v-for="entry in data.logs.logs"
                     :key="entry.id"
                     class="grid grid-cols-[auto_1fr] gap-3 py-3"
                 >
@@ -80,15 +80,15 @@ const money = new Intl.NumberFormat('en-US', { currency: 'USD', style: 'currency
         <UCard variant="subtle">
             <h3 class="font-semibold text-highlighted">Billing domain data</h3>
             <div class="mt-4 flex justify-between">
-                <span>Revenue</span><strong>{{ money.format(data.billing.data.revenue) }}</strong>
+                <span>Revenue</span><strong>{{ money.format(data.billing.revenue) }}</strong>
             </div>
             <div class="mt-2 flex justify-between">
                 <span>Outstanding</span
-                ><strong>{{ money.format(data.billing.data.outstanding) }}</strong>
+                ><strong>{{ money.format(data.billing.outstanding) }}</strong>
             </div>
             <ul class="mt-4 divide-y divide-default text-sm">
                 <li
-                    v-for="invoice in data.billing.data.invoices"
+                    v-for="invoice in data.billing.invoices"
                     :key="invoice.customer"
                     class="flex justify-between gap-4 py-2"
                 >

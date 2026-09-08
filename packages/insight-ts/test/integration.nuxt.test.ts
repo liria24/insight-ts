@@ -3,10 +3,18 @@ import memoryDriver from 'unstorage/drivers/memory'
 import { describe, expect, it, vi } from 'vitest'
 
 import {
+    createInsight as createCoreInsight,
+    defineProvider,
+    type EventDestination,
+} from '../src/core/index.ts'
+import { createBrowserInsight } from '../src/integrations/browser/index.ts'
+import {
+    createNitroEventRelay,
     createNitroHistoryRepository,
     configureNitroHistory,
 } from '../src/integrations/nitro/index.ts'
 import {
+    createBrowserRelayTemplate,
     createServerRuntimeTemplate,
     createServerRuntimeTypeTemplate,
 } from '../src/integrations/nuxt/module.ts'
@@ -25,6 +33,82 @@ describe('Nitro and Nuxt integration', () => {
         expect(source).not.toContain('h3')
     })
 
+    it('generates the default browser route with explicit Scope selection', () => {
+        const defaultRelay = createBrowserRelayTemplate({})
+        expect(defaultRelay).toContain('fromWebHandler(createNitroEventRelay({')
+        expect(defaultRelay).toContain('const client = useInsight()')
+
+        const scopedRelay = createBrowserRelayTemplate({ scope: 'production' })
+        expect(scopedRelay).toContain('useInsight().scope("production")')
+    })
+
+    it('relays a browser batch through bounded validation and server Track', async () => {
+        const delivered = vi.fn<EventDestination['track']>()
+        const events = { signup: { properties: { plan: 'string' } } } as const
+        const insight = createCoreInsight({
+            events,
+            providers: [defineProvider({ events: { track: delivered }, id: 'events' })],
+        })
+        const relay = createNitroEventRelay({
+            events,
+            track(name, properties) {
+                if (name !== 'signup' || typeof properties.plan !== 'string') {
+                    throw new TypeError('Invalid test event')
+                }
+                return insight.track(name, { plan: properties.plan })
+            },
+        })
+        const send = vi.fn<typeof fetch>()
+        send.mockImplementation((input, init) => {
+            const path = input instanceof Request ? input.url : input.toString()
+            return relay(new Request(new URL(path, 'https://app.example'), init))
+        })
+        const browser = createBrowserInsight<{ signup: { plan: string } }>({
+            fetch: send,
+            flushIntervalMs: 10_000,
+        })
+
+        browser.track('signup', { plan: 'pro' })
+        await browser.flush()
+
+        expect(delivered).toHaveBeenCalledWith(
+            expect.objectContaining({
+                id: expect.any(String),
+                name: 'signup',
+                origin: 'server',
+                properties: { plan: 'pro' },
+                timestamp: expect.any(String),
+            }),
+        )
+
+        const invalid = await relay(
+            new Request('https://app.example/api/_insight/events', {
+                body: JSON.stringify({
+                    events: [
+                        { name: 'signup', properties: { plan: 'free' } },
+                        { id: 'client-id', name: 'signup', properties: { plan: 'pro' } },
+                    ],
+                }),
+                headers: { 'content-type': 'application/json' },
+                method: 'POST',
+            }),
+        )
+        expect(invalid.status).toBe(400)
+        expect(delivered).toHaveBeenCalledOnce()
+
+        const oversized = await relay(
+            new Request('https://app.example/api/_insight/events', {
+                body: JSON.stringify({
+                    events: [{ name: 'signup', properties: { plan: 'x'.repeat(64 * 1024) } }],
+                }),
+                headers: { 'content-type': 'application/json' },
+                method: 'POST',
+            }),
+        )
+        expect(oversized.status).toBe(413)
+        expect(delivered).toHaveBeenCalledOnce()
+    })
+
     it('configures Cloudflare from Nuxt runtime config with a typed Source', () => {
         const source = createServerRuntimeTemplate({
             cloudflareWebAnalytics: true,
@@ -33,6 +117,7 @@ describe('Nitro and Nuxt integration', () => {
         expect(source).toContain('runtimeConfig.cloudflare')
         expect(source).not.toContain('runtimeConfig.insight')
         expect(source).toContain('cloudflare({')
+        expect(source).toContain('requires a single-Scope server config')
         expect(source).not.toContain('CLOUDFLARE_API_TOKEN')
 
         const types = createServerRuntimeTypeTemplate({
@@ -40,7 +125,9 @@ describe('Nitro and Nuxt integration', () => {
             history: false,
         })
         expect(types).toContain('ReturnType<typeof cloudflare<')
+        expect(types).toContain('ServerConfig extends { readonly providers: infer Providers')
         expect(types).toContain('InsightClient<RuntimeConfig>')
+        expect(types).not.toContain("ServerConfig['providers']")
         expect(types).not.toContain('any')
     })
 
@@ -62,6 +149,19 @@ describe('Nitro and Nuxt integration', () => {
         expect(useInsight()).toBe(first)
         expect(useRuntimeConfig).toHaveBeenCalledOnce()
         expect(cloudflare).toHaveBeenCalledOnce()
+        expect(createInsight).toHaveBeenCalledOnce()
+
+        await expect(
+            evaluateRuntime(
+                createServerRuntimeTemplate({ cloudflareWebAnalytics: true, history: false }),
+                {
+                    cloudflare,
+                    config: { scopes: { production: [] } },
+                    createInsight,
+                    useRuntimeConfig,
+                },
+            ),
+        ).rejects.toThrow('requires a single-Scope server config')
         expect(createInsight).toHaveBeenCalledOnce()
 
         const scopedCreateInsight = vi.fn<(options: unknown) => unknown>((options) => options)
@@ -106,15 +206,14 @@ describe('Nitro and Nuxt integration', () => {
         const segment = {
             adapter: 'app.metrics',
             capability: 'metrics',
-            fidelity: { preservation: 'full' as const, transformations: [] },
             id: 'app.usage:one',
             observedAt: '2026-08-28T00:00:00.000Z',
             range: { from: '2026-08-01T00:00:00.000Z', to: '2026-09-01T00:00:00.000Z' },
             data: {
-                points: [],
-                values: { requests: 0 },
+                aggregate: { requests: 0 },
+                rows: [],
             },
-            schemaVersion: 2 as const,
+            schemaVersion: 3 as const,
             scope: 'default',
             sortKey: 'metrics',
         }
@@ -162,11 +261,10 @@ describe('Nitro and Nuxt integration', () => {
                 {
                     ...target,
                     data: { id: `log-${index}` },
-                    fidelity: { preservation: 'full', transformations: [] },
                     id: `segment-${index}`,
                     observedAt: range.to,
                     range,
-                    schemaVersion: 2,
+                    schemaVersion: 3,
                     sortKey: range.from,
                 },
             ])

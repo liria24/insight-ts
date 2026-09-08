@@ -38,28 +38,32 @@ const insight = createInsight({
     ],
 })
 
-const dashboard = await insight.query((q) => ({
-    traffic: q.metrics({
-        metrics: ['pageViews', 'visits'],
-        time: {
-            from: '2026-08-01T00:00:00.000Z',
-            to: '2026-08-08T00:00:00.000Z',
-            grain: 'day',
-        },
-        where: {
-            country: { in: ['JP', 'US'] },
-        },
-    }),
-}))
+const traffic = await insight.metrics({
+    metrics: ['pageViews', 'visits'],
+    time: {
+        from: '2026-08-01T00:00:00.000Z',
+        to: '2026-08-08T00:00:00.000Z',
+        grain: 'day',
+    },
+    where: {
+        country: { in: ['JP', 'US'] },
+    },
+})
 
-console.log(dashboard.traffic.data.values.pageViews)
+console.log(traffic.aggregate.pageViews)
 ```
 
-Configured canonical Metrics and dimensions are inferred across Provider adapters without `as const` or explicit generics.
+Configured canonical Metrics and dimensions are inferred from Providers without `as const` or explicit generics.
+Metric queries can request `aggregate`, `rows`, or `both`; ungrouped scalar queries default to
+`aggregate`, while grouped and time-series queries default to `both`.
+Paginated Logs and Traces continue with `await insight.next(result)` without repeating the query.
+Concurrent capability calls keep independent errors and cancellation while exact or Provider-compatible
+native work may be shared internally.
+The Nuxt module provides the bounded endpoint used by the default browser event client.
 
 ## What you get
 
-- **Typed queries and results** — configured adapters define canonical fields and results.
+- **Typed queries and results** — configured Providers define canonical fields and results.
 - **Provider details stay visible** — sampling, approximation, partial results, pagination, freshness, and native metadata are not hidden behind artificial parity.
 - **Composable features** — use Core alone or add Providers, History, browser events, Nitro, Nuxt, Vue UI, and OpenTelemetry independently.
 - **Logical Scopes** — use the same canonical query API for production, staging, or another analysis boundary.
@@ -78,8 +82,8 @@ for application-specific canonical data.
 
 ## History
 
-One optional History workflow preserves Metrics, Logs, Traces, and future materializable
-capabilities beyond native Provider retention.
+One optional History workflow preserves supported Metrics, Logs, and Traces beyond native Provider
+retention.
 
 ```ts
 import { createHistory } from 'insight-ts/history'
@@ -92,22 +96,32 @@ const insight = createInsight({
 await insight.history.sync({ range: { from, to } })
 ```
 
-History exposes range-scoped Fidelity, bounded event synchronization and pagination, compaction,
-and expiration. It is not a persistent query-result cache.
+History exposes bounded event synchronization and result continuation, exact Metric reconstruction,
+stable/provisional refreshability, and explicit expiration. It is not a persistent query-result
+cache.
 
 ## Vue UI
 
 Optional Metric components render data you have already queried.
 
+```sh
+npm install insight-ts vue @tanstack/charts d3-shape
+```
+
 ```vue
 <script setup lang="ts">
-import { InsightAreaChart, InsightStat } from 'insight-ts/vue/ui'
+import { InsightChart, InsightStat } from 'insight-ts/vue/ui'
 </script>
 
 <template>
     <InsightStat :data="dashboard.summary" />
 
-    <InsightAreaChart :data="dashboard.traffic" title="Traffic" :ui="{ title: 'font-semibold' }" />
+    <InsightChart
+        :data="dashboard.traffic"
+        title="Traffic"
+        type="area"
+        :ui="{ title: 'font-semibold' }"
+    />
 </template>
 ```
 
@@ -117,12 +131,12 @@ Components support root `class` customization and semantic `ui` slots. They do n
 
 Read the complete documentation at [insight.liria.me](https://insight.liria.me).
 
-- [Get started](https://insight.liria.me/getting-started/introduction)
+- [Getting Started](https://insight.liria.me/getting-started/introduction)
 - [First query](https://insight.liria.me/getting-started/first-query)
 - [Query](https://insight.liria.me/query/introduction)
 - [Track](https://insight.liria.me/track/events)
 - [History](https://insight.liria.me/history/introduction)
-- [Providers](https://insight.liria.me/providers/cloudflare)
+- [Providers / Adapters](https://insight.liria.me/providers/cloudflare)
 - [UI](https://insight.liria.me/ui/stat)
 - [API reference](https://insight.liria.me/reference/api)
 - [Live demo](https://insight.liria.me/demo)

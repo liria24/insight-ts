@@ -1,4 +1,10 @@
-import { InsightError } from './errors.ts'
+import { InsightError, ProviderError } from './errors.ts'
+import {
+    decodeContinuation,
+    encodeContinuation,
+    invalidContinuation,
+    type Continuation,
+} from './pagination.ts'
 import type {
     AdapterExecutionResult,
     AdapterRequest,
@@ -11,19 +17,18 @@ import type {
     EventProperty,
     HistoryRuntime,
     InsightClient,
+    InsightCursor,
     InstrumentationSpan,
     ProviderDefinition,
-    QueryContribution,
     QueryExecutionOptions,
-    QueryPagination,
     QueryQuality,
     QueryResult,
     RuntimeAdapter,
 } from './types.ts'
 
-const descriptor = Symbol('insight.query')
 const concurrency = 8
 const defaultScope = 'default'
+const reservedCapabilityNames = new Set(['history', 'next', 'scope', 'then', 'track'])
 const noopSpan: InstrumentationSpan = {
     recordException() {},
     setAttribute() {},
@@ -38,30 +43,30 @@ interface RuntimeCapability {
 
 interface RuntimeScope {
     adapters: RuntimeAdapter[]
-    builder: Record<string, RuntimeCapabilityAccessor>
     capabilities: Map<string, RuntimeCapability>
     destinations: readonly EventDestination[]
     name: string
-}
-
-interface Descriptor {
-    [descriptor]: true
-    capability: RuntimeCapability
-    query: unknown
 }
 
 interface PreparedAdapterRequest extends AdapterRequest {
     dedupeKey: string
 }
 
-interface PreparedCapabilityRequest {
-    capability: RuntimeCapability
-    dedupeKey: string
-    plans: readonly PreparedAdapterRequest[]
-    query: unknown
+type NativeResult = AdapterExecutionResult<unknown, object>
+
+interface ScheduledCaller {
+    aborted: () => void
+    reject: (reason?: unknown) => void
+    resolve: (value: NativeResult) => void
+    signal?: AbortSignal
 }
 
-type RuntimeCapabilityAccessor = (query: unknown) => Descriptor
+interface ScheduledExecution {
+    callers: Set<ScheduledCaller>
+    controller: AbortController
+    request: PreparedAdapterRequest
+    requestCount: number
+}
 
 export const createInsight = <const TOptions extends CreateInsightOptions>(
     options: TOptions,
@@ -79,6 +84,131 @@ export const createInsight = <const TOptions extends CreateInsightOptions>(
             ? Promise.resolve(options.instrumentation.run(name, attributes, operation))
             : operation(noopSpan)
 
+    const scheduled = new Map<string, ScheduledExecution>()
+    const pending: ScheduledExecution[] = []
+    let active = 0
+    let flushQueued = false
+
+    const finishScheduled = (
+        execution: ScheduledExecution,
+        result: { reason: unknown } | { value: NativeResult },
+    ) => {
+        if (scheduled.get(execution.request.dedupeKey) === execution) {
+            scheduled.delete(execution.request.dedupeKey)
+        }
+        const callers = Array.from(execution.callers)
+        const values =
+            'value' in result
+                ? callers.map((_, index) =>
+                      index === 0 ? result.value : structuredClone(result.value),
+                  )
+                : []
+        for (const [index, caller] of callers.entries()) {
+            execution.callers.delete(caller)
+            caller.signal?.removeEventListener('abort', caller.aborted)
+            if ('value' in result) caller.resolve(values[index]!)
+            else caller.reject(result.reason)
+        }
+    }
+
+    const runScheduled = async (execution: ScheduledExecution, flushSize: number) => {
+        const { query, source } = execution.request
+        try {
+            const value = await instrument(
+                'insight.provider.execute',
+                {
+                    'insight.provider': source.provider.id,
+                    'insight.request.count': execution.requestCount,
+                    'insight.scheduler.deduplicated.count': execution.requestCount - 1,
+                    'insight.scheduler.flush.size': flushSize,
+                },
+                async (span) => {
+                    try {
+                        return validateExecutionResult(
+                            await source.definition.execute(query, {
+                                adapter: source.id,
+                                provider: source.provider.id,
+                                scope: source.scope,
+                                signal: execution.controller.signal,
+                            }),
+                        )
+                    } finally {
+                        span.setAttribute('insight.request.count', execution.requestCount)
+                        span.setAttribute(
+                            'insight.scheduler.deduplicated.count',
+                            execution.requestCount - 1,
+                        )
+                    }
+                },
+            )
+            finishScheduled(execution, { value })
+        } catch (reason) {
+            finishScheduled(execution, { reason })
+        } finally {
+            active -= 1
+            flushScheduled()
+        }
+    }
+
+    const flushScheduled = () => {
+        flushQueued = false
+        const ready: ScheduledExecution[] = []
+        while (ready.length < concurrency - active) {
+            const execution = pending.shift()
+            if (!execution) break
+            if (execution.callers.size === 0) continue
+            ready.push(execution)
+        }
+        active += ready.length
+        for (const execution of ready) void runScheduled(execution, ready.length)
+    }
+
+    const scheduleNative = (
+        request: PreparedAdapterRequest,
+        signal?: AbortSignal,
+    ): Promise<NativeResult> => {
+        signal?.throwIfAborted()
+        let execution = scheduled.get(request.dedupeKey)
+        if (!execution) {
+            execution = {
+                callers: new Set(),
+                controller: new AbortController(),
+                request,
+                requestCount: 0,
+            }
+            scheduled.set(request.dedupeKey, execution)
+            pending.push(execution)
+            if (!flushQueued) {
+                flushQueued = true
+                queueMicrotask(flushScheduled)
+            }
+        }
+        execution.requestCount += 1
+        const shared = execution
+        return new Promise((resolve, reject) => {
+            let caller!: ScheduledCaller
+            const aborted = () => {
+                if (!shared.callers.delete(caller)) return
+                signal?.removeEventListener('abort', aborted)
+                reject(signal?.reason)
+                if (shared.callers.size === 0) {
+                    if (scheduled.get(request.dedupeKey) === shared) {
+                        scheduled.delete(request.dedupeKey)
+                    }
+                    shared.controller.abort(signal?.reason)
+                }
+            }
+            caller = {
+                aborted,
+                reject,
+                resolve,
+                ...(signal ? { signal } : {}),
+            }
+            shared.callers.add(caller)
+            signal?.addEventListener('abort', aborted, { once: true })
+        })
+    }
+
     const prepareAdapters = (requests: readonly AdapterRequest[]) => {
         const keys: string[] = []
         const unique = new Map<string, PreparedAdapterRequest>()
@@ -93,40 +223,12 @@ export const createInsight = <const TOptions extends CreateInsightOptions>(
         return { keys, unique: [...unique.values()] }
     }
 
-    const executeNative = async (
+    const executeNative = (
         requests: readonly PreparedAdapterRequest[],
         execution: QueryExecutionOptions = {},
-    ): Promise<readonly AdapterExecutionResult<unknown, object>[]> => {
+    ): Promise<readonly NativeResult[]> => {
         execution.signal?.throwIfAborted()
-        const groups = new Map<ProviderDefinition, PreparedAdapterRequest[]>()
-        for (const request of requests) {
-            const group = groups.get(request.source.provider) ?? []
-            group.push(request)
-            groups.set(request.source.provider, group)
-        }
-        const results = new Map<string, AdapterExecutionResult<unknown, object>>()
-        await Promise.all(
-            [...groups].map(async ([provider, group]) => {
-                const executed = await instrument(
-                    'insight.provider.execute',
-                    {
-                        'insight.provider': provider.id,
-                        'insight.request.count': group.length,
-                    },
-                    async () => executeProvider(provider, group, execution),
-                )
-                if (executed.length !== group.length) {
-                    throw new InsightError(
-                        'INVALID_QUERY',
-                        `Provider "${provider.id}" returned ${executed.length} results for ${group.length} requests`,
-                    )
-                }
-                for (const [index, result] of executed.entries()) {
-                    results.set(group[index]!.dedupeKey, validateExecutionResult(result))
-                }
-            }),
-        )
-        return requests.map(({ dedupeKey }) => results.get(dedupeKey)!)
+        return Promise.all(requests.map((request) => scheduleNative(request, execution.signal)))
     }
 
     const executeAdapterRaw = async (
@@ -187,82 +289,162 @@ export const createInsight = <const TOptions extends CreateInsightOptions>(
         return requests.map(({ dedupeKey }) => resultByKey.get(dedupeKey)!)
     }
 
-    const executeCapabilitySelection = async (
-        descriptors: readonly Descriptor[],
+    const executeCapability = async (
+        capability: RuntimeCapability,
+        input: unknown,
         execution: QueryExecutionOptions,
-    ): Promise<readonly QueryResult<unknown, object>[]> => {
-        const prepared = prepareCapabilities(descriptors)
-        const plans = new Map<string, PreparedAdapterRequest>()
-        for (const request of prepared.unique) {
-            for (const plan of request.plans) plans.set(plan.dedupeKey, plan)
-        }
-        const uniquePlans = [...plans.values()]
-        const executed = await executePlans(uniquePlans, execution)
-        const resultByPlan = new Map(
-            uniquePlans.map(({ dedupeKey }, index) => [dedupeKey, executed[index]!] as const),
+        continuation?: Continuation,
+    ): Promise<QueryResult<Record<PropertyKey, unknown>, object>> => {
+        const { adapters, contract, name, scope } = capability
+        const normalized = contract.normalize(
+            input,
+            adapters.map(({ definition }) => definition),
         )
-        const resultByRequest = new Map<string, QueryResult<unknown, object>>()
-        for (const request of prepared.unique) {
-            const merged = request.capability.contract.merge(
-                request.query,
-                request.plans.map((plan) => ({
-                    adapter: plan.source,
-                    plan: plan.query,
-                    result: resultByPlan.get(plan.dedupeKey)!,
-                })),
+        const queryKey = contract.key(normalized)
+        if (typeof queryKey !== 'string') {
+            throw new InsightError(
+                'INVALID_QUERY',
+                `Capability "${name}" returned a non-string query key`,
             )
-            resultByRequest.set(request.dedupeKey, queryResult(merged, now()))
         }
-        return prepared.keys.map((key) => resultByRequest.get(key)!)
+        if (continuation && continuation.queryKey !== queryKey) throw invalidContinuation()
+        if (continuation && !contract.continue) {
+            throw new InsightError(
+                'UNSUPPORTED_OPERATION',
+                `Capability "${name}" does not support pagination`,
+            )
+        }
+        const query = continuation
+            ? contract.continue!(normalized, continuation.nativeCursor)
+            : normalized
+        const plans = adapters.flatMap((source) => {
+            const plan = contract.plan(query, source.definition)
+            if (plan === undefined) return []
+            const adapterKey = source.definition.key(plan)
+            if (typeof adapterKey !== 'string') invalidAdapterKey(source.id)
+            return [
+                {
+                    dedupeKey: `${scope}\0${source.id}\0${adapterKey}`,
+                    query: plan,
+                    source,
+                },
+            ]
+        })
+        if (continuation) {
+            if (
+                plans.length !== 1 ||
+                continuation.binding !== (await continuationBinding(plans[0]!.source.id))
+            ) {
+                throw invalidContinuation()
+            }
+        }
+        const executed = await executePlans(plans, execution)
+        const merged = contract.merge(
+            query,
+            plans.map((plan, index) => ({
+                adapter: plan.source,
+                plan: plan.query,
+                result: executed[index]!,
+            })),
+        )
+        const nativeCursor = validateExecutionResult(merged).nativeCursor
+        if (continuation && nativeCursor === continuation.nativeCursor) {
+            throw new InsightError('INVALID_QUERY', 'Adapter returned a repeated native cursor')
+        }
+        if (nativeCursor && !contract.continue) {
+            throw new InsightError(
+                'UNSUPPORTED_OPERATION',
+                `Capability "${name}" does not support pagination`,
+            )
+        }
+        if (nativeCursor && plans.length !== 1) {
+            throw new InsightError(
+                'UNSUPPORTED_OPERATION',
+                'Multi-adapter pagination is not supported',
+            )
+        }
+        const next = nativeCursor
+            ? encodeContinuation({
+                  binding: await continuationBinding(plans[0]!.source.id),
+                  capability: name,
+                  nativeCursor,
+                  query: continuation?.query ?? requireQuery(input),
+                  queryKey,
+                  scope,
+              })
+            : undefined
+        return queryResult(merged, now(), next)
     }
 
-    const scopedClient = (scope: RuntimeScope) => ({
-        async query(
-            select: (builder: Record<string, RuntimeCapabilityAccessor>) => unknown,
-            execution: QueryExecutionOptions = {},
-        ) {
-            return instrument('insight.query', { 'insight.scope': scope.name }, async (span) => {
-                execution.signal?.throwIfAborted()
-                const entries = selectionEntries(select(scope.builder))
-                span.setAttribute('insight.query.count', entries.length)
-                const values = await executeCapabilitySelection(
-                    entries.map(([, value]) => value),
-                    execution,
-                )
-                return Object.fromEntries(entries.map(([name], index) => [name, values[index]]))
-            })
-        },
-        async track(name: string, properties?: Readonly<Record<string, unknown>>) {
-            return instrument(
-                'insight.event.track',
-                { 'insight.event.name': name, 'insight.scope': scope.name },
-                async () => {
-                    const validator = eventValidators.get(name)
-                    if (!validator)
-                        throw new InsightError('INVALID_QUERY', `Unknown event: ${name}`)
-                    const normalized = validator(properties)
-                    if (scope.destinations.length === 0) {
-                        throw new InsightError(
-                            'CAPABILITY_UNAVAILABLE',
-                            'No Provider event destination is configured in the Scope',
+    const scopedClient = (scope: RuntimeScope) => {
+        const client: Record<string, unknown> = Object.create(null)
+        Object.defineProperty(client, 'next', {
+            enumerable: true,
+            value: async (result: unknown, execution: QueryExecutionOptions = {}) => {
+                const continuation = resultContinuation(result)
+                if (continuation.scope !== scope.name) throw invalidContinuation()
+                const capability = scope.capabilities.get(continuation.capability)
+                if (!capability) throw invalidContinuation()
+                return instrument(
+                    'insight.query',
+                    { 'insight.scope': scope.name },
+                    async (span) => {
+                        execution.signal?.throwIfAborted()
+                        span.setAttribute('insight.query.count', 1)
+                        return executeCapability(
+                            capability,
+                            continuation.query,
+                            execution,
+                            continuation,
                         )
-                    }
-                    const context = options.instrumentation?.activeTraceContext?.()
-                    const event = {
-                        ...(context ? { context } : {}),
-                        id: crypto.randomUUID(),
-                        name,
-                        origin: 'server' as const,
-                        properties: normalized,
-                        timestamp: now().toISOString(),
-                    }
-                    await Promise.all(
-                        scope.destinations.map(async (destination) => destination.track(event)),
-                    )
-                },
-            )
-        },
-    })
+                    },
+                )
+            },
+        })
+        Object.defineProperty(client, 'track', {
+            enumerable: true,
+            value: async (name: string, properties?: Readonly<Record<string, unknown>>) => {
+                const context = options.instrumentation?.activeTraceContext?.()
+                return instrument(
+                    'insight.event.track',
+                    { 'insight.event.name': name, 'insight.scope': scope.name },
+                    async () => {
+                        const validator = eventValidators.get(name)
+                        if (!validator)
+                            throw new InsightError('INVALID_QUERY', `Unknown event: ${name}`)
+                        const normalized = validator(properties)
+                        if (scope.destinations.length === 0) {
+                            throw new InsightError(
+                                'CAPABILITY_UNAVAILABLE',
+                                'No Provider event destination is configured in the Scope',
+                            )
+                        }
+                        const event = {
+                            ...(context ? { context } : {}),
+                            id: crypto.randomUUID(),
+                            name,
+                            origin: 'server' as const,
+                            properties: normalized,
+                            timestamp: now().toISOString(),
+                        }
+                        await deliverEvent(scope.destinations, event)
+                    },
+                )
+            },
+        })
+        for (const capability of scope.capabilities.values()) {
+            Object.defineProperty(client, capability.name, {
+                enumerable: true,
+                value: (query: unknown, execution: QueryExecutionOptions = {}) =>
+                    instrument('insight.query', { 'insight.scope': scope.name }, async (span) => {
+                        execution.signal?.throwIfAborted()
+                        span.setAttribute('insight.query.count', 1)
+                        return executeCapability(capability, query, execution)
+                    }),
+            })
+        }
+        return client
+    }
 
     const client = options.scopes
         ? {
@@ -275,74 +457,9 @@ export const createInsight = <const TOptions extends CreateInsightOptions>(
           }
         : { ...(history ? { history } : {}), ...scopedClient(scopes.get(defaultScope)!) }
 
-    // Configuration validation and the generated builders preserve the erased generic contract.
+    // Configuration validation and generated methods preserve the erased generic contract.
     // eslint-disable-next-line typescript/no-unsafe-type-assertion
     return client as unknown as InsightClient<TOptions>
-
-    function prepareCapabilities(descriptors: readonly Descriptor[]) {
-        const keys: string[] = []
-        const unique = new Map<string, PreparedCapabilityRequest>()
-        for (const selected of descriptors) {
-            const { adapters, contract, name, scope } = selected.capability
-            const query = contract.normalize(
-                selected.query,
-                adapters.map(({ definition }) => definition),
-            )
-            const queryKey = contract.key(query)
-            if (typeof queryKey !== 'string') {
-                throw new InsightError(
-                    'INVALID_QUERY',
-                    `Capability "${name}" returned a non-string query key`,
-                )
-            }
-            const plans = adapters.flatMap((source) => {
-                const plan = contract.plan(query, source.definition)
-                if (plan === undefined) return []
-                const adapterKey = source.definition.key(plan)
-                if (typeof adapterKey !== 'string') invalidAdapterKey(source.id)
-                return [
-                    {
-                        dedupeKey: `${scope}\0${source.id}\0${adapterKey}`,
-                        query: plan,
-                        source,
-                    },
-                ]
-            })
-            const dedupeKey = `${scope}\0${name}\0${queryKey}`
-            keys.push(dedupeKey)
-            unique.set(dedupeKey, {
-                capability: selected.capability,
-                dedupeKey,
-                plans,
-                query,
-            })
-        }
-        return { keys, unique: [...unique.values()] }
-    }
-
-    async function executeProvider(
-        provider: ProviderDefinition,
-        requests: readonly PreparedAdapterRequest[],
-        execution: QueryExecutionOptions,
-    ): Promise<readonly AdapterExecutionResult<unknown, object>[]> {
-        const providerRequests = requests.map(({ query, source }) => ({
-            adapter: source.id,
-            execute: () =>
-                Promise.resolve(
-                    source.definition.execute(query, {
-                        adapter: source.id,
-                        provider: provider.id,
-                        scope: source.scope,
-                        ...(execution.signal ? { signal: execution.signal } : {}),
-                    }),
-                ),
-            key: source.key,
-            query,
-        }))
-        return provider.execute
-            ? provider.execute(providerRequests, execution)
-            : mapConcurrent(providerRequests, concurrency, ({ execute }) => execute())
-    }
 }
 
 function runtimeScopes(options: CreateInsightOptions): Map<string, RuntimeScope> {
@@ -402,6 +519,12 @@ function runtimeScope(name: string, providers: readonly ProviderDefinition[]): R
                     `Capability name "${contract.name}" must use lower camel case`,
                 )
             }
+            if (reservedCapabilityNames.has(contract.name)) {
+                throw new InsightError(
+                    'INVALID_QUERY',
+                    `Capability name "${contract.name}" is reserved by the Insight client`,
+                )
+            }
             const adapter = {
                 definition,
                 id: `${provider.id}.${key}`,
@@ -428,17 +551,10 @@ function runtimeScope(name: string, providers: readonly ProviderDefinition[]): R
             }
         }
     }
-    // Object.create(null) keeps generated capability names prototype-safe without a Proxy.
-    // eslint-disable-next-line typescript/no-unsafe-type-assertion
-    const builder = Object.create(null) as Record<string, RuntimeCapabilityAccessor>
     for (const capability of capabilities.values()) {
         capability.contract.validate?.(capability.adapters.map(({ definition }) => definition))
-        Object.defineProperty(builder, capability.name, {
-            enumerable: true,
-            value: (query: unknown): Descriptor => ({ [descriptor]: true, capability, query }),
-        })
     }
-    return { adapters, builder, capabilities, destinations, name }
+    return { adapters, capabilities, destinations, name }
 }
 
 function adapterDefinition(value: unknown, key: string): CapabilityAdapterDefinition {
@@ -448,39 +564,30 @@ function adapterDefinition(value: unknown, key: string): CapabilityAdapterDefini
     return value
 }
 
-function selectionEntries(value: unknown): [string, Descriptor][] {
-    if (!isRecord(value)) {
-        throw new InsightError('INVALID_QUERY', 'Query selection must return an object')
-    }
-    return Object.entries(value).map(([name, selected]) => {
-        if (!isDescriptor(selected)) {
-            throw new InsightError(
-                'INVALID_QUERY',
-                `Query selection "${name}" must be created with a canonical capability method`,
-            )
-        }
-        return [name, selected]
-    })
-}
-
 function queryResult(
     value: CapabilityExecutionResult,
     queriedAt: Date,
-): QueryResult<unknown, object> {
+    next?: InsightCursor,
+): QueryResult<Record<PropertyKey, unknown>, object> {
     const result = validateExecutionResult(value)
+    const data = requireRecord(result.data, 'Capability data')
+    if (Object.hasOwn(data, 'meta')) {
+        throw new InsightError(
+            'INVALID_QUERY',
+            'Capability data cannot define the reserved meta field',
+        )
+    }
     const meta = result.meta === undefined ? {} : requireRecord(result.meta, 'Capability metadata')
     const contributions = parseContributions(value.contributions)
     const quality = mergeQuality([
         parseQuality(result.quality),
         ...contributions.map(({ quality: contribution }) => contribution),
     ])
-    const pagination = parsePagination(value.pagination)
     return {
-        data: result.data,
+        ...data,
         meta: {
             ...meta,
-            contributions,
-            ...(pagination ? { pagination } : {}),
+            ...(next ? { pagination: { next } } : {}),
             ...(quality ? { quality } : {}),
             queriedAt: queriedAt.toISOString(),
         },
@@ -502,36 +609,17 @@ function validateExecutionResult(value: unknown): AdapterExecutionResult<unknown
     return value as unknown as AdapterExecutionResult<unknown, object>
 }
 
-function parseContributions(value: unknown): readonly QueryContribution[] {
+function parseContributions(value: unknown): readonly { quality?: QueryQuality }[] {
     if (value === undefined) return []
     if (!Array.isArray(value)) {
         throw new InsightError('INVALID_QUERY', 'Query contributions must be an array')
     }
     return value.map((item) => {
         const contribution = requireRecord(item, 'Query contribution')
-        if (
-            contribution.fields !== undefined &&
-            (!Array.isArray(contribution.fields) ||
-                contribution.fields.some((field) => typeof field !== 'string'))
-        ) {
-            throw new InsightError('INVALID_QUERY', 'Query contribution fields must be strings')
-        }
-        return {
-            ...(Array.isArray(contribution.fields) ? { fields: [...contribution.fields] } : {}),
-            ...(contribution.quality === undefined
-                ? {}
-                : { quality: parseQuality(contribution.quality)! }),
-        }
+        return contribution.quality === undefined
+            ? {}
+            : { quality: parseQuality(contribution.quality)! }
     })
-}
-
-function parsePagination(value: unknown): QueryPagination | undefined {
-    if (value === undefined) return undefined
-    const pagination = requireRecord(value, 'Query pagination')
-    if (pagination.next !== undefined && typeof pagination.next !== 'string') {
-        throw new InsightError('INVALID_QUERY', 'Query pagination next must be an opaque string')
-    }
-    return typeof pagination.next === 'string' ? { next: pagination.next } : {}
 }
 
 function parseQuality(value: unknown): QueryQuality | undefined {
@@ -591,30 +679,9 @@ function mergeQuality(values: readonly (QueryQuality | undefined)[]): QueryQuali
     }
 }
 
-async function mapConcurrent<TInput, TOutput>(
-    values: readonly TInput[],
-    limit: number,
-    mapper: (value: TInput) => Promise<TOutput>,
-): Promise<TOutput[]> {
-    const results: TOutput[] = []
-    let cursor = 0
-    await Promise.all(
-        Array.from({ length: Math.min(limit, values.length) }, async () => {
-            while (cursor < values.length) {
-                const index = cursor
-                cursor += 1
-                // Bounded workers deliberately claim one item at a time.
-                // eslint-disable-next-line no-await-in-loop
-                results[index] = await mapper(values[index]!)
-            }
-        }),
-    )
-    return results
-}
-
 type EventValidator = (properties: unknown) => Readonly<Record<string, unknown>>
 
-function compileEvents(events: EventDefinitions | undefined): Map<string, EventValidator> {
+export function compileEvents(events: EventDefinitions | undefined): Map<string, EventValidator> {
     const validators = new Map<string, EventValidator>()
     for (const [name, definition] of Object.entries(events ?? {})) {
         if (!definition.properties) {
@@ -668,6 +735,40 @@ function compileEvents(events: EventDefinitions | undefined): Map<string, EventV
     return validators
 }
 
+async function deliverEvent(
+    destinations: readonly EventDestination[],
+    event: Parameters<EventDestination['track']>[0],
+): Promise<void> {
+    const deliveries = destinations.map((destination) => ({
+        destination,
+        error: undefined as unknown,
+        failed: false,
+    }))
+    const attempt = async (delivery: (typeof deliveries)[number]): Promise<void> => {
+        try {
+            await delivery.destination.track(event)
+            delivery.failed = false
+        } catch (error) {
+            delivery.error = error
+            delivery.failed = true
+        }
+    }
+
+    await Promise.all(deliveries.map(attempt))
+    await Promise.all(
+        deliveries
+            .filter(
+                (delivery) =>
+                    delivery.failed &&
+                    delivery.error instanceof ProviderError &&
+                    delivery.error.retryable === true,
+            )
+            .map(attempt),
+    )
+    const failed = deliveries.find((delivery) => delivery.failed)
+    if (failed) throw failed.error
+}
+
 const compileEventProperty = (expected: EventProperty): ((value: unknown) => boolean) => {
     if (Array.isArray(expected)) {
         const values = new Set(expected)
@@ -686,12 +787,34 @@ function requireRecord(value: unknown, name: string): Record<string, unknown> {
     return value
 }
 
+function requireQuery(value: unknown): object {
+    if (!isRecord(value)) {
+        throw new InsightError('UNSUPPORTED_OPERATION', 'Pagination query is not serializable')
+    }
+    return value
+}
+
+function resultContinuation(value: unknown): Continuation {
+    if (!isRecord(value) || !isRecord(value.meta) || !isRecord(value.meta.pagination)) {
+        throw new InsightError('INVALID_QUERY', 'Query result has no continuation')
+    }
+    const next = value.meta.pagination.next
+    if (typeof next !== 'string' || next.length === 0) {
+        throw new InsightError('INVALID_QUERY', 'Query result has no continuation')
+    }
+    return decodeContinuation(next)
+}
+
+async function continuationBinding(adapter: string): Promise<string> {
+    const digest = new Uint8Array(
+        await crypto.subtle.digest('SHA-256', new TextEncoder().encode(adapter)),
+    )
+    return [...digest.subarray(0, 16)].map((byte) => byte.toString(16).padStart(2, '0')).join('')
+}
+
 function isRecord(value: unknown): value is Record<PropertyKey, unknown> {
     return typeof value === 'object' && value !== null && !Array.isArray(value)
 }
-
-const isDescriptor = (value: unknown): value is Descriptor =>
-    isRecord(value) && value[descriptor] === true
 
 const isAdapterDefinition = (value: unknown): value is CapabilityAdapterDefinition =>
     isRecord(value) &&

@@ -52,15 +52,13 @@ describe('canonical Logs', () => {
             ],
         })
 
-        const result = await insight.query((q) => ({
-            recent: q.logs({
-                limit: 3,
-                time,
-                where: { attributes: { tenant: 'acme' }, severity: { in: ['error'] } },
-            }),
-        }))
+        const result = await insight.logs({
+            limit: 3,
+            time,
+            where: { attributes: { tenant: 'acme' }, severity: { in: ['error'] } },
+        })
 
-        expectTypeOf(result.recent.data).toEqualTypeOf<LogData>()
+        expectTypeOf(result.logs).toEqualTypeOf<LogData['logs']>()
         const expectedQuery: NormalizedLogQuery = {
             limit: 3,
             time: {
@@ -74,10 +72,10 @@ describe('canonical Logs', () => {
         }
         expect(first).toHaveBeenCalledWith(expectedQuery, expect.any(Object))
         expect(second).toHaveBeenCalledWith(expectedQuery, expect.any(Object))
-        expect(result.recent.data.logs.map(({ id }) => id)).toEqual(['shared', 'b', 'a'])
-        expect(result.recent.data.logs[0]?.body).toEqual({ message: 'structured', retry: false })
-        expect(result.recent.meta.quality).toEqual({ sampled: true, sampleRate: 0.5 })
-        expect(result.recent.meta.contributions).toHaveLength(2)
+        expect(result.logs.map(({ id }) => id)).toEqual(['shared', 'b', 'a'])
+        expect(result.logs[0]?.body).toEqual({ message: 'structured', retry: false })
+        expect(result.meta.quality).toEqual({ sampled: true, sampleRate: 0.5 })
+        expect(result.meta).not.toHaveProperty('contributions')
     })
 
     it('rejects filters outside the adapter intersection before I/O', async () => {
@@ -97,11 +95,9 @@ describe('canonical Logs', () => {
             ],
         })
 
-        await expect(
-            insight.query((q) => ({
-                invalid: q.logs({ time, where: { service: 'api' } }),
-            })),
-        ).rejects.toMatchObject({ code: 'UNSUPPORTED_OPERATION' })
+        await expect(insight.logs({ time, where: { service: 'api' } })).rejects.toMatchObject({
+            code: 'UNSUPPORTED_OPERATION',
+        })
         expect(execute).not.toHaveBeenCalled()
     })
 
@@ -121,7 +117,7 @@ describe('canonical Logs', () => {
             ],
         })
 
-        await expect(insight.query((q) => ({ recent: q.logs({ time }) }))).rejects.toMatchObject({
+        await expect(insight.logs({ time })).rejects.toMatchObject({
             code: 'INVALID_QUERY',
         })
     })

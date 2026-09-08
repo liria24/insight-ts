@@ -10,7 +10,6 @@ import {
     formatTableCell,
     tableCellValue,
     type DataNotice,
-    type MetricTableRow,
 } from '../../../../ui-core/index.ts'
 import {
     resolveInsightUIClass,
@@ -57,24 +56,30 @@ const ui = computed<Required<InsightBreakdownTableUI>>(() => ({
 const model = computed(() => createBreakdownModel(props.data))
 const dimensions = computed(() => model.value.dimensions)
 const metrics = computed(() => model.value.metrics)
-const headers = computed(() => [...dimensions.value, ...metrics.value])
+const headers = computed(() => [
+    ...dimensions.value.map((column) => ({ column, kind: 'dimension' as const })),
+    ...metrics.value.map((column) => ({ column, kind: 'metric' as const })),
+])
+const rows = computed(() =>
+    model.value.rows.map((row) => ({
+        cells: headers.value.map(({ column, kind }) => {
+            const value = tableCellValue(
+                column,
+                kind === 'dimension' ? row.dimensions : row.metrics,
+            )
+            return {
+                column,
+                formatted: formatTableCell(value, props.locale, props.maximumFractionDigits),
+                kind,
+                value,
+            }
+        }),
+        key: row.key,
+    })),
+)
 const notices = computed(() => createDataNotices(props.data.meta.quality))
 const messages = computed(() => notices.value.map(formatDataNotice))
-const isEmpty = computed(
-    () => model.value.rows.length === 0 || dimensions.value.length + metrics.value.length === 0,
-)
-
-function valueFor(
-    row: MetricTableRow,
-    column: string,
-    kind: 'dimension' | 'metric',
-): boolean | number | string | null {
-    return tableCellValue(column, kind === 'dimension' ? row.dimensions : row.metrics)
-}
-
-function formattedValue(row: MetricTableRow, column: string, kind: 'dimension' | 'metric'): string {
-    return formatTableCell(valueFor(row, column, kind), props.locale, props.maximumFractionDigits)
-}
+const isEmpty = computed(() => rows.value.length === 0 || headers.value.length === 0)
 </script>
 
 <template>
@@ -96,57 +101,40 @@ function formattedValue(row: MetricTableRow, column: string, kind: 'dimension' |
                 <thead :class="ui.header" data-slot="header">
                     <tr :class="ui.row" data-slot="row">
                         <th
-                            v-for="column in headers"
-                            :key="column"
+                            v-for="header in headers"
+                            :key="`${header.kind}:${header.column}`"
                             :class="ui.headerCell"
                             data-slot="header-cell"
                             scope="col"
                         >
-                            <slot name="header" :column>
-                                {{ formatMetricName(column) }}
+                            <slot name="header" :column="header.column">
+                                {{ formatMetricName(header.column) }}
                             </slot>
                         </th>
                     </tr>
                 </thead>
                 <tbody :class="ui.body" data-slot="body">
                     <tr
-                        v-for="(row, rowIndex) in model.rows"
-                        :key="rowIndex"
+                        v-for="(row, rowIndex) in rows"
+                        :key="row.key"
                         :class="ui.row"
                         data-slot="row"
                     >
                         <td
-                            v-for="column in dimensions"
-                            :key="`dimension:${column}`"
+                            v-for="cell in row.cells"
+                            :key="`${cell.kind}:${cell.column}`"
                             :class="ui.cell"
                             data-slot="cell"
                         >
                             <slot
                                 name="cell"
-                                :column
-                                :formatted="formattedValue(row, column, 'dimension')"
-                                kind="dimension"
+                                :column="cell.column"
+                                :formatted="cell.formatted"
+                                :kind="cell.kind"
                                 :row-index="rowIndex"
-                                :value="valueFor(row, column, 'dimension')"
+                                :value="cell.value"
                             >
-                                {{ formattedValue(row, column, 'dimension') }}
-                            </slot>
-                        </td>
-                        <td
-                            v-for="column in metrics"
-                            :key="`metric:${column}`"
-                            :class="ui.cell"
-                            data-slot="cell"
-                        >
-                            <slot
-                                name="cell"
-                                :column
-                                :formatted="formattedValue(row, column, 'metric')"
-                                kind="metric"
-                                :row-index="rowIndex"
-                                :value="valueFor(row, column, 'metric')"
-                            >
-                                {{ formattedValue(row, column, 'metric') }}
+                                {{ cell.formatted }}
                             </slot>
                         </td>
                     </tr>

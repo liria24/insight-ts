@@ -1,5 +1,6 @@
-import { createInsight, defineProvider } from '../src/core/index.ts'
-import { defineMetricAdapter } from '../src/metrics/index.ts'
+import { createInsight, defineProvider, type ProviderDefinition } from '../src/core/index.ts'
+import { defineLogAdapter } from '../src/logs/index.ts'
+import { defineMetricAdapter, type MetricQuery } from '../src/metrics/index.ts'
 import {
     googleSearchConsole,
     type GoogleSearchConsoleOptions,
@@ -8,6 +9,7 @@ import {
 const time = { from: '2026-08-01', to: '2026-08-02' }
 const provider = defineProvider({
     adapters: {
+        logs: defineLogAdapter({ execute: () => ({ logs: [] }) }),
         usage: defineMetricAdapter({
             dimensions: { country: 'string' },
             execute: () => ({ values: { requests: 1 } }),
@@ -20,28 +22,69 @@ const insight = createInsight({ providers: [provider] })
 const scoped = createInsight({ scopes: { production: [provider], staging: [provider] } })
 
 async function verifyPublicTypes() {
-    const result = await insight.query((q) => ({
-        usage: q.metrics({
-            dimensions: ['country'],
-            metrics: ['requests'],
-            time,
-            where: { country: { in: ['JP'] } },
-        }),
-    }))
-    const requests: number | null | undefined = result.usage.data.values.requests
+    const result = await insight.metrics({
+        dimensions: ['country'],
+        metrics: ['requests'],
+        time,
+        where: { country: { in: ['JP'] } },
+    })
+    const requests: number | null | undefined = result.aggregate.requests
     void requests
 
-    scoped.scope('production')
+    const firstLogs = await insight.logs({ limit: 10, time })
+    const nextLogs: typeof firstLogs = await insight.next(firstLogs)
+    void nextLogs.logs[0]?.id
+    // @ts-expect-error cursors are continued through insight.next(result)
+    await insight.logs({ cursor: firstLogs.meta.pagination?.next, limit: 10, time })
+
+    const aggregate = await insight.metrics({
+        metrics: ['requests'],
+        projection: 'aggregate',
+        time,
+    })
+    const rows = await insight.metrics({
+        dimensions: ['country'],
+        metrics: ['requests'],
+        projection: 'rows',
+        time,
+    })
+    const both = await insight.metrics({
+        dimensions: ['country'],
+        metrics: ['requests'],
+        projection: 'both',
+        time,
+    })
+    void aggregate.aggregate.requests
+    void rows.rows[0]?.values.requests
+    void both.aggregate.requests
+    void both.rows
+    // @ts-expect-error aggregate-only results do not expose rows
+    void aggregate.rows
+    // @ts-expect-error rows-only results do not expose aggregate
+    void rows.aggregate
+
+    const dynamicQuery: MetricQuery<{ requests: Record<never, never> }, { country: 'string' }> = {
+        metrics: ['requests'],
+        projection: Math.random() > 0.5 ? 'aggregate' : 'rows',
+        time,
+    }
+    const dynamic = await insight.metrics(dynamicQuery)
+    // @ts-expect-error a dynamic projection does not guarantee either field
+    void dynamic.aggregate
+    // @ts-expect-error a dynamic projection does not guarantee either field
+    void dynamic.rows
+
+    await scoped.scope('production').metrics({ metrics: ['requests'], time })
     // @ts-expect-error Scope names are inferred as literals
     scoped.scope('preview')
     // @ts-expect-error unsupported Metric names are rejected
-    await insight.query((q) => ({ invalid: q.metrics({ metrics: ['errors'], time }) }))
-    await insight.query((q) => ({
-        // @ts-expect-error unsupported dimensions are rejected
-        invalid: q.metrics({ dimensions: ['service'], metrics: ['requests'], time }),
-    }))
-    // @ts-expect-error Provider/Source accessors are not part of the canonical query DSL
-    await insight.query((q) => ({ invalid: q.source.app.usage({}) }))
+    await insight.metrics({ metrics: ['errors'], time })
+    // @ts-expect-error unsupported dimensions are rejected
+    await insight.metrics({ dimensions: ['service'], metrics: ['requests'], time })
+    // @ts-expect-error Provider/Source accessors are not part of the canonical API
+    insight.source.app.usage({})
+    // @ts-expect-error obsolete selection API is not exported
+    void insight.query
     // @ts-expect-error obsolete report access is not exported
     insight.reports('app.usage')
 }
@@ -60,5 +103,12 @@ const obsolete: GoogleSearchConsoleOptions = {
     property: 'sc-domain:example.com',
 }
 
+const providerBatch: ProviderDefinition = {
+    // @ts-expect-error Provider batching belongs inside an adapter or Provider-local transport
+    execute: () => [],
+    id: 'app',
+}
+
 void obsolete
+void providerBatch
 void verifyPublicTypes
