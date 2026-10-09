@@ -12,6 +12,11 @@ for hypothetical capabilities. Users should provide only information the SDK can
 - This is a Bun workspace. Use `bun ci` to reproduce the lockfile.
 - Add every dependency with `bun add` from the workspace that owns it. Do not hand-edit
   dependency fields in `package.json`.
+- Renovate is the narrow exception: its native Bun manager updates manifests and regenerates
+  the existing lockfile with the pinned Bun in the same PR. Rebase onto the latest base before
+  regeneration; never resolve lock conflicts by deleting the lockfile. Frozen installation
+  and `bun run check` must pass. Keep Bun upgrades manual and update `packageManager` and all
+  hard-coded CI Bun versions together, including minimum-peer consumer verification.
 - Run `bun run format:check` for documentation-only changes. Run `bun run check` before handing
   off changes that affect source, configuration, packaging, or generated output.
 
