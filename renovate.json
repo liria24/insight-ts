@@ -1,22 +1,108 @@
 {
     "$schema": "https://docs.renovatebot.com/renovate-schema.json",
-    "baseBranchPatterns": ["main"],
     "extends": ["config:recommended", "helpers:pinGitHubActionDigests"],
-    "lockFileMaintenance": { "enabled": false },
+    "baseBranchPatterns": ["main"],
+    "branchPrefix": "renovate/",
+    "automerge": false,
+    "dependencyDashboard": true,
+    "timezone": "Asia/Tokyo",
+    "schedule": ["* * * * 0"],
+    "prConcurrentLimit": 1,
+    "branchConcurrentLimit": 1,
+    "prHourlyLimit": 1,
+    "rebaseWhen": "behind-base-branch",
+    "updateNotScheduled": true,
+    "ignoreScripts": true,
+    "constraints": {
+        "bun": "1.4.2"
+    },
+    "lockFileMaintenance": {
+        "enabled": false
+    },
+    "vulnerabilityAlerts": {
+        "enabled": true,
+        "schedule": [],
+        "minimumReleaseAge": null,
+        "dependencyDashboardApproval": false,
+        "automerge": false
+    },
+    "prBodyNotes": [
+        "Rebase onto the latest base, reapply manifest changes and regenerate existing bun.lock files with the pinned Bun. Commit manifests and locks together; frozen installation and all quality checks must pass."
+    ],
     "packageRules": [
         {
-            "groupName": "all non-major dependencies",
-            "matchUpdateTypes": ["minor", "patch", "pin", "digest"]
+            "description": "Apply npm policy to native Bun and npm dependencies",
+            "matchDatasources": ["npm"],
+            "minimumReleaseAge": "3 days"
         },
         {
-            "groupName": null,
-            "matchUpdateTypes": ["major"]
+            "description": "Keep runtime and package-manager upgrades owner-managed",
+            "matchDepTypes": [
+                "engines",
+                "packageManager",
+                "devEngines.runtime",
+                "devEngines.packageManager"
+            ],
+            "enabled": false
+        },
+        {
+            "description": "Keep Bun pinned in manifests, workflow inputs and Renovate tool constraints",
+            "matchDepNames": ["bun"],
+            "enabled": false
+        },
+        {
+            "description": "Require approval for major updates",
+            "matchUpdateTypes": ["major"],
+            "dependencyDashboardApproval": true
+        },
+        {
+            "description": "Review public compatibility range changes",
+            "matchDepTypes": ["peerDependencies"],
+            "enabled": true,
+            "dependencyDashboardApproval": true,
+            "rangeStrategy": "replace"
+        },
+        {
+            "description": "Review breaking zero-major minor updates separately",
+            "matchDatasources": ["npm"],
+            "matchCurrentVersion": "/^0\\./",
+            "matchUpdateTypes": ["minor"],
+            "dependencyDashboardApproval": true
+        },
+        {
+            "description": "Pin and review GitHub Actions separately",
+            "matchManagers": ["github-actions"],
+            "groupName": "GitHub Actions",
+            "pinDigests": true,
+            "automerge": false
+        },
+        {
+            "description": "Keep Nuxt framework packages together",
+            "matchPackageNames": ["nuxt", "@nuxt/kit", "@nuxt/schema", "@nuxt/vite-builder"],
+            "groupName": "Nuxt framework"
+        },
+        {
+            "description": "Keep Vue and compiler packages together",
+            "matchPackageNames": ["vue", "/^@vue\\//"],
+            "groupName": "Vue and compiler"
+        },
+        {
+            "description": "Keep Vite+ core, Vite+ and Vitest together",
+            "matchPackageNames": [
+                "vite",
+                "vite-plus",
+                "@voidzero-dev/vite-plus-core",
+                "vitest",
+                "/^@vitest\\//"
+            ],
+            "groupName": "Vite and test tooling"
+        },
+        {
+            "description": "Preserve the existing prerelease series",
+            "matchDepNames": ["vue-compiler-36"],
+            "matchCurrentValue": "3.6.0-rc.7",
+            "allowedVersions": "/^3\\.6\\.\\d+-rc(?:[.\\d-]|$)/",
+            "dependencyDashboardApproval": true
         }
-    ],
-    "prConcurrentLimit": 3,
-    "prHourlyLimit": 2,
-    "rebaseWhen": "conflicted",
-    "recreateWhen": "auto",
-    "schedule": ["before 6am on Monday"],
-    "timezone": "Asia/Tokyo"
+    ]
 }
